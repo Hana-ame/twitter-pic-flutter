@@ -1,0 +1,170 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android NDK
+        run: |
+          NDK_VERSION="r27"
+          curl -L -o /tmp/ndk.zip \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q /tmp/ndk.zip -d /tmp/
+          echo "/tmp/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" \
+            >> $GITHUB_PATH
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build ECH shared library (arm64)
+        run: |
+          git clone --depth=1 https://github.com/Hana-ame/wintools.git /tmp/wintools
+          cd /tmp/wintools/cmd/ech-shared
+          CGO_ENABLED=1 \
+          GOOS=android \
+          GOARCH=arm64 \
+          CC=aarch64-linux-android21-clang \
+          go build -buildmode=c-shared \
+            -ldflags="-s -w" \
+            -o /tmp/libechproxy.so
+          # Strip and compress shared library
+          /tmp/android-ndk-r27/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy --strip-unneeded /tmp/libechproxy.so
+          ls -lh /tmp/libechproxy.so
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.3
+
+      - name: Create Flutter project scaffold
+        run: |
+          flutter create --project-name twitter_pic_flutter /tmp/build_project
+          cp pubspec.yaml /tmp/build_project/pubspec.yaml
+          rm -rf /tmp/build_project/lib/
+          cp -r lib /tmp/build_project/lib
+          rm -rf /tmp/build_project/assets/
+          cp -r assets /tmp/build_project/assets
+
+      - name: Ensure INTERNET permission and set app label in AndroidManifest
+        run: |
+          MANIFEST=/tmp/build_project/android/app/src/main/AndroidManifest.xml
+          if ! grep -q 'android.permission.INTERNET' "$MANIFEST"; then
+            sed -i 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android">|<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET"/>|' "$MANIFEST"
+          fi
+          sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
+          cat "$MANIFEST"
+
+      - name: Place ECH shared library
+        run: |
+          mkdir -p /tmp/build_project/android/app/src/main/jniLibs/arm64-v8a
+          cp /tmp/libechproxy.so \
+            /tmp/build_project/android/app/src/main/jniLibs/arm64-v8a/libechproxy.so
+
+      - name: Generate launcher icons
+        run: |
+          cd /tmp/build_project
+          flutter pub get
+          dart run flutter_launcher_icons
+
+      - name: Set up APK signing key
+        id: cache-keystore
+        uses: actions/cache@v4
+        with:
+          path: /tmp/release.keystore
+          key: v1-android-keystore
+
+      - name: Generate signing key (first build only)
+        if: steps.cache-keystore.outputs.cache-hit != 'true'
+        run: |
+          keytool -genkey -v \
+            -keystore /tmp/release.keystore \
+            -alias release \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass ${{ secrets.KEY_STORE_PASSWORD }} -keypass ${{ secrets.KEY_PASSWORD }} \
+            -dname "CN=TwitterPic, OU=Dev, O=TwitterPic, L=City, S=State, C=US"
+          echo "Keystore generated (first time)"
+
+      - name: Configure signing
+        run: |
+          cat > /tmp/build_project/android/key.properties << 'EOF'
+          storePassword=${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=release
+          storeFile=/tmp/release.keystore
+          EOF
+
+          cat > /tmp/build_project/android/gradle.properties << 'EOF'
+          android.injected.signing.store.file=/tmp/release.keystore
+          android.injected.signing.store.password=${{ secrets.KEY_STORE_PASSWORD }}
+          android.injected.signing.key.alias=release
+          android.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
+          EOF
+
+          # android.injected.signing.* 会自动覆盖 signingConfig，无需修改 build.gradle.kts
+
+      - name: Set unique version
+        run: |
+          VERSION=$(grep '^version:' /tmp/build_project/pubspec.yaml | sed 's/version: *//' | sed 's/+.*//')
+          RN=${{ github.run_number }}
+          sed -i "s/^version:.*/version: ${VERSION}+${RN}/" /tmp/build_project/pubspec.yaml
+
+      - name: Build APK
+        env:
+          GRADLE_OPTS: -Xmx2g -Dorg.gradle.jvmargs=-Xmx2g
+        run: |
+          cd /tmp/build_project
+          BUILD_NUM=$(grep '^version:' pubspec.yaml | sed 's/version: *//')
+          flutter build apk --release --target-platform android-arm64 \
+            --dart-define=BUILD_NUM="$BUILD_NUM"
+
+      - name: Generate release notes
+        run: |
+          REF="${{ github.ref_name }}"
+          SHA="${{ github.sha }}"
+          {
+            echo "## Release ${REF}"
+            echo ""
+            echo "Automated build from commit ${SHA}."
+            echo ""
+            echo "### 变更"
+            PREV_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              git log "$PREV_TAG..HEAD" --oneline --no-decorate 2>/dev/null || git log --oneline -10 --no-decorate
+            else
+              git log --oneline -10 --no-decorate
+            fi
+          } > /tmp/release_body.md
+
+      - name: Get version
+        id: version
+        run: |
+          echo "tag=v$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          body_path: /tmp/release_body.md
+          files: /tmp/build_project/build/app/outputs/flutter-apk/app-release.apk
+          generate_release_notes: false
+          make_latest: true

@@ -1,0 +1,34 @@
+name: twitter_pic_flutter
+description: "A Flutter project for Twitter image browsing."
+publish_to: 'none'
+version: 0.2.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.6
+  ffi: ^2.1.0
+  open_filex: ^4.5.0
+  path_provider: ^2.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^3.0.1
+  flutter_launcher_icons: ^0.14.1
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon.png"
+  adaptive_icon_background: "#15202B"
+  adaptive_icon_foreground: "assets/icon.png"
+  min_sdk_android: 21
+
+flutter:
+  uses-material-design: true
