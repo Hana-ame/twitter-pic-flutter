@@ -46,10 +46,12 @@ class _FavListState extends State<FavList> {
         HorizontalButtonRow(buttons: [
           ElevatedButton(
             onPressed: _handleExport,
+            style: ElevatedButton.styleFrom(surfaceTintColor: Colors.transparent),
             child: const Text('导出收藏'),
           ),
           ElevatedButton(
             onPressed: () => setState(() => _showImport = !_showImport),
+            style: ElevatedButton.styleFrom(surfaceTintColor: Colors.transparent),
             child: Text(_showImport ? '取消导入' : '导入收藏'),
           ),
         ]),

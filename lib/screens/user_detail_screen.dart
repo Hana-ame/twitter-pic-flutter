@@ -235,6 +235,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                     onPressed: _votingEmoji != null ? null : () => _handleEmojiVote(emoji),
                     avatar: Text(emoji, style: const TextStyle(fontSize: 13)),
                     label: Text(isVoting ? '...' : '${_emojiCounts[emoji] ?? 0}', style: const TextStyle(fontSize: 10)),
+                    surfaceTintColor: Colors.transparent,
                     visualDensity: VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   );
@@ -275,6 +276,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       onPressed: onTap,
       avatar: Icon(icon, size: 14, color: color),
       label: Text(label, style: const TextStyle(fontSize: 11)),
+      backgroundColor: color.withValues(alpha: 0.1),
+      surfaceTintColor: Colors.transparent,
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       side: BorderSide(color: color.withValues(alpha: 0.4)),
