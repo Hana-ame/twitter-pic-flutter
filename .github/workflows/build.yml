@@ -126,7 +126,7 @@ jobs:
 
       - name: Package Windows Release
         run: |
-          cd C:\tmp\build_project\build\windows\runner\Release
+          cd C:\tmp\build_project\build\windows\x64\runner\Release
           Compress-Archive -Path . -DestinationPath C:\tmp\twitter_pic_flutter_windows_amd64.zip
 
       - name: Upload Windows artifact
