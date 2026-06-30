@@ -27,9 +27,7 @@
 
 ## 依赖管理
 - `ffi: ^2.2.0` — `using`/`Arena`/`Utf8` 在 2.x 中仍可用，无需特殊处理
-- `open_filex: ^4.5.0` — 仅 Android，Windows 改用 `url_launcher`
-- `url_launcher: ^6.3.0` — 跨平台文件打开
-- `path_provider: ^2.1.5` — 本地路径获取
+- `path_provider: ^2.1.5` — 本地路径获取（视频下载、缓存）
 
 ## 工作流注意事项
 - `.github/workflows/build.yml` 不可删除，已适配 Windows x64 输出路径

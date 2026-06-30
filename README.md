@@ -98,14 +98,14 @@ DNS 回退链：System DNS → Tencent (119.29.29.29) → Alibaba (223.5.5.5)，
 
 ### 视频播放
 
-完整的 mp4 通过 `fetchAsync` 下载（ECH），写入 app 临时目录，调 Android 系统播放器：
+完整的 mp4 通过 `fetchAsync` 下载（ECH），写入 app 临时目录，通过 `Process.run` 调系统播放器，平台自适应：
 
-```dart
-final bytes = await proxy.fetchAsync(url);
-final file = File('${dir.path}/video.mp4');
-await file.writeAsBytes(bytes);
-await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', 'file://$path', '-t', 'video/mp4']);
-```
+| 平台 | 命令 |
+|------|------|
+| Android | `am start …` |
+| Windows | `cmd /c start "" <path>` |
+| macOS   | `open <path>` |
+| Linux   | `xdg-open <path>` |
 
 ### 缓存
 

@@ -1,12 +1,23 @@
-// 视频播放组件：下载后使用 OpenFilex 打开本地文件
+// 视频播放组件：下载后调用系统播放器打开
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../services/proxy_manager.dart';
+
+Future<void> _openWithSystemPlayer(String path) async {
+  if (Platform.isAndroid) {
+    await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', 'file://$path', '-t', 'video/mp4']);
+  } else if (Platform.isWindows) {
+    await Process.run('cmd', ['/c', 'start', '', path], runInShell: true);
+  } else if (Platform.isMacOS) {
+    await Process.run('open', [path]);
+  } else if (Platform.isLinux) {
+    await Process.run('xdg-open', [path]);
+  }
+}
 
 class TwitterVideo extends StatefulWidget {
   final String url;
@@ -74,7 +85,7 @@ class _TwitterVideoState extends State<TwitterVideo> {
   Future<void> _play() async {
     if (_filePath == null) return;
     try {
-      await launchUrl(Uri.file(_filePath!));
+      await _openWithSystemPlayer(_filePath!);
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
