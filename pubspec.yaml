@@ -13,7 +13,6 @@ dependencies:
   cupertino_icons: ^1.0.6
   ffi: ^2.2.0          # using/Arena/Utf8 在 2.x 中仍可用，无需更改代码
   path_provider: ^2.1.5
-  archive: ^4.0.9
 
 dev_dependencies:
   flutter_test:

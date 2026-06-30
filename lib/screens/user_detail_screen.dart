@@ -2,7 +2,6 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -108,8 +107,24 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
     try {
       final items = widget.profile.timeline;
-      final archive = Archive();
+      if (items.isEmpty) throw Exception('没有可下载的内容');
+
+      String baseDir;
+      if (Platform.isAndroid) {
+        baseDir = '/storage/emulated/0/Download';
+      } else if (Platform.isWindows) {
+        final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
+        baseDir = '$home\\Downloads';
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        baseDir = dir.path;
+      }
+
+      final dlDir = Directory('$baseDir/$_username');
+      if (!await dlDir.exists()) await dlDir.create(recursive: true);
+
       var done = 0;
+      var ok = 0;
 
       for (final item in items) {
         if (!mounted) return;
@@ -118,8 +133,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           if (bytes != null) {
             final ext = item.type == 'video' || item.type == 'animated_gif' ? '.mp4' : '.jpg';
             final base = item.url.split('/').last.split('?').first.split('.').first;
-            final name = '${_username}_$base$ext';
-            archive.addFile(ArchiveFile(name, bytes.length, bytes));
+            final file = File('${dlDir.path}/${_username}_$base$ext');
+            await file.writeAsBytes(bytes);
+            ok++;
           }
         } catch (_) {}
         done++;
@@ -127,25 +143,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
 
       if (!mounted) return;
-      final dir = await getTemporaryDirectory();
-      final zipPath = '${dir.path}/${_username}_media.zip';
-      final encoded = ZipEncoder().encode(archive);
-      if (encoded == null) throw Exception('ZIP encoding failed');
-      await File(zipPath).writeAsBytes(encoded);
-
-      if (!mounted) return;
       if (Platform.isAndroid) {
-        await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', 'file://$zipPath', '-t', 'application/zip']);
+        await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', dlDir.path]);
       } else if (Platform.isWindows) {
-        await Process.run('cmd', ['/c', 'start', '', zipPath], runInShell: true);
-      } else if (Platform.isMacOS) {
-        await Process.run('open', [zipPath]);
-      } else if (Platform.isLinux) {
-        await Process.run('xdg-open', [zipPath]);
+        await Process.run('explorer', [dlDir.path]);
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已下载 ${items.length} 个文件到 $zipPath')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已下载 $ok/$done 个文件到 ${dlDir.path}')));
       }
     } catch (e) {
       if (mounted) {
