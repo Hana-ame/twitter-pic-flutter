@@ -162,6 +162,7 @@ jobs:
         run: |
           cd C:\tmp\build_project
           flutter pub get
+          dart run flutter_launcher_icons
           flutter build windows --release
           Copy-Item -Force -Path C:\tmp\echproxy.dll -Destination C:\tmp\build_project\build\windows\x64\runner\Release\echproxy.dll
 
