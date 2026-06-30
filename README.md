@@ -139,12 +139,13 @@ await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', 'file://$path', '-t
 
 ## 注意事项
 
-1. **源码与平台文件分离** — `android/`、`ios/` 不提交，CI 动态生成
-2. **Go 共享库** — `libechproxy.so` (~6.4MB) 由 CI 交叉编译，源码在 [Hana-ame/wintools](https://github.com/Hana-ame/wintools)
-3. **仅 arm64** — `--target-platform android-arm64`
-4. **JDK 17** — AGP 8.x 要求
-5. **Flutter 3.44.3** — 版本锁定
-6. **NDK r27**
-7. **DoH** — 仅 `https://moonchan.xyz/doh`
-8. **签名** — `gradle.properties` + GitHub Secrets，跨构建一致
-9. **不支持 iOS**
+1. **版本号显示在标题栏** — 窗口/任务栏标题和 AppBar 均以 `BUILD_NUM`（例如 `v0.2.0+123`）为后缀，方便区分构建版本
+2. **源码与平台文件分离** — `android/`、`ios/` 不提交，CI 动态生成
+3. **Go 共享库** — `libechproxy.so` (~6.4MB) 由 CI 交叉编译，源码在 [Hana-ame/wintools](https://github.com/Hana-ame/wintools)
+4. **仅 arm64** — `--target-platform android-arm64`
+5. **JDK 17** — AGP 8.x 要求
+6. **Flutter 3.44.3** — 版本锁定
+7. **NDK r27**
+8. **DoH** — 仅 `https://moonchan.xyz/doh`
+9. **签名** — `gradle.properties` + GitHub Secrets，跨构建一致
+10. **不支持 iOS**

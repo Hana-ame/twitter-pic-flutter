@@ -109,7 +109,7 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Twitter Pic Flutter',
+      title: 'Twitter Pic $_kBuildNum',
       theme: ThemeData(
         colorSchemeSeed: Colors.blue,
         useMaterial3: true,
