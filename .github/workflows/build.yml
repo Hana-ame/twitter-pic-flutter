@@ -1,4 +1,4 @@
-name: Build & Release APK
+name: Build & Release
 
 on:
   push:
@@ -6,11 +6,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build_android:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
 
@@ -23,11 +22,9 @@ jobs:
       - name: Setup Android NDK
         run: |
           NDK_VERSION="r27"
-          curl -L -o /tmp/ndk.zip \
-            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          curl -L -o /tmp/ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
           unzip -q /tmp/ndk.zip -d /tmp/
-          echo "/tmp/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" \
-            >> $GITHUB_PATH
+          echo "/tmp/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -42,10 +39,7 @@ jobs:
           GOOS=android \
           GOARCH=arm64 \
           CC=aarch64-linux-android21-clang \
-          go build -buildmode=c-shared \
-            -ldflags="-s -w" \
-            -o /tmp/libechproxy.so
-          # Strip and compress shared library
+          go build -buildmode=c-shared -ldflags="-s -w" -o /tmp/libechproxy.so
           /tmp/android-ndk-r27/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy --strip-unneeded /tmp/libechproxy.so
           ls -lh /tmp/libechproxy.so
 
@@ -71,13 +65,11 @@ jobs:
             sed -i 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android">|<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET"/>|' "$MANIFEST"
           fi
           sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
-          cat "$MANIFEST"
 
       - name: Place ECH shared library
         run: |
           mkdir -p /tmp/build_project/android/app/src/main/jniLibs/arm64-v8a
-          cp /tmp/libechproxy.so \
-            /tmp/build_project/android/app/src/main/jniLibs/arm64-v8a/libechproxy.so
+          cp /tmp/libechproxy.so /tmp/build_project/android/app/src/main/jniLibs/arm64-v8a/libechproxy.so
 
       - name: Generate launcher icons
         run: |
@@ -95,13 +87,7 @@ jobs:
       - name: Generate signing key (first build only)
         if: steps.cache-keystore.outputs.cache-hit != 'true'
         run: |
-          keytool -genkey -v \
-            -keystore /tmp/release.keystore \
-            -alias release \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass ${{ secrets.KEY_STORE_PASSWORD }} -keypass ${{ secrets.KEY_PASSWORD }} \
-            -dname "CN=TwitterPic, OU=Dev, O=TwitterPic, L=City, S=State, C=US"
-          echo "Keystore generated (first time)"
+          keytool -genkey -v -keystore /tmp/release.keystore -alias release -keyalg RSA -keysize 2048 -validity 10000 -storepass ${{ secrets.KEY_STORE_PASSWORD }} -keypass ${{ secrets.KEY_PASSWORD }} -dname "CN=TwitterPic, OU=Dev, O=TwitterPic, L=City, S=State, C=US"
 
       - name: Configure signing
         run: |
@@ -119,8 +105,6 @@ jobs:
           android.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
           EOF
 
-          # android.injected.signing.* 会自动覆盖 signingConfig，无需修改 build.gradle.kts
-
       - name: Set unique version
         run: |
           VERSION=$(grep '^version:' /tmp/build_project/pubspec.yaml | sed 's/version: *//' | sed 's/+.*//')
@@ -133,8 +117,81 @@ jobs:
         run: |
           cd /tmp/build_project
           BUILD_NUM=$(grep '^version:' pubspec.yaml | sed 's/version: *//')
-          flutter build apk --release --target-platform android-arm64 \
-            --dart-define=BUILD_NUM="$BUILD_NUM"
+          flutter build apk --release --target-platform android-arm64 --dart-define=BUILD_NUM="$BUILD_NUM"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: /tmp/build_project/build/app/outputs/flutter-apk/app-release.apk
+
+  build_windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build ECH shared library (windows)
+        run: |
+          git clone --depth=1 https://github.com/Hana-ame/wintools.git C:\tmp\wintools
+          cd C:\tmp\wintools\cmd\ech-shared
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy.dll
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.3
+
+      - name: Create Flutter project scaffold
+        run: |
+          flutter create --project-name twitter_pic_flutter C:\tmp\build_project
+          Copy-Item -Force -Path $env:GITHUB_WORKSPACE\pubspec.yaml -Destination C:\tmp\build_project\pubspec.yaml
+          Remove-Item -Recurse -Force C:\tmp\build_project\lib
+          Copy-Item -Recurse -Force $env:GITHUB_WORKSPACE\lib C:\tmp\build_project\lib
+          Remove-Item -Recurse -Force C:\tmp\build_project\assets
+          Copy-Item -Recurse -Force $env:GITHUB_WORKSPACE\assets C:\tmp\build_project\assets
+
+      - name: Build Windows Release
+        run: |
+          cd C:\tmp\build_project
+          flutter build windows --release
+          Copy-Item -Force -Path C:\tmp\echproxy.dll -Destination C:\tmp\build_project\build\windows\runner\Release\echproxy.dll
+
+      - name: Package Windows Release
+        run: |
+          cd C:\tmp\build_project\build\windows\runner\Release
+          Compress-Archive -Path . -DestinationPath C:\tmp\twitter_pic_flutter_windows_amd64.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: C:\tmp\twitter_pic_flutter_windows_amd64.zip
+
+  create_release:
+    runs-on: ubuntu-latest
+    needs: [build_android, build_windows]
+    permissions:
+      contents: write
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: apk
+          path: ./artifact/apk
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: ./artifact/windows
 
       - name: Generate release notes
         run: |
@@ -165,6 +222,8 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Release ${{ steps.version.outputs.tag }}
           body_path: /tmp/release_body.md
-          files: /tmp/build_project/build/app/outputs/flutter-apk/app-release.apk
+          files: |
+            ./artifact/apk/app-release.apk
+            ./artifact/windows/twitter_pic_flutter_windows_amd64.zip
           generate_release_notes: false
           make_latest: true
