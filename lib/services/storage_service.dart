@@ -29,8 +29,8 @@ class StorageService {
     _loaded = true;
   }
 
-  static void _flush() {
-    unawaited(_file!.writeAsString(jsonEncode(_memory)));
+  static Future<void> _flush() async {
+    await _file!.writeAsString(jsonEncode(_memory));
   }
 
   static Map<String, dynamic> _readMap(String key) {
