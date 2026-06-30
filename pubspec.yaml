@@ -31,6 +31,7 @@ flutter_launcher_icons:
   min_sdk_android: 21
   windows:
     generate: true
+    image_path: "assets/icon.png"
     icon_size: 256
 
 flutter:
