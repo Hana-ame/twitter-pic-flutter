@@ -1,5 +1,7 @@
 // 本地持久化服务：简易的内存存储模拟 shared_preferences
 import 'dart:convert';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/foundation.dart';
 
 class StorageService {

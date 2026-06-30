@@ -2,6 +2,7 @@
 // ECH 代理管理：加载 native 库、初始化、获取资源并缓存
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 import 'dart:ffi';
 import 'dart:isolate';
@@ -64,13 +65,13 @@ class ProxyManager {
     if (Platform.isWindows) {
       libName = 'echproxy.dll';
       // TODO: replace with actual URL for Windows build
-      downloadUrl = 'https://example.com/echproxy/windows/echproxy.dll';
+      downloadUrl = 'https://ghproxy.com/https://github.com/Hana-ame/twitter-pic-flutter/releases/download/v0.2.0/echproxy.dll';
     } else if (Platform.isLinux) {
       libName = 'libechproxy.so';
-      downloadUrl = 'https://example.com/echproxy/linux/libechproxy.so';
+      downloadUrl = 'https://ghproxy.com/https://github.com/Hana-ame/twitter-pic-flutter/releases/download/v0.2.0/libechproxy.so';
     } else if (Platform.isMacOS) {
       libName = 'libechproxy.dylib';
-      downloadUrl = 'https://example.com/echproxy/macos/libechproxy.dylib';
+      downloadUrl = 'https://ghproxy.com/https://github.com/Hana-ame/twitter-pic-flutter/releases/download/v0.2.0/libechproxy.dylib';
     } else {
       libName = 'libechproxy.so';
       downloadUrl = 'https://example.com/echproxy/default/libechproxy.so';

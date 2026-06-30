@@ -156,7 +156,12 @@ jobs:
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "C:\tmp\build_project\lib"
           Copy-Item -Recurse -Force "$env:GITHUB_WORKSPACE\lib" "C:\tmp\build_project\lib"
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "C:\tmp\build_project\assets"
-          Copy-Item -Recurse -Force "$env:GITHUB_WORKSPACE\assets" "C:\tmp\build_project\assets"
+           Copy-Item -Recurse -Force "$env:GITHUB_WORKSPACE\assets" "C:\tmp\build_project\assets"
+
+      - name: Resolve Flutter dependencies (Windows)
+        run: |
+          cd C:\tmp\build_project
+          flutter pub get
 
       - name: Build Windows Release
         run: |
