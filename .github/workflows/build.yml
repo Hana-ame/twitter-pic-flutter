@@ -152,11 +152,11 @@ jobs:
       - name: Create Flutter project scaffold
         run: |
           flutter create --project-name twitter_pic_flutter C:\tmp\build_project
-          Copy-Item -Force -Path $env:GITHUB_WORKSPACE\pubspec.yaml -Destination C:\tmp\build_project\pubspec.yaml
-          Remove-Item -Recurse -Force C:\tmp\build_project\lib
-          Copy-Item -Recurse -Force $env:GITHUB_WORKSPACE\lib C:\tmp\build_project\lib
-          Remove-Item -Recurse -Force C:\tmp\build_project\assets
-          Copy-Item -Recurse -Force $env:GITHUB_WORKSPACE\assets C:\tmp\build_project\assets
+          Copy-Item -Force -Path "$env:GITHUB_WORKSPACE\pubspec.yaml" -Destination "C:\tmp\build_project\pubspec.yaml"
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "C:\tmp\build_project\lib"
+          Copy-Item -Recurse -Force "$env:GITHUB_WORKSPACE\lib" "C:\tmp\build_project\lib"
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "C:\tmp\build_project\assets"
+          Copy-Item -Recurse -Force "$env:GITHUB_WORKSPACE\assets" "C:\tmp\build_project\assets"
 
       - name: Build Windows Release
         run: |
