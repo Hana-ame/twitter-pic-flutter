@@ -7,6 +7,7 @@ import '../models/user.dart';
 import '../screens/user_detail_screen.dart';
 import '../services/proxy_manager.dart';
 import 'proxy_avatar.dart';
+import 'horizontal_button_row.dart';
 
 class FavList extends StatefulWidget {
   final TwitterApi api;
@@ -42,23 +43,16 @@ class _FavListState extends State<FavList> {
               ),
             ),
           ),
-        Row(
-          children: [
-            Expanded(
-              child: ElevatedButton(
-                onPressed: _handleExport,
-                child: const Text('导出收藏'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ElevatedButton(
-                onPressed: () => setState(() => _showImport = !_showImport),
-                child: Text(_showImport ? '取消导入' : '导入收藏'),
-              ),
-            ),
-          ],
-        ),
+        HorizontalButtonRow(buttons: [
+          ElevatedButton(
+            onPressed: _handleExport,
+            child: const Text('导出收藏'),
+          ),
+          ElevatedButton(
+            onPressed: () => setState(() => _showImport = !_showImport),
+            child: Text(_showImport ? '取消导入' : '导入收藏'),
+          ),
+        ]),
         if (_showImport)
           Column(
             children: [

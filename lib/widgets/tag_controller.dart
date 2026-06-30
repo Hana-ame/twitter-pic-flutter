@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/storage_service.dart';
+import 'horizontal_button_row.dart';
 
 const _kDefaultBlockTags = [
   '无关内容', '男性', '男娘', '人妖', '露屌', '阳痿', '男同',
@@ -94,26 +95,19 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
             onSubmitted: (_) => _addTag('highlight'),
           ),
           const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _inputCtrl.text.trim().isEmpty ? null : () => _addTag('highlight'),
-                  icon: const Icon(Icons.visibility, size: 16),
-                  label: const Text('高亮'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _inputCtrl.text.trim().isEmpty ? null : () => _addTag('block'),
-                  icon: const Icon(Icons.visibility_off, size: 16),
-                  label: const Text('屏蔽'),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade50),
-                ),
-              ),
-            ],
-          ),
+          HorizontalButtonRow(buttons: [
+            ElevatedButton.icon(
+              onPressed: _inputCtrl.text.trim().isEmpty ? null : () => _addTag('highlight'),
+              icon: const Icon(Icons.visibility, size: 16),
+              label: const Text('高亮'),
+            ),
+            ElevatedButton.icon(
+              onPressed: _inputCtrl.text.trim().isEmpty ? null : () => _addTag('block'),
+              icon: const Icon(Icons.visibility_off, size: 16),
+              label: const Text('屏蔽'),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade50),
+            ),
+          ]),
           const SizedBox(height: 16),
           Text('高亮显示 (${_highlight.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),

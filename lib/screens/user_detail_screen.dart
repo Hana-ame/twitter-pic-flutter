@@ -11,6 +11,7 @@ import '../widgets/proxy_avatar.dart';
 import '../widgets/twitter_video.dart';
 import '../widgets/tag_display_area.dart';
 import '../widgets/tag_selector_modal.dart';
+import '../widgets/horizontal_button_row.dart';
 
 class UserDetailScreen extends StatefulWidget {
   final UserMetaData profile;
@@ -135,38 +136,32 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                 ],
               ),
               const SizedBox(height: 12),
-              _buildButtonRow([
-                _btn('展开全部', Icons.expand_more, Colors.green, () => setState(() => _showAll = true)),
-                _btn(isFav ? '已收藏' : '收藏', Icons.star, Colors.amber, () { setState(() { StorageService.toggleFav(_username); }); }),
-                _btn('更新', Icons.refresh, Colors.blue, _handleUpdate),
-                _btn(isBlocked ? '取消屏蔽' : '屏蔽', Icons.block, Colors.red, () { setState(() { StorageService.toggleBlock(_username); }); }),
+              HorizontalButtonRow(buttons: [
+                _pill('展开全部', Icons.expand_more, Colors.green, () => setState(() => _showAll = true)),
+                _pill(isFav ? '已收藏' : '收藏', Icons.star, Colors.amber, () { setState(() { StorageService.toggleFav(_username); }); }),
+                _pill('更新', Icons.refresh, Colors.blue, _handleUpdate),
+                _pill(isBlocked ? '取消屏蔽' : '屏蔽', Icons.block, Colors.red, () { setState(() { StorageService.toggleBlock(_username); }); }),
               ]),
               const SizedBox(height: 8),
-              _buildButtonRow([
-                _btn('下载 ${widget.profile.totalUrls}', Icons.download, Colors.indigo, () {}),
-                _btn('兼容下载', Icons.download_done, Colors.teal, () {}),
-                _btn('应急下载', Icons.emergency, Colors.orange, () {}),
+              HorizontalButtonRow(buttons: [
+                _pill('下载 ${widget.profile.totalUrls}', Icons.download, Colors.indigo, () {}),
+                _pill('兼容下载', Icons.download_done, Colors.teal, () {}),
+                _pill('应急下载', Icons.emergency, Colors.orange, () {}),
               ]),
               const SizedBox(height: 8),
-              SizedBox(
-                height: 40,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: _kEmojis.map((emoji) {
-                    final isVoting = _votingEmoji == emoji;
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: ElevatedButton(
-                        onPressed: _votingEmoji != null ? null : () => _handleEmojiVote(emoji),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        child: Text('$emoji ${isVoting ? '...' : '${_emojiCounts[emoji] ?? 0}'}'),
-                      ),
-                    );
-                  }).toList(),
-                ),
+              HorizontalButtonRow(
+                height: 32,
+                spacing: 4,
+                buttons: _kEmojis.map((emoji) {
+                  final isVoting = _votingEmoji == emoji;
+                  return ActionChip(
+                    onPressed: _votingEmoji != null ? null : () => _handleEmojiVote(emoji),
+                    avatar: Text(emoji, style: const TextStyle(fontSize: 13)),
+                    label: Text(isVoting ? '...' : '${_emojiCounts[emoji] ?? 0}', style: const TextStyle(fontSize: 10)),
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  );
+                }).toList(),
               ),
               const SizedBox(height: 4),
               TagDisplayArea(tags: _userTags),
@@ -198,29 +193,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     );
   }
 
-  Widget _buildButtonRow(List<Widget> buttons) {
-    return Row(
-      children: buttons.map((b) => Expanded(child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2),
-        child: b,
-      ))).toList(),
-    );
-  }
-
-  Widget _btn(String label, IconData icon, Color color, VoidCallback onTap) {
-    return SizedBox(
-      height: 36,
-      child: ElevatedButton.icon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 14),
-        label: Text(label, style: const TextStyle(fontSize: 11)),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: color.withValues(alpha: 0.1),
-          foregroundColor: Color.lerp(color, Colors.black, 0.3)!,
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-      ),
+  Widget _pill(String label, IconData icon, Color color, VoidCallback onTap) {
+    return ActionChip(
+      onPressed: onTap,
+      avatar: Icon(icon, size: 14, color: color),
+      label: Text(label, style: const TextStyle(fontSize: 11)),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      side: BorderSide(color: color.withValues(alpha: 0.4)),
     );
   }
 
