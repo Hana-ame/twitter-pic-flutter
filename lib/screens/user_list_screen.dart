@@ -100,8 +100,8 @@ class UserListScreenState extends State<UserListScreen> {
   Widget _buildSearchResults() {
     return FutureBuilder<List<TwitterUser>>(
       future: Future.wait([
-        _api.searchUserList('username', _search),
-        _api.searchUserList('nick', _search),
+        _api.searchUserList('username', _search).catchError((_) => <TwitterUser>[]),
+        _api.searchUserList('nick', _search).catchError((_) => <TwitterUser>[]),
       ]).then((lists) {
         final seen = <String>{};
         return [...lists[0], ...lists[1]].where((u) {

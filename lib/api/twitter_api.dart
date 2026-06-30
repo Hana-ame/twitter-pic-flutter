@@ -18,8 +18,9 @@ class TwitterApi {
     final req = await _client.getUrl(uri);
     final resp = await req.close();
     final body = await resp.transform(utf8.decoder).join();
-    final list = jsonDecode(body) as List<dynamic>;
-    return list.map((e) => TwitterUser.fromJson(e as Map<String, dynamic>)).toList();
+    final decoded = jsonDecode(body);
+    if (decoded is! List) return [];
+    return decoded.map((e) => TwitterUser.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<List<TwitterUser>> searchUserList(String by, String search) async {
@@ -31,8 +32,9 @@ class TwitterApi {
     final req = await _client.getUrl(uri);
     final resp = await req.close();
     final body = await resp.transform(utf8.decoder).join();
-    final list = jsonDecode(body) as List<dynamic>;
-    return list.map((e) => TwitterUser.fromJson(e as Map<String, dynamic>)).toList();
+    final decoded = jsonDecode(body);
+    if (decoded is! List) return [];
+    return decoded.map((e) => TwitterUser.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<UserMetaData> getMetaData(String username, {String? t}) async {
