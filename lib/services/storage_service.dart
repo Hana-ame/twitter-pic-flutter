@@ -1,14 +1,37 @@
-// 本地持久化服务：简易的内存存储模拟 shared_preferences
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:flutter/foundation.dart';
 
 class StorageService {
   static const _kFavMap = 'fav-map';
   static const _kBlockMap = 'block-map';
   static const _kTagRules = 'tag-rules';
   static const _kCustomTags = 'user_custom_tags';
+
+  static bool _loaded = false;
+  static Map<String, String> _memory = {};
+  static File? _file;
+
+  static Future<void> ensureInitialized() async {
+    if (_loaded) return;
+    final dir = await getApplicationSupportDirectory();
+    _file = File('${dir.path}/storage.json');
+    if (await _file!.exists()) {
+      try {
+        final content = await _file!.readAsString();
+        final decoded = jsonDecode(content);
+        if (decoded is Map) {
+          _memory = decoded.cast<String, String>();
+        }
+      } catch (_) {}
+    }
+    _loaded = true;
+  }
+
+  static void _flush() {
+    unawaited(_file!.writeAsString(jsonEncode(_memory)));
+  }
 
   static Map<String, dynamic> _readMap(String key) {
     final s = _read(key);
@@ -24,12 +47,11 @@ class StorageService {
     _write(key, jsonEncode(value));
   }
 
-  // In Flutter, shared_preferences or local file
-  // For simplicity, use an in-memory map backed by a JSON file
-  static final Map<String, String> _memory = {};
-
   static String _read(String key) => _memory[key] ?? '';
-  static void _write(String key, String value) { _memory[key] = value; }
+  static void _write(String key, String value) {
+    _memory[key] = value;
+    unawaited(_flush());
+  }
 
   // --- fav-map ---
   static Map<String, dynamic> getFavMap() => _readMap(_kFavMap);

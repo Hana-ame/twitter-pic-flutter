@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'services/proxy_manager.dart';
+import 'services/storage_service.dart';
 import 'screens/user_list_screen.dart';
 
 const _kBuildNum = String.fromEnvironment('BUILD_NUM', defaultValue: 'dev');
@@ -58,6 +59,7 @@ Future<String> _resolveDomainRobustly(String domain) async {
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  StorageService.ensureInitialized();
   runApp(const MyApp());
 }
 

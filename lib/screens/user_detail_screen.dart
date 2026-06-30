@@ -1,7 +1,10 @@
 // 用户详情页面：展示头像、标签、投票及媒体内容
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../api/twitter_api.dart';
 import '../models/user.dart';
@@ -93,6 +96,66 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
   }
 
+  bool _downloading = false;
+  double _downloadProgress = 0;
+
+  Future<void> _downloadAll() async {
+    if (_downloading) return;
+    setState(() {
+      _downloading = true;
+      _downloadProgress = 0;
+    });
+
+    try {
+      final items = widget.profile.timeline;
+      final archive = Archive();
+      var done = 0;
+
+      for (final item in items) {
+        if (!mounted) return;
+        try {
+          final bytes = await widget.proxy.fetchAsync(item.url);
+          if (bytes != null) {
+            final ext = item.type == 'video' || item.type == 'animated_gif' ? '.mp4' : '.jpg';
+            final base = item.url.split('/').last.split('?').first.split('.').first;
+            final name = '${_username}_$base$ext';
+            archive.addFile(ArchiveFile(name, bytes.length, bytes));
+          }
+        } catch (_) {}
+        done++;
+        setState(() => _downloadProgress = done / items.length);
+      }
+
+      if (!mounted) return;
+      final dir = await getTemporaryDirectory();
+      final zipPath = '${dir.path}/${_username}_media.zip';
+      final encoded = ZipEncoder().encode(archive);
+      if (encoded == null) throw Exception('ZIP encoding failed');
+      await File(zipPath).writeAsBytes(encoded);
+
+      if (!mounted) return;
+      if (Platform.isAndroid) {
+        await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', 'file://$zipPath', '-t', 'application/zip']);
+      } else if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', '', zipPath], runInShell: true);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', [zipPath]);
+      } else if (Platform.isLinux) {
+        await Process.run('xdg-open', [zipPath]);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已下载 ${items.length} 个文件到 $zipPath')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _downloading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final info = widget.profile.accountInfo;
@@ -144,9 +207,23 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
               ]),
               const SizedBox(height: 8),
               HorizontalButtonRow(buttons: [
-                _pill('下载 ${widget.profile.totalUrls}', Icons.download, Colors.indigo, () {}),
-                _pill('兼容下载', Icons.download_done, Colors.teal, () {}),
-                _pill('应急下载', Icons.emergency, Colors.orange, () {}),
+                if (_downloading)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, value: _downloadProgress)),
+                        const SizedBox(width: 6),
+                        Text('${(_downloadProgress * 100).toInt()}%', style: const TextStyle(fontSize: 11)),
+                      ],
+                    ),
+                  )
+                else ...[
+                  _pill('下载 ${widget.profile.totalUrls}', Icons.download, Colors.indigo, _downloadAll),
+                  _pill('兼容下载', Icons.download_done, Colors.teal, _downloadAll),
+                  _pill('应急下载', Icons.emergency, Colors.orange, _downloadAll),
+                ],
               ]),
               const SizedBox(height: 8),
               HorizontalButtonRow(
