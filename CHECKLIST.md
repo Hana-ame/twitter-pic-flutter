@@ -10,7 +10,7 @@
 - [x] 使用 native wintools DLL/libechproxy 实现 ECH
 - [x] 平台自适应：Windows → echproxy.dll / Linux → .so / macOS → .dylib
 - [x] 支持自定义 DoH URL / Host / Bootstrap IP
-- [ ] ★ 升级 ffi 到 2.x 后重写 `using`/`Arena`/`Utf8` → 目前锁定 `ffi: 1.2.0`
+- [x] ffi 2.2.0 兼容（`using`/`Arena`/`Utf8` 在 2.x 中仍可用）
 - [ ] 迁移到纯 Dart ECH（等待 Flutter 内置支持）
 
 ## 代码结构
@@ -26,7 +26,7 @@
 | Release | `create_release` | ✅ 通过 |
 
 ## 依赖管理
-- `ffi: 1.2.0` — 锁定旧版 API，不可擅自升级
+- `ffi: ^2.2.0` — `using`/`Arena`/`Utf8` 在 2.x 中仍可用，无需特殊处理
 - `open_filex: ^4.5.0` — 仅 Android，Windows 改用 `url_launcher`
 - `url_launcher: ^6.3.0` — 跨平台文件打开
 - `path_provider: ^2.1.5` — 本地路径获取

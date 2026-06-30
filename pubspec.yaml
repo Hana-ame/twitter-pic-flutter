@@ -11,7 +11,7 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.6
-  ffi: 1.2.0          # 锁定 1.x 以兼容 old API（using/Arena/Utf8），升级需重写 proxy_manager.dart
+  ffi: ^2.2.0          # using/Arena/Utf8 在 2.x 中仍可用，无需更改代码
   open_filex: ^4.5.0
   path_provider: ^2.1.5
   url_launcher: ^6.3.0

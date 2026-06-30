@@ -1,6 +1,5 @@
 // ECH 代理管理：加载 native 库、初始化、获取资源并缓存
 // ⚠️ 此文件实现核心 ECH 代理功能，是 app 联网的基础，不可删除。
-// 若升级 ffi 到 v2.x，需重写 using/Arena/Utf8 代用新 API（参见 dill docs）。
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
