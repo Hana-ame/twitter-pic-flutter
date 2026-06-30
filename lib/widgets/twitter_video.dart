@@ -3,8 +3,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../services/proxy_manager.dart';
 
@@ -74,7 +74,7 @@ class _TwitterVideoState extends State<TwitterVideo> {
   Future<void> _play() async {
     if (_filePath == null) return;
     try {
-      await OpenFilex.open(_filePath!);
+      await launchUrl(Uri.file(_filePath!));
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());

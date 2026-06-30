@@ -19,30 +19,6 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Android NDK
-        run: |
-          NDK_VERSION="r27"
-          curl -L -o /tmp/ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
-          unzip -q /tmp/ndk.zip -d /tmp/
-          echo "/tmp/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-
-      - name: Build ECH shared library (arm64)
-        run: |
-          git clone --depth=1 https://github.com/Hana-ame/wintools.git /tmp/wintools
-          cd /tmp/wintools/cmd/ech-shared
-          CGO_ENABLED=1 \
-          GOOS=android \
-          GOARCH=arm64 \
-          CC=aarch64-linux-android21-clang \
-          go build -buildmode=c-shared -ldflags="-s -w" -o /tmp/libechproxy.so
-          /tmp/android-ndk-r27/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy --strip-unneeded /tmp/libechproxy.so
-          ls -lh /tmp/libechproxy.so
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -65,11 +41,6 @@ jobs:
             sed -i 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android">|<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET"/>|' "$MANIFEST"
           fi
           sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
-
-      - name: Place ECH shared library
-        run: |
-          mkdir -p /tmp/build_project/android/app/src/main/jniLibs/arm64-v8a
-          cp /tmp/libechproxy.so /tmp/build_project/android/app/src/main/jniLibs/arm64-v8a/libechproxy.so
 
       - name: Generate launcher icons
         run: |
@@ -132,17 +103,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-
-      - name: Build ECH shared library (windows)
-        run: |
-          git clone --depth=1 https://github.com/Hana-ame/wintools.git C:\tmp\wintools
-          cd C:\tmp\wintools\cmd\ech-shared
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy.dll
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -163,7 +123,6 @@ jobs:
           cd C:\tmp\build_project
           flutter pub get
           flutter build windows --release
-          Copy-Item -Force -Path C:\tmp\echproxy.dll -Destination C:\tmp\build_project\build\windows\runner\Release\echproxy.dll
 
       - name: Package Windows Release
         run: |
