@@ -94,7 +94,7 @@ class _MyAppState extends State<MyApp> {
         }
       }
 
-      _proxy.init(dohUrl: _kDohUrl, dohHost: _kDohHost, dohBootstrapIP: ip);
+        await _proxy.init(dohUrl: _kDohUrl, dohHost: _kDohHost, dohBootstrapIP: ip);
       await _proxy.waitForInit();
       _logs = _proxy.getLogs();
       if (!mounted) return;

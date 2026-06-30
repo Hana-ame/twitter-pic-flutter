@@ -1,5 +1,8 @@
 // ECH 代理管理：加载 native 库、初始化、获取资源并缓存
+// ECH 代理管理：加载 native 库、初始化、获取资源并缓存
 import 'dart:convert';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import 'dart:ffi';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -39,6 +42,7 @@ typedef _FreeCStringNative = Void Function(Pointer<Utf8>);
 typedef _FreeCStringDart = void Function(Pointer<Utf8>);
 
 class ProxyManager {
+  // Native library handling (platform‑specific) and lazy download on first use
   DynamicLibrary? _lib;
   _EchStrDart? _setDohURL;
   _VoidDart? _initFfi;
@@ -53,8 +57,46 @@ class ProxyManager {
 
   bool get isInitialized => _initialized;
 
-  void _load() {
-    _lib = DynamicLibrary.open('libechproxy.so');
+  Future<void> _load() async {
+    // Determine platform‑specific library name
+    String libName;
+    String downloadUrl;
+    if (Platform.isWindows) {
+      libName = 'echproxy.dll';
+      // TODO: replace with actual URL for Windows build
+      downloadUrl = 'https://example.com/echproxy/windows/echproxy.dll';
+    } else if (Platform.isLinux) {
+      libName = 'libechproxy.so';
+      downloadUrl = 'https://example.com/echproxy/linux/libechproxy.so';
+    } else if (Platform.isMacOS) {
+      libName = 'libechproxy.dylib';
+      downloadUrl = 'https://example.com/echproxy/macos/libechproxy.dylib';
+    } else {
+      libName = 'libechproxy.so';
+      downloadUrl = 'https://example.com/echproxy/default/libechproxy.so';
+    }
+
+    // Try to load from bundled assets (relative to executable)
+    try {
+      _lib = DynamicLibrary.open(libName);
+    } catch (_) {
+      // If not present, download to app support directory and load from there
+      final dir = await getApplicationSupportDirectory();
+      final libPath = '\${dir.path}/$libName';
+      final libFile = File(libPath);
+      if (!await libFile.exists()) {
+        // download native library
+        final client = HttpClient();
+        final request = await client.getUrl(Uri.parse(downloadUrl));
+        final response = await request.close();
+        if (response.statusCode != 200) {
+          throw Exception('Failed to download native lib: HTTP \${response.statusCode}');
+        }
+        final bytes = await response.fold<Uint8List>(Uint8List(0), (previous, element) => Uint8List.fromList(previous + element));
+        await libFile.writeAsBytes(bytes);
+      }
+      _lib = DynamicLibrary.open(libPath);
+    }
     _setDohURL =
         _lib!.lookupFunction<_EchStrNative, _EchStrDart>('ECHSetDohURL');
     _initFfi = _lib!.lookupFunction<_VoidNative, _VoidDart>('ECHInit');
@@ -79,8 +121,8 @@ class ProxyManager {
   }
 
   // 初始化 ECH 代理，支持自定义 DoH 配置
-  void init({String? dohUrl, String? dohHost, String? dohBootstrapIP}) {
-    _load();
+  Future<void> init({String? dohUrl, String? dohHost, String? dohBootstrapIP}) async {
+    await _load();
     if (dohUrl != null) {
       using((Arena arena) {
         _setDohURL!(dohUrl.toNativeUtf8(allocator: arena));
@@ -173,8 +215,9 @@ class ProxyManager {
     const maxRetries = 3;
     for (var attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        final bytes = await Isolate.run(() {
-          final proxy = ProxyManager().._load();
+        final bytes = await Isolate.run(() async {
+          final proxy = ProxyManager();
+          await proxy._load();
           return proxy.fetch(url);
         });
         if (bytes != null) _imageCache[url] = bytes;
