@@ -185,9 +185,20 @@ jobs:
           dart run flutter_launcher_icons
           Pop-Location
 
-          # if no runner.ico was generated, create one with proper BMP data inside ICO
+          # find any .ico that flutter_launcher_icons generated and copy to runner.ico
+          $icoCandidates = Get-ChildItem -Path "$projDir\windows" -Filter *.ico -Recurse -ErrorAction SilentlyContinue
+          if ($icoCandidates) {
+            $icoCandidates | ForEach-Object { Write-Host "found ico: $($_.FullName)" }
+            Copy-Item -Force $icoCandidates[0].FullName "$projDir\windows\runner\runner.ico"
+          }
+          # if still no runner.ico, fall back to Python/pillow
           if (-not (Test-Path "$projDir\windows\runner\runner.ico")) {
-            Write-Host "generating runner.ico via System.Drawing (BMP inside ICO)"
+            Write-Host "no .ico found — trying Python pillow"
+            python -c "from PIL import Image; img = Image.open(r'$projDir\assets\icon.png').resize((256,256)); img.save(r'$projDir\windows\runner\runner.ico', format='ICO', sizes=[(256,256)])" 2>$null
+          }
+          # last resort: create ICO manually with correct ICO BMP format
+          if (-not (Test-Path "$projDir\windows\runner\runner.ico")) {
+            Write-Host "generating runner.ico manually (BMP inside ICO)"
             Add-Type -AssemblyName System.Drawing | Out-Null
             $icoDir = "$projDir\windows\runner"
             if (-not (Test-Path $icoDir)) { New-Item -ItemType Directory -Path $icoDir -Force | Out-Null }
@@ -199,8 +210,16 @@ jobs:
             $ms = New-Object System.IO.MemoryStream
             $bm.Save($ms, [System.Drawing.Imaging.ImageFormat]::Bmp)
             $raw = $ms.ToArray(); $ms.Dispose(); $bm.Dispose(); $src.Dispose()
-            # skip BITMAPFILEHEADER (14 bytes), keep BITMAPINFOHEADER + pixels + AND mask
+            $hdrSize = [BitConverter]::ToInt32($raw, 14)  # biSize
+            Write-Host "BMP biSize=$hdrSize actualLen=$($raw.Length)"
             $bmpData = $raw[14..($raw.Length-1)]
+            # ICO: dwHeight must be 2x (XOR mask + AND mask)
+            $bmpData[8] = 0  # override biHeight low byte to 0 (will set to 0 for 256)
+            $bmpData[9] = 1  # override biHeight high byte to 1 → 256
+            $bmpData[10] = 0; $bmpData[11] = 0  # not needed, just offset adjustment
+            # Actually the height field is at bytes 22..25 from file start = 8..11 in BMP data
+            # 256 in little-endian: 00 01 00 00. For ICO double: 00 02 00 00 = 512
+            $bmpData[8] = 0; $bmpData[9] = 2; $bmpData[10] = 0; $bmpData[11] = 0
             $fs = [System.IO.File]::Open("$icoDir\runner.ico", [System.IO.FileMode]::Create)
             $w = New-Object System.IO.BinaryWriter($fs)
             $w.Write([UInt16]0); $w.Write([UInt16]1); $w.Write([UInt16]1)
