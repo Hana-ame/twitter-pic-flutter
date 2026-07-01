@@ -181,33 +181,29 @@ jobs:
           dart run flutter_launcher_icons
           # if no runner.ico was generated, attempt fallback via npx png-to-ico
           if (-not (Test-Path "windows/runner/runner.ico")) {
-            Write-Host "generating runner.ico via npx png-to-ico"
-            npx -y png-to-ico assets/icon.png > windows/runner/runner.ico 2>$null
-            if (-not (Test-Path "windows/runner/runner.ico")) {
-              Write-Host "npx fallback also failed — trying ConvertFrom-SourceTable"
-              Add-Type -AssemblyName System.Drawing | Out-Null
-              $icoDir = "windows/runner"
-              if (-not (Test-Path $icoDir)) { New-Item -ItemType Directory -Path $icoDir -Force | Out-Null }
-              $img = [System.Drawing.Image]::FromFile("$pwd/assets/icon.png")
-              $bmp = New-Object System.Drawing.Bitmap 256,256
-              $g = [System.Drawing.Graphics]::FromImage($bmp)
-              $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-              $g.DrawImage($img, 0, 0, 256, 256)
-              $g.Dispose()
-              $ms = New-Object System.IO.MemoryStream
-              $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-              $pngBytes = $ms.ToArray()
-              $ms.Dispose()
-              $icoPath = "$icoDir/runner.ico"
-              $fs = [System.IO.File]::Open($icoPath, [System.IO.FileMode]::Create)
-              $w = New-Object System.IO.BinaryWriter($fs)
-              $w.Write([UInt16]0); $w.Write([UInt16]1); $w.Write([UInt16]1)
-              $w.Write([Byte]0); $w.Write([Byte]0); $w.Write([Byte]0); $w.Write([Byte]0)
-              $w.Write([UInt16]1); $w.Write([UInt16]32)
-              $w.Write([UInt32]$pngBytes.Length); $w.Write([UInt32]22)
-              $w.Write($pngBytes)
-              $w.Dispose(); $fs.Dispose(); $bmp.Dispose(); $img.Dispose()
-            }
+            Write-Host "generating runner.ico via System.Drawing (BMP inside ICO)"
+            Add-Type -AssemblyName System.Drawing | Out-Null
+            $icoDir = "windows/runner"
+            if (-not (Test-Path $icoDir)) { New-Item -ItemType Directory -Path $icoDir -Force | Out-Null }
+            $src = [System.Drawing.Image]::FromFile("$pwd/assets/icon.png")
+            $bm = New-Object System.Drawing.Bitmap 256,256
+            $g = [System.Drawing.Graphics]::FromImage($bm)
+            $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $g.DrawImage($src, 0, 0, 256, 256); $g.Dispose()
+            $ms = New-Object System.IO.MemoryStream
+            $bm.Save($ms, [System.Drawing.Imaging.ImageFormat]::Bmp)
+            $raw = $ms.ToArray(); $ms.Dispose(); $bm.Dispose(); $src.Dispose()
+            # strip 14-byte BITMAPFILEHEADER, keep BITMAPINFOHEADER + pixels
+            $off = [BitConverter]::ToUInt32($raw, 10)
+            $bmpData = $raw[$off..($raw.Length-1)]
+            $fs = [System.IO.File]::Open("$icoDir/runner.ico", [System.IO.FileMode]::Create)
+            $w = New-Object System.IO.BinaryWriter($fs)
+            $w.Write([UInt16]0); $w.Write([UInt16]1); $w.Write([UInt16]1)
+            $w.Write([Byte]0); $w.Write([Byte]0); $w.Write([Byte]0); $w.Write([Byte]0)
+            $w.Write([UInt16]1); $w.Write([UInt16]32)
+            $w.Write([UInt32]$bmpData.Length); $w.Write([UInt32]22)
+            $w.Write($bmpData)
+            $w.Dispose(); $fs.Dispose()
           }
           # update Runner.rc to reference runner.ico
           $rc = "windows/runner/Runner.rc"
