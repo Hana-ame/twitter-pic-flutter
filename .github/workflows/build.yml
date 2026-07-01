@@ -171,7 +171,56 @@ jobs:
         run: |
           cd C:\tmp\build_project
           flutter pub get
+
+          # patch window title in main.cpp
+          $mainCpp = "windows/runner/main.cpp"
+          $ver = (Select-String '^version:' pubspec.yaml).Line -replace 'version: *'
+          (Get-Content $mainCpp -Raw) -replace 'window\.SetTitle\(L"[^"]*"\)', "window.SetTitle(L""Twitter Pic v$ver"")" | Set-Content $mainCpp
+
+          # generate icons and verify
           dart run flutter_launcher_icons
+          if (-not (Test-Path "windows/runner/runner.ico")) {
+            Write-Host "flutter_launcher_icons did not generate runner.ico — creating from assets/icon.png"
+            # use PowerShell to create a simple .ico (256x256 PNG wrapped in ICO container)
+            Add-Type -AssemblyName System.Drawing
+            $img = [System.Drawing.Image]::FromFile("assets/icon.png")
+            $bmp = New-Object System.Drawing.Bitmap 256,256
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $g.DrawImage($img, 0, 0, 256, 256)
+            $g.Dispose()
+            $ms = New-Object System.IO.MemoryStream
+            $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            $pngBytes = $ms.ToArray()
+            $ms.Dispose()
+            $icoPath = "windows/runner/runner.ico"
+            $fs = [System.IO.File]::Open($icoPath, [System.IO.FileMode]::Create)
+            $w = New-Object System.IO.BinaryWriter($fs)
+            $w.Write([UInt16]0)       # reserved
+            $w.Write([UInt16]1)       # ICO type
+            $w.Write([UInt16]1)       # 1 image
+            $w.Write([Byte]0)         # width (0=256)
+            $w.Write([Byte]0)         # height (0=256)
+            $w.Write([Byte]0)         # palette colors
+            $w.Write([Byte]0)         # reserved
+            $w.Write([UInt16]1)       # color planes
+            $w.Write([UInt16]32)      # bits per pixel
+            $w.Write([UInt32]$pngBytes.Length)
+            $w.Write([UInt32]22)      # offset = header size
+            $w.Write($pngBytes)
+            $w.Dispose()
+            $fs.Dispose()
+            $bmp.Dispose()
+            $img.Dispose()
+            # also ensure Runner.rc references runner.ico
+            $rc = "windows/runner/Runner.rc"
+            $rcContent = Get-Content $rc -Raw
+            if ($rcContent -notmatch 'runner\.ico') {
+              $rcContent = $rcContent -replace '"app_icon\.ico"', '"runner.ico"'
+              Set-Content $rc -Value $rcContent
+            }
+          }
+
           $BUILD_NUM = (Select-String '^version:' pubspec.yaml).Line -replace 'version: *'
           flutter build windows --release --dart-define=BUILD_NUM="$BUILD_NUM"
           Copy-Item -Force -Path C:\tmp\echproxy.dll -Destination C:\tmp\build_project\build\windows\x64\runner\Release\echproxy.dll
