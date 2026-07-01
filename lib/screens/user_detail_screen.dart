@@ -1,5 +1,6 @@
 // 用户详情页面：展示头像、标签、投票及媒体内容
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -132,7 +133,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
       final allBytes = await Isolate.run<List<Uint8List?>>(() async {
         final proxy = ProxyManager();
-        await proxy._load();
+        await proxy.load();
         return urls.map((u) {
           try {
             return proxy.fetch(u);

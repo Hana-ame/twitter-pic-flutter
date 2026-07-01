@@ -58,7 +58,7 @@ class ProxyManager {
 
   bool get isInitialized => _initialized;
 
-  Future<void> _load() async {
+  Future<void> load() async {
     // Determine platform‑specific library name
     String libName;
     String downloadUrl;
@@ -123,7 +123,7 @@ class ProxyManager {
 
   // 初始化 ECH 代理，支持自定义 DoH 配置
   Future<void> init({String? dohUrl, String? dohHost, String? dohBootstrapIP}) async {
-    await _load();
+    await load();
     if (dohUrl != null) {
       using((Arena arena) {
         _setDohURL!(dohUrl.toNativeUtf8(allocator: arena));
@@ -218,7 +218,7 @@ class ProxyManager {
       try {
         final bytes = await Isolate.run(() async {
           final proxy = ProxyManager();
-          await proxy._load();
+          await proxy.load();
           return proxy.fetch(url);
         });
         if (bytes != null) _imageCache[url] = bytes;
