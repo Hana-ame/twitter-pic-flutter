@@ -199,8 +199,8 @@ jobs:
             $ms = New-Object System.IO.MemoryStream
             $bm.Save($ms, [System.Drawing.Imaging.ImageFormat]::Bmp)
             $raw = $ms.ToArray(); $ms.Dispose(); $bm.Dispose(); $src.Dispose()
-            $off = [BitConverter]::ToUInt32($raw, 10)
-            $bmpData = $raw[$off..($raw.Length-1)]
+            # skip BITMAPFILEHEADER (14 bytes), keep BITMAPINFOHEADER + pixels + AND mask
+            $bmpData = $raw[14..($raw.Length-1)]
             $fs = [System.IO.File]::Open("$icoDir\runner.ico", [System.IO.FileMode]::Create)
             $w = New-Object System.IO.BinaryWriter($fs)
             $w.Write([UInt16]0); $w.Write([UInt16]1); $w.Write([UInt16]1)
