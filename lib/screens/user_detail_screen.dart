@@ -96,24 +96,28 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   }
 
   bool _downloading = false;
-  double _downloadProgress = 0;
-
   Future<void> _downloadAll() async {
     if (_downloading) return;
-    setState(() {
-      _downloading = true;
-      _downloadProgress = 0;
-    });
+    final items = widget.profile.timeline;
+    if (items.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('没有可下载的内容'),
+          backgroundColor: Colors.red,
+        ));
+      }
+      return;
+    }
+
+    setState(() => _downloading = true);
 
     try {
-      final items = widget.profile.timeline;
-      if (items.isEmpty) throw Exception('没有可下载的内容');
-
       String baseDir;
       if (Platform.isAndroid) {
         baseDir = '/storage/emulated/0/Download';
       } else if (Platform.isWindows) {
-        final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
+        final home =
+            Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
         baseDir = '$home\\Downloads';
       } else {
         final dir = await getApplicationDocumentsDirectory();
@@ -123,23 +127,34 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final dlDir = Directory('$baseDir/$_username');
       if (!await dlDir.exists()) await dlDir.create(recursive: true);
 
-      var done = 0;
-      var ok = 0;
+      final urls = items.map((e) => e.url).toList();
+      final types = items.map((e) => e.type).toList();
 
-      for (final item in items) {
-        if (!mounted) return;
-        try {
-          final bytes = await widget.proxy.fetchAsync(item.url);
-          if (bytes != null) {
-            final ext = item.type == 'video' || item.type == 'animated_gif' ? '.mp4' : '.jpg';
-            final base = item.url.split('/').last.split('?').first.split('.').first;
-            final file = File('${dlDir.path}/${_username}_$base$ext');
-            await file.writeAsBytes(bytes);
-            ok++;
+      final allBytes = await Isolate.run<List<Uint8List?>>(() async {
+        final proxy = ProxyManager();
+        await proxy._load();
+        return urls.map((u) {
+          try {
+            return proxy.fetch(u);
+          } catch (_) {
+            return null;
           }
-        } catch (_) {}
-        done++;
-        setState(() => _downloadProgress = done / items.length);
+        }).toList();
+      });
+
+      var ok = 0;
+      for (var i = 0; i < items.length; i++) {
+        if (!mounted) return;
+        final bytes = allBytes[i];
+        if (bytes != null) {
+          final ext =
+              types[i] == 'video' || types[i] == 'animated_gif' ? '.mp4' : '.jpg';
+          final base =
+              urls[i].split('/').last.split('?').first.split('.').first;
+          final file = File('${dlDir.path}/${_username}_$base$ext');
+          await file.writeAsBytes(bytes);
+          ok++;
+        }
       }
 
       if (!mounted) return;
@@ -150,11 +165,160 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已下载 $ok/$done 个文件到 ${dlDir.path}')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('下载完成，成功 $ok/${items.length} 个文件'),
+          backgroundColor: Colors.green,
+        ));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('下载失败: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _downloading = false);
+    }
+  }
+
+  // fallback: per-item Isolate.run (keeps UI responsive)
+  Future<void> _downloadAllLegacy() async {
+    if (_downloading) return;
+    final items = widget.profile.timeline;
+    if (items.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('没有可下载的内容'),
+          backgroundColor: Colors.red,
+        ));
+      }
+      return;
+    }
+    setState(() => _downloading = true);
+    try {
+      String baseDir;
+      if (Platform.isAndroid) {
+        baseDir = '/storage/emulated/0/Download';
+      } else if (Platform.isWindows) {
+        final home =
+            Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
+        baseDir = '$home\\Downloads';
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        baseDir = dir.path;
+      }
+      final dlDir = Directory('$baseDir/$_username');
+      if (!await dlDir.exists()) await dlDir.create(recursive: true);
+
+      var ok = 0;
+      for (var i = 0; i < items.length; i++) {
+        if (!mounted) return;
+        try {
+          final bytes = await widget.proxy.fetchAsync(items[i].url);
+          if (bytes != null) {
+            final ext = items[i].type == 'video' || items[i].type == 'animated_gif'
+                ? '.mp4'
+                : '.jpg';
+            final base =
+                items[i].url.split('/').last.split('?').first.split('.').first;
+            final file = File('${dlDir.path}/${_username}_$base$ext');
+            await file.writeAsBytes(bytes);
+            ok++;
+          }
+        } catch (_) {}
+      }
+
+      if (!mounted) return;
+      if (Platform.isAndroid) {
+        await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', dlDir.path]);
+      } else if (Platform.isWindows) {
+        await Process.run('explorer', [dlDir.path]);
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('下载完成，成功 $ok/${items.length} 个文件'),
+          backgroundColor: Colors.green,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('下载失败: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _downloading = false);
+    }
+  }
+
+  // emergency: use widget.proxy.fetch directly (sync, freezes UI briefly per item)
+  Future<void> _downloadEmergency() async {
+    if (_downloading) return;
+    final items = widget.profile.timeline;
+    if (items.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('没有可下载的内容'),
+          backgroundColor: Colors.red,
+        ));
+      }
+      return;
+    }
+    setState(() => _downloading = true);
+    try {
+      String baseDir;
+      if (Platform.isAndroid) {
+        baseDir = '/storage/emulated/0/Download';
+      } else if (Platform.isWindows) {
+        final home =
+            Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
+        baseDir = '$home\\Downloads';
+      } else {
+        final dir = await getApplicationDocumentsDirectory();
+        baseDir = dir.path;
+      }
+      final dlDir = Directory('$baseDir/$_username');
+      if (!await dlDir.exists()) await dlDir.create(recursive: true);
+
+      var ok = 0;
+      for (final item in items) {
+        if (!mounted) return;
+        try {
+          final bytes = widget.proxy.fetch(item.url);
+          if (bytes != null) {
+            final ext =
+                item.type == 'video' || item.type == 'animated_gif' ? '.mp4' : '.jpg';
+            final base =
+                item.url.split('/').last.split('?').first.split('.').first;
+            final file = File('${dlDir.path}/${_username}_$base$ext');
+            await file.writeAsBytes(bytes);
+            ok++;
+          }
+        } catch (_) {}
+        // yield to event loop for UI updates
+        await Future.delayed(Duration.zero);
+      }
+
+      if (!mounted) return;
+      if (Platform.isAndroid) {
+        await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', dlDir.path]);
+      } else if (Platform.isWindows) {
+        await Process.run('explorer', [dlDir.path]);
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('下载完成，成功 $ok/${items.length} 个文件'),
+          backgroundColor: Colors.green,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('下载失败: $e'),
+          backgroundColor: Colors.red,
+        ));
       }
     } finally {
       if (mounted) setState(() => _downloading = false);
@@ -218,16 +382,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, value: _downloadProgress)),
-                        const SizedBox(width: 6),
-                        Text('${(_downloadProgress * 100).toInt()}%', style: const TextStyle(fontSize: 11)),
+                        SizedBox(width: 14, height: 14, child: const CircularProgressIndicator(strokeWidth: 2)),
                       ],
                     ),
                   )
                 else ...[
                   _pill('下载 ${widget.profile.totalUrls}', Icons.download, Colors.indigo, _downloadAll),
-                  _pill('兼容下载', Icons.download_done, Colors.teal, _downloadAll),
-                  _pill('应急下载', Icons.emergency, Colors.orange, _downloadAll),
+                  _pill('兼容下载', Icons.download_done, Colors.teal, _downloadAllLegacy),
+                  _pill('应急下载', Icons.emergency, Colors.orange, _downloadEmergency),
                 ],
               ]),
               const SizedBox(height: 8),
