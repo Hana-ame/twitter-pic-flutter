@@ -158,12 +158,22 @@ jobs:
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "C:\tmp\build_project\assets"
            Copy-Item -Recurse -Force "$env:GITHUB_WORKSPACE\assets" "C:\tmp\build_project\assets"
 
+      - name: Set unique version
+        shell: powershell
+        run: |
+          $content = Get-Content C:\tmp\build_project\pubspec.yaml -Raw
+          $version = [regex]::Match($content, '^version: *([^+]+)').Groups[1].Value
+          $rn = "${{ github.run_number }}"
+          $content = $content -replace '^version:.*', "version: $version+$rn"
+          Set-Content C:\tmp\build_project\pubspec.yaml -Value $content
+
       - name: Build Windows Release
         run: |
           cd C:\tmp\build_project
           flutter pub get
           dart run flutter_launcher_icons
-          flutter build windows --release
+          $BUILD_NUM = (Select-String '^version:' pubspec.yaml).Line -replace 'version: *'
+          flutter build windows --release --dart-define=BUILD_NUM="$BUILD_NUM"
           Copy-Item -Force -Path C:\tmp\echproxy.dll -Destination C:\tmp\build_project\build\windows\x64\runner\Release\echproxy.dll
 
       - name: Package Windows Release

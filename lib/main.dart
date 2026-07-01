@@ -111,14 +111,14 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Twitter Pic $_kBuildNum',
+      title: 'Twitter Pic v$_kBuildNum',
       theme: ThemeData(
         colorSchemeSeed: Colors.blue,
         useMaterial3: true,
       ),
       home: Scaffold(
         appBar: AppBar(
-          title: Text('Twitter Pic $_kBuildNum'),
+          title: Text('Twitter Pic v$_kBuildNum'),
           centerTitle: true,
           actions: [
             IconButton(
