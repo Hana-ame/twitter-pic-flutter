@@ -169,23 +169,29 @@ jobs:
 
       - name: Build Windows Release
         run: |
-          cd C:\tmp\build_project
-          flutter pub get
+          $projDir = "C:\tmp\build_project"
 
-          # patch window title in main.cpp
-          $mainCpp = "windows/runner/main.cpp"
-          $ver = (Select-String '^version:' pubspec.yaml).Line -replace 'version: *'
+          Push-Location $projDir
+          flutter pub get
+          Pop-Location
+
+          # patch window title in main.cpp (use absolute paths everywhere)
+          $mainCpp = "$projDir\windows\runner\main.cpp"
+          $ver = (Select-String '^version:' "$projDir\pubspec.yaml").Line -replace 'version: *'
           (Get-Content $mainCpp -Raw) -replace 'window\.SetTitle\(L"[^"]*"\)', "window.SetTitle(L""Twitter Pic v$ver"")" | Set-Content $mainCpp
 
           # try flutter_launcher_icons first
+          Push-Location $projDir
           dart run flutter_launcher_icons
-          # if no runner.ico was generated, attempt fallback via npx png-to-ico
-          if (-not (Test-Path "windows/runner/runner.ico")) {
+          Pop-Location
+
+          # if no runner.ico was generated, create one with proper BMP data inside ICO
+          if (-not (Test-Path "$projDir\windows\runner\runner.ico")) {
             Write-Host "generating runner.ico via System.Drawing (BMP inside ICO)"
             Add-Type -AssemblyName System.Drawing | Out-Null
-            $icoDir = "windows/runner"
+            $icoDir = "$projDir\windows\runner"
             if (-not (Test-Path $icoDir)) { New-Item -ItemType Directory -Path $icoDir -Force | Out-Null }
-            $src = [System.Drawing.Image]::FromFile("$pwd/assets/icon.png")
+            $src = [System.Drawing.Image]::FromFile("$projDir\assets\icon.png")
             $bm = New-Object System.Drawing.Bitmap 256,256
             $g = [System.Drawing.Graphics]::FromImage($bm)
             $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
@@ -193,10 +199,9 @@ jobs:
             $ms = New-Object System.IO.MemoryStream
             $bm.Save($ms, [System.Drawing.Imaging.ImageFormat]::Bmp)
             $raw = $ms.ToArray(); $ms.Dispose(); $bm.Dispose(); $src.Dispose()
-            # strip 14-byte BITMAPFILEHEADER, keep BITMAPINFOHEADER + pixels
             $off = [BitConverter]::ToUInt32($raw, 10)
             $bmpData = $raw[$off..($raw.Length-1)]
-            $fs = [System.IO.File]::Open("$icoDir/runner.ico", [System.IO.FileMode]::Create)
+            $fs = [System.IO.File]::Open("$icoDir\runner.ico", [System.IO.FileMode]::Create)
             $w = New-Object System.IO.BinaryWriter($fs)
             $w.Write([UInt16]0); $w.Write([UInt16]1); $w.Write([UInt16]1)
             $w.Write([Byte]0); $w.Write([Byte]0); $w.Write([Byte]0); $w.Write([Byte]0)
@@ -205,22 +210,24 @@ jobs:
             $w.Write($bmpData)
             $w.Dispose(); $fs.Dispose()
           }
+
           # update Runner.rc to reference runner.ico
-          $rc = "windows/runner/Runner.rc"
+          $rc = "$projDir\windows\runner\Runner.rc"
           $rcContent = Get-Content $rc -Raw
           if ($rcContent -notmatch 'runner\.ico') {
             $rcContent = $rcContent -replace '"([^"]+\.ico)"', '"runner.ico"'
             Set-Content $rc -Value $rcContent
           }
 
-          $BUILD_NUM = (Select-String '^version:' pubspec.yaml).Line -replace 'version: *'
+          $BUILD_NUM = (Select-String '^version:' "$projDir\pubspec.yaml").Line -replace 'version: *'
+          Push-Location $projDir
           flutter build windows --release --dart-define=BUILD_NUM="$BUILD_NUM"
-          Copy-Item -Force -Path C:\tmp\echproxy.dll -Destination C:\tmp\build_project\build\windows\x64\runner\Release\echproxy.dll
+          Pop-Location
+          Copy-Item -Force -Path C:\tmp\echproxy.dll -Destination "$projDir\build\windows\x64\runner\Release\echproxy.dll"
 
       - name: Package Windows Release
         run: |
-          cd C:\tmp\build_project\build\windows\x64\runner\Release
-          Compress-Archive -Path . -DestinationPath C:\tmp\twitter_pic_flutter_windows_amd64.zip
+          Compress-Archive -Path "C:\tmp\build_project\build\windows\x64\runner\Release\*" -DestinationPath C:\tmp\twitter_pic_flutter_windows_amd64.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
