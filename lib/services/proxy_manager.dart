@@ -142,8 +142,8 @@ class ProxyManager {
   }
 
   // 等待 ECH 初始化完成，超时或错误则抛异常
-  Future<void> waitForInit() async {
-    for (var i = 0; i < 150; i++) {
+  Future<void> waitForInit({int timeoutSecs = 120}) async {
+    for (var i = 0; i < timeoutSecs * 5; i++) {
       final status = _ready!();
       if (status == 1) {
         _initialized = true;
@@ -157,7 +157,7 @@ class ProxyManager {
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
-    throw Exception('ECH init timeout after 30s');
+    throw Exception('ECH init timeout after ${timeoutSecs}s');
   }
 
   List<String> getLogs() {
@@ -210,7 +210,7 @@ class ProxyManager {
     return bytes;
   }
 
-  Future<Uint8List?> fetchAsync(String url) async {
+  Future<Uint8List?> fetchAsync(String url, {int timeoutSecs = 300}) async {
     final cached = _imageCache[url];
     if (cached != null) return cached;
     const maxRetries = 3;
@@ -220,12 +220,12 @@ class ProxyManager {
           final proxy = ProxyManager();
           await proxy.load();
           return proxy.fetch(url);
-        });
+        }).timeout(Duration(seconds: timeoutSecs));
         if (bytes != null) _imageCache[url] = bytes;
         return bytes;
       } catch (e) {
         if (attempt == maxRetries - 1) rethrow;
-        await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
+        await Future.delayed(Duration(seconds: 5 * (attempt + 1)));
       }
     }
     return null;
