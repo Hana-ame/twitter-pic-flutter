@@ -4,19 +4,12 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart';
 
 import '../services/proxy_manager.dart';
 
 Future<void> _openWithSystemPlayer(String path) async {
-  if (Platform.isAndroid) {
-    await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', 'file://$path', '-t', 'video/mp4']);
-  } else if (Platform.isWindows) {
-    await Process.run('cmd', ['/c', 'start', '', path], runInShell: true);
-  } else if (Platform.isMacOS) {
-    await Process.run('open', [path]);
-  } else if (Platform.isLinux) {
-    await Process.run('xdg-open', [path]);
-  }
+  await OpenFilex.open(path);
 }
 
 class TwitterVideo extends StatefulWidget {

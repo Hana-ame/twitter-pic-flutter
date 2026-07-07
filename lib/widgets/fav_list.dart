@@ -1,5 +1,6 @@
 // 收藏列表组件，展示已收藏的用户并提供导入导出功能
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/storage_service.dart';
 import '../api/twitter_api.dart';
@@ -101,8 +102,7 @@ class _FavListState extends State<FavList> {
   }
 
   void _copyToClipboard(String text) {
-    // In real app, use Clipboard.setData
-    debugPrint('Export: $text');
+    Clipboard.setData(ClipboardData(text: text));
   }
 }
 
