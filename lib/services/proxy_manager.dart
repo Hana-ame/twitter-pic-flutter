@@ -216,11 +216,8 @@ class ProxyManager {
     const maxRetries = 3;
     for (var attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        final bytes = await Isolate.run(() async {
-          final proxy = ProxyManager();
-          await proxy.load();
-          return proxy.fetch(url);
-        }).timeout(Duration(seconds: timeoutSecs));
+        final bytes = await Isolate.run(() => _fetchInIsolate(url))
+            .timeout(Duration(seconds: timeoutSecs));
         if (bytes != null) _imageCache[url] = bytes;
         return bytes;
       } catch (e) {
@@ -229,6 +226,56 @@ class ProxyManager {
       }
     }
     return null;
+  }
+
+  // Runs inside a worker isolate. Re-opens the process-global native library
+  // so FFI calls run off the UI thread. The ECH state initialized on the main
+  // isolate lives in the shared native module, so no re-init is needed here.
+  // We must NOT call getApplicationSupportDirectory() (platform channels are
+  // unavailable in a bare isolate), so only the bundled / exe-relative DLL
+  // path is used — which is how the released Windows EXE ships echproxy.dll.
+  static Uint8List? _fetchInIsolate(String url) {
+    final proxy = ProxyManager();
+    proxy._openBundledLib();
+    return proxy.fetch(url);
+  }
+
+  // Open the native library without touching platform channels / download
+  // fallback. Safe to call from a worker isolate.
+  void _openBundledLib() {
+    if (_lib != null) return;
+    String libName;
+    if (Platform.isWindows) {
+      libName = 'echproxy.dll';
+    } else if (Platform.isLinux) {
+      libName = 'libechproxy.so';
+    } else if (Platform.isMacOS) {
+      libName = 'libechproxy.dylib';
+    } else {
+      libName = 'libechproxy.so';
+    }
+    _lib = DynamicLibrary.open(libName);
+    _setDohURL =
+        _lib!.lookupFunction<_EchStrNative, _EchStrDart>('ECHSetDohURL');
+    _initFfi = _lib!.lookupFunction<_VoidNative, _VoidDart>('ECHInit');
+    _initWithBootstrap =
+        _lib!.lookupFunction<_EchInitWithBootstrapNative,
+            _EchInitWithBootstrapDart>('ECHInitWithBootstrap');
+    _ready = _lib!.lookupFunction<_EchInitReadyNative, _EchInitReadyDart>(
+        'ECHInitReady');
+    _lastError =
+        _lib!.lookupFunction<_EchLastErrorNative, _EchLastErrorDart>(
+            'ECHInitLastError');
+    _fetchFfi =
+        _lib!.lookupFunction<_EchFetchNative, _EchFetchDart>('ECHFetch');
+    _logCount =
+        _lib!.lookupFunction<_EchLogCountNative, _EchLogCountDart>(
+            'ECHGetLogCount');
+    _getLog = _lib!.lookupFunction<_EchGetLogNative, _EchGetLogDart>(
+        'ECHGetLog');
+    _free =
+        _lib!.lookupFunction<_FreeCStringNative, _EchCStringDart>(
+            'FreeCString');
   }
 
   void dispose() {
