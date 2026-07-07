@@ -57,9 +57,9 @@ Future<String> _resolveDomainRobustly(String domain) async {
   throw Exception('failed to resolve $domain');
 }
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  StorageService.ensureInitialized();
+  await StorageService.ensureInitialized();
   runApp(const MyApp());
 }
 

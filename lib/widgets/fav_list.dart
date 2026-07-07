@@ -106,7 +106,11 @@ class _FavListState extends State<FavList> {
   }
 
   void _copyToClipboard(String text) {
-    Clipboard.setData(ClipboardData(text: text));
+    try {
+      Clipboard.setData(ClipboardData(text: text));
+    } catch (e) {
+      debugPrint('Clipboard error: $e');
+    }
   }
 }
 
