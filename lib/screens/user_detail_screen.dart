@@ -131,9 +131,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final urls = items.map((e) => e.url).toList();
       final types = items.map((e) => e.type).toList();
 
-      final allBytes = await Isolate.run<List<Uint8List?>>(() async {
+      final allBytes = await Isolate.run<List<Uint8List?>>(() {
         final proxy = ProxyManager();
-        await proxy.load();
+          proxy.openBundledLib();
         return urls.map((u) {
           try {
             return proxy.fetch(u);

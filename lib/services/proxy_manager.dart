@@ -216,9 +216,9 @@ class ProxyManager {
     const maxRetries = 3;
     for (var attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        final bytes = await Isolate.run(() async {
+        final bytes = await Isolate.run(() {
           final proxy = ProxyManager();
-          await proxy.load();
+          proxy.openBundledLib();
           return proxy.fetch(url);
         }).timeout(Duration(seconds: timeoutSecs));
         if (bytes != null) _imageCache[url] = bytes;
@@ -229,6 +229,42 @@ class ProxyManager {
       }
     }
     return null;
+  }
+
+  void openBundledLib() {
+    if (_lib != null) return;
+    String libName;
+    if (Platform.isWindows) {
+      libName = 'echproxy.dll';
+    } else if (Platform.isLinux) {
+      libName = 'libechproxy.so';
+    } else if (Platform.isMacOS) {
+      libName = 'libechproxy.dylib';
+    } else {
+      libName = 'libechproxy.so';
+    }
+    _lib = DynamicLibrary.open(libName);
+    _setDohURL =
+        _lib!.lookupFunction<_EchStrNative, _EchStrDart>('ECHSetDohURL');
+    _initFfi = _lib!.lookupFunction<_VoidNative, _VoidDart>('ECHInit');
+    _initWithBootstrap =
+        _lib!.lookupFunction<_EchInitWithBootstrapNative,
+            _EchInitWithBootstrapDart>('ECHInitWithBootstrap');
+    _ready = _lib!.lookupFunction<_EchInitReadyNative, _EchInitReadyDart>(
+        'ECHInitReady');
+    _lastError =
+        _lib!.lookupFunction<_EchLastErrorNative, _EchLastErrorDart>(
+            'ECHInitLastError');
+    _fetchFfi =
+        _lib!.lookupFunction<_EchFetchNative, _EchFetchDart>('ECHFetch');
+    _logCount =
+        _lib!.lookupFunction<_EchLogCountNative, _EchLogCountDart>(
+            'ECHGetLogCount');
+    _getLog = _lib!.lookupFunction<_EchGetLogNative, _EchGetLogDart>(
+        'ECHGetLog');
+    _free =
+        _lib!.lookupFunction<_FreeCStringNative, _FreeCStringDart>(
+            'FreeCString');
   }
 
   void dispose() {
