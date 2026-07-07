@@ -16,6 +16,19 @@ import '../widgets/tag_display_area.dart';
 import '../widgets/tag_selector_modal.dart';
 import '../widgets/horizontal_button_row.dart';
 
+// Top‑level function for Isolate.run — no instance capture, fully sendable.
+List<Uint8List?> _fetchAllUrls(List<String> urls) {
+  final proxy = ProxyManager();
+  proxy.openBundledLib();
+  return urls.map((u) {
+    try {
+      return proxy.fetch(u);
+    } catch (_) {
+      return null;
+    }
+  }).toList();
+}
+
 class UserDetailScreen extends StatefulWidget {
   final UserMetaData profile;
   final ProxyManager proxy;
@@ -131,17 +144,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final urls = items.map((e) => e.url).toList();
       final types = items.map((e) => e.type).toList();
 
-      final allBytes = await Isolate.run<List<Uint8List?>>(() {
-        final proxy = ProxyManager();
-          proxy.openBundledLib();
-        return urls.map((u) {
-          try {
-            return proxy.fetch(u);
-          } catch (_) {
-            return null;
-          }
-        }).toList();
-      });
+      final allBytes = await Isolate.run(() => _fetchAllUrls(urls));
 
       var ok = 0;
       for (var i = 0; i < items.length; i++) {
