@@ -8,9 +8,10 @@ import 'package:open_filex/open_filex.dart';
 
 import '../services/proxy_manager.dart';
 
-Future<void> _openWithSystemPlayer(String path) async {
-  await OpenFilex.open(path);
+Future<OpenFilexResult> _openWithSystemPlayer(String path) async {
+  return await OpenFilex.open(path);
 }
+
 
 class TwitterVideo extends StatefulWidget {
   final String url;
@@ -78,7 +79,10 @@ class _TwitterVideoState extends State<TwitterVideo> {
   Future<void> _play() async {
     if (_filePath == null) return;
     try {
-      await _openWithSystemPlayer(_filePath!);
+      final result = await _openWithSystemPlayer(_filePath!);
+      if (result == null || result.type == ResultType.denied) {
+        throw 'Unable to open file: ${result?.message ?? 'Unknown error'}';
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
