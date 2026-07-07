@@ -71,6 +71,20 @@ jobs:
           MANIFEST=/tmp/build_project/android/app/src/main/AndroidManifest.xml
           sed -i '/<uses-permission\/>/a\\n    <queries>\n        <intent>\n            <action android:name="android.intent.action.VIEW" />\n            <data android:mimeType="video/*" />\n        </intent>\n        <intent>\n            <action android:name="android.intent.action.VIEW" />\n            <data android:mimeType="*/*" />\n        </intent>\n    </queries>' "$MANIFEST"
 
+      - name: Add FileProvider for open_filex (Android 5+ compatibility)
+        run: |
+          MANIFEST=/tmp/build_project/android/app/src/main/AndroidManifest.xml
+          XML_DIR=/tmp/build_project/android/app/src/main/res/xml
+          mkdir -p "$XML_DIR"
+          cat > "$XML_DIR/file_paths.xml" << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <paths>
+            <cache-path name="cache" path="." />
+        </paths>
+        EOF
+          # Insert FileProvider before </application>
+          sed -i 's|</application>|    <provider\n        android:name="androidx.core.content.FileProvider"\n        android:authorities="${applicationId}.fileprovider"\n        android:exported="false"\n        android:grantUriPermissions="true">\n        <meta-data\n            android:name="android.support.FILE_PROVIDER_PATHS"\n            android:resource="@xml/file_paths" />\n    </provider>\n</application>|' "$MANIFEST"
+
       - name: Place ECH shared library
         run: |
           mkdir -p /tmp/build_project/android/app/src/main/jniLibs/arm64-v8a
