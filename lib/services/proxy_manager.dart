@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 import 'dart:ffi';
-import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -216,11 +215,7 @@ class ProxyManager {
     const maxRetries = 3;
     for (var attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        final bytes = await Isolate.run(() async {
-          final proxy = ProxyManager();
-          await proxy.load();
-          return proxy.fetch(url);
-        }).timeout(Duration(seconds: timeoutSecs));
+        final bytes = await Future(() => fetch(url)).timeout(Duration(seconds: timeoutSecs));
         if (bytes != null) _imageCache[url] = bytes;
         return bytes;
       } catch (e) {
