@@ -142,7 +142,7 @@ class ProxyManager {
   }
 
   // 等待 ECH 初始化完成，超时或错误则抛异常
-  Future<void> waitForInit({int timeoutSecs = 120}) async {
+  Future<void> waitForInit({int timeoutSecs = 900}) async {
     for (var i = 0; i < timeoutSecs * 5; i++) {
       final status = _ready!();
       if (status == 1) {
@@ -210,7 +210,7 @@ class ProxyManager {
     return bytes;
   }
 
-  Future<Uint8List?> fetchAsync(String url, {int timeoutSecs = 300}) async {
+  Future<Uint8List?> fetchAsync(String url, {int timeoutSecs = 1800}) async {
     final cached = _imageCache[url];
     if (cached != null) return cached;
     const maxRetries = 3;
