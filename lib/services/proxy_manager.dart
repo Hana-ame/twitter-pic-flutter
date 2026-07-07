@@ -11,6 +11,15 @@ import 'dart:ui' as ui;
 
 import 'package:ffi/ffi.dart';
 
+// Top‑level function for Isolate.run — no this capture, fully sendable.
+Uint8List? _isolateFetchSingle(List<String> args) {
+  final url = args[0];
+  final libPath = args[1];
+  final proxy = ProxyManager();
+  proxy.openLibWithPath(libPath);
+  return proxy.fetch(url);
+}
+
 typedef _VoidNative = Void Function();
 typedef _VoidDart = void Function();
 
@@ -56,6 +65,9 @@ class ProxyManager {
   _FreeCStringDart? _free;
   bool _initialized = false;
 
+  // Absolute path of the DLL successfully loaded on the main isolate.
+  static String? resolvedLibPath;
+
   bool get isInitialized => _initialized;
 
   Future<void> load() async {
@@ -80,6 +92,7 @@ class ProxyManager {
     // Try to load from bundled assets (relative to executable)
     try {
       _lib = DynamicLibrary.open(libName);
+      resolvedLibPath = libName;
     } catch (_) {
       // If not present, download to app support directory and load from there
       final dir = await getApplicationSupportDirectory();
@@ -97,6 +110,7 @@ class ProxyManager {
         await libFile.writeAsBytes(bytes);
       }
       _lib = DynamicLibrary.open(libPath);
+      resolvedLibPath = libPath;
     }
     _setDohURL =
         _lib!.lookupFunction<_EchStrNative, _EchStrDart>('ECHSetDohURL');
@@ -213,14 +227,12 @@ class ProxyManager {
   Future<Uint8List?> fetchAsync(String url, {int timeoutSecs = 1800}) async {
     final cached = _imageCache[url];
     if (cached != null) return cached;
+    if (resolvedLibPath == null) throw Exception('ProxyManager not initialized');
     const maxRetries = 3;
     for (var attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        final bytes = await Isolate.run(() {
-          final proxy = ProxyManager();
-          proxy.openBundledLib();
-          return proxy.fetch(url);
-        }).timeout(Duration(seconds: timeoutSecs));
+        final bytes = await Isolate.run(() => _isolateFetchSingle([url, resolvedLibPath!]))
+            .timeout(Duration(seconds: timeoutSecs));
         if (bytes != null) _imageCache[url] = bytes;
         return bytes;
       } catch (e) {
@@ -231,19 +243,11 @@ class ProxyManager {
     return null;
   }
 
-  void openBundledLib() {
+  // Open native library by absolute path. Pure sync — safe in worker isolates.
+  // Caller must ensure the DLL is already loaded in the process (ref‑counted).
+  void openLibWithPath(String path) {
     if (_lib != null) return;
-    String libName;
-    if (Platform.isWindows) {
-      libName = 'echproxy.dll';
-    } else if (Platform.isLinux) {
-      libName = 'libechproxy.so';
-    } else if (Platform.isMacOS) {
-      libName = 'libechproxy.dylib';
-    } else {
-      libName = 'libechproxy.so';
-    }
-    _lib = DynamicLibrary.open(libName);
+    _lib = DynamicLibrary.open(path);
     _setDohURL =
         _lib!.lookupFunction<_EchStrNative, _EchStrDart>('ECHSetDohURL');
     _initFfi = _lib!.lookupFunction<_VoidNative, _VoidDart>('ECHInit');
