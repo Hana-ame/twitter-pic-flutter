@@ -1,17 +1,12 @@
-// 视频播放组件：下载后调用系统播放器打开
+// 视频播放组件：下载后通过 open_filex 调用系统播放器
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../services/proxy_manager.dart';
-
-Future<OpenFilexResult> _openWithSystemPlayer(String path) async {
-  return await OpenFilex.open(path);
-}
-
 
 class TwitterVideo extends StatefulWidget {
   final String url;
@@ -79,9 +74,9 @@ class _TwitterVideoState extends State<TwitterVideo> {
   Future<void> _play() async {
     if (_filePath == null) return;
     try {
-      final result = await _openWithSystemPlayer(_filePath!);
-      if (result == null || result.type == ResultType.denied) {
-        throw 'Unable to open file: ${result?.message ?? 'Unknown error'}';
+      final result = await OpenFilex.open(_filePath!);
+      if (result.type != ResultType.done) {
+        throw '打开失败: ${result.message}';
       }
     } catch (e) {
       if (!mounted) return;

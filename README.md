@@ -77,8 +77,7 @@ lib/
 2. 轮询 `ECHInitReady()`（最长 30s）：0=等待，1=就绪，-1=失败
 3. `fetchAsync(url)` → `Isolate.run` → FFI `ECHFetch()` → Go 通过 cloudflare-ech.com 发起 ECH TLS 连接，获取资源
 4. 图片：返回原始字节 → `Image.memory()`  
-    视频：返回 mp4 字节 → 写入临时文件 → 通过 `open_filex` 调系统播放器
-
+   视频：返回 mp4 字节 → 写入临时文件 → `am start` 调系统播放器
 
 ### ECH 初始化
 
@@ -100,10 +99,6 @@ DNS 回退链：System DNS → Tencent (119.29.29.29) → Alibaba (223.5.5.5)，
 ### 视频播放
 
 完整的 mp4 通过 `fetchAsync` 下载（ECH），写入 app 临时目录，通过 `open_filex` 调用系统播放器，实现跨平台自适应播放。
-
-**方案演进：**
-- **旧方案**：使用 `Process.run` 执行平台指令（如 Android 的 `am start`）。问题在于手机端（尤其是 Android）对文件 URI 权限限制严格，导致无法正确唤起外部播放器。
-- **新方案**：引入 `open_filex` 库，该库内部处理了不同平台的 MIME 类型映射和文件共享权限（FileProvider），极大地提高了唤起成功率。
 
 ### 缓存
 
