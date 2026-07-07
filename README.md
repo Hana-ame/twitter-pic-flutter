@@ -98,14 +98,7 @@ DNS 回退链：System DNS → Tencent (119.29.29.29) → Alibaba (223.5.5.5)，
 
 ### 视频播放
 
-完整的 mp4 通过 `fetchAsync` 下载（ECH），写入 app 临时目录，通过 `Process.run` 调系统播放器，平台自适应：
-
-| 平台 | 命令 |
-|------|------|
-| Android | `am start …` |
-| Windows | `cmd /c start "" <path>` |
-| macOS   | `open <path>` |
-| Linux   | `xdg-open <path>` |
+完整的 mp4 通过 `fetchAsync` 下载（ECH），写入 app 临时目录，通过 `open_filex` 调用系统播放器，实现跨平台自适应播放。
 
 ### 缓存
 
@@ -149,3 +142,10 @@ DNS 回退链：System DNS → Tencent (119.29.29.29) → Alibaba (223.5.5.5)，
 8. **DoH** — 仅 `https://moonchan.xyz/doh`
 9. **签名** — `gradle.properties` + GitHub Secrets，跨构建一致
 10. **不支持 iOS**
+
+## 更新日志
+
+- **v0.2.3**
+  - 修复收藏夹导出 URL 时剪贴板为空的问题。
+  - 修复手机端无法通过系统播放器打开视频的问题（引入 `open_filex`）。
+  - 配置 GitHub Actions 自动构建 APK 和 Windows EXE。
