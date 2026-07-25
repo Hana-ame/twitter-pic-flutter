@@ -156,10 +156,9 @@ jobs:
       - name: Build ECH shared library (windows)
         run: |
           git clone --depth=1 https://github.com/Hana-ame/wintools.git C:\tmp\wintools
-          cd C:\tmp\wintools\cmd\ech-shared
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll
+          go build -C C:\tmp\wintools\cmd\ech-shared -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll
           $env:GOARCH="386"
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_x86.dll
+          go build -C C:\tmp\wintools\cmd\ech-shared -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_x86.dll
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
