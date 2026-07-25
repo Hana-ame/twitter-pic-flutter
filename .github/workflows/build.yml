@@ -161,9 +161,18 @@ jobs:
           git clone --depth=1 https://github.com/Hana-ame/wintools.git C:\tmp\wintools
           Push-Location C:\tmp\wintools\cmd\ech-shared
           Get-ChildItem -Filter *.go
-          go build -x -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll . 2>&1
-          $env:GOARCH="386"
-          go build -x -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_x86.dll . 2>&1
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll .
+          go env GOARCH GOOS
+          Pop-Location
+      - name: Build ECH shared library (windows x86)
+        env:
+          GOARCH: "386"
+          GONOSUMCHECK: '*'
+          GONOSUMDB: '*'
+        run: |
+          Push-Location C:\tmp\wintools\cmd\ech-shared
+          go env GOARCH GOOS
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_x86.dll .
           Pop-Location
 
       - name: Setup Flutter
