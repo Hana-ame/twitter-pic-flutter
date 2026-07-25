@@ -3,6 +3,7 @@
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
@@ -156,7 +157,9 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/Hana-ame/wintools.git C:\tmp\wintools
           cd C:\tmp\wintools\cmd\ech-shared
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy.dll
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll
+          $env:GOARCH="386"
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_x86.dll
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -257,7 +260,7 @@ jobs:
           Push-Location $projDir
           flutter build windows --release --dart-define=BUILD_NUM="$BUILD_NUM"
           Pop-Location
-          Copy-Item -Force -Path C:\tmp\echproxy.dll -Destination "$projDir\build\windows\x64\runner\Release\echproxy.dll"
+          Copy-Item -Force -Path C:\tmp\echproxy_amd64.dll -Destination "$projDir\build\windows\x64\runner\Release\echproxy.dll"
 
       - name: Package Windows Release
         run: |
@@ -268,6 +271,12 @@ jobs:
         with:
           name: windows-zip
           path: C:\tmp\twitter_pic_flutter_windows_amd64.zip
+
+      - name: Upload Windows x86 DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86-dll
+          path: C:\tmp\echproxy_x86.dll
 
   create_release:
     runs-on: ubuntu-latest
@@ -290,6 +299,12 @@ jobs:
         with:
           name: windows-zip
           path: ./artifact/windows
+
+      - name: Download Windows x86 DLL
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x86-dll
+          path: ./artifact/windows_x86
 
       - name: Generate release notes
         run: |
@@ -323,5 +338,6 @@ jobs:
           files: |
             ./artifact/apk/app-release.apk
             ./artifact/windows/twitter_pic_flutter_windows_amd64.zip
+            ./artifact/windows_x86/echproxy_x86.dll
           generate_release_notes: false
           make_latest: true

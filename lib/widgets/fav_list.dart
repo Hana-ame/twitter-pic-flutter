@@ -30,7 +30,7 @@ class _FavListState extends State<FavList> {
     final allUsernames = StorageService.getFavMap().keys.toList().reversed.toList();
     final visible = allUsernames.take(_limit).toList();
 
-    return Column(
+    return ListView(
       children: [
         ...visible.map((u) => _FavTile(username: u, api: widget.api, proxy: widget.proxy)),
         if (_limit < allUsernames.length)
