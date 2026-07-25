@@ -154,32 +154,10 @@ jobs:
           go-version: stable
 
       - name: Build ECH shared library (windows)
-        env:
-          GONOSUMCHECK: '*'
-          GONOSUMDB: '*'
         run: |
           git clone --depth=1 https://github.com/Hana-ame/wintools.git C:\tmp\wintools
           Push-Location C:\tmp\wintools\cmd\ech-shared
-          Get-ChildItem -Filter *.go
           go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll .
-          go env GOARCH GOOS
-          Pop-Location
-      - name: Build ECH shared library (windows x86)
-        env:
-          GOARCH: "386"
-          GONOSUMCHECK: '*'
-          GONOSUMDB: '*'
-        run: |
-          Push-Location C:\tmp\wintools\cmd\ech-shared
-          go env GOARCH GOOS CC
-          where.exe gcc
-          gcc --version
-          go tool dist list
-          # test: can go compile for 386 at all?
-          mkdir C:\tmp\test386
-          Set-Content C:\tmp\test386\main.go 'package main; func main() {}'
-          go build -o C:\tmp\test386\test.exe C:\tmp\test386
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_x86.dll -x .
           Pop-Location
 
       - name: Setup Flutter
@@ -293,12 +271,6 @@ jobs:
           name: windows-zip
           path: C:\tmp\twitter_pic_flutter_windows_amd64.zip
 
-      - name: Upload Windows x86 DLL
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-x86-dll
-          path: C:\tmp\echproxy_x86.dll
-
   create_release:
     runs-on: ubuntu-latest
     needs: [build_android, build_windows]
@@ -320,12 +292,6 @@ jobs:
         with:
           name: windows-zip
           path: ./artifact/windows
-
-      - name: Download Windows x86 DLL
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-x86-dll
-          path: ./artifact/windows_x86
 
       - name: Generate release notes
         run: |
@@ -359,6 +325,5 @@ jobs:
           files: |
             ./artifact/apk/app-release.apk
             ./artifact/windows/twitter_pic_flutter_windows_amd64.zip
-            ./artifact/windows_x86/echproxy_x86.dll
           generate_release_notes: false
           make_latest: true
