@@ -93,17 +93,12 @@ jobs:
           flutter pub get
           dart run flutter_launcher_icons
 
-      - name: Set up APK signing key
-        id: cache-keystore
-        uses: actions/cache@v4
-        with:
-          path: /tmp/release.keystore
-          key: v1-android-keystore
-
-      - name: Generate signing key (first build only)
-        if: steps.cache-keystore.outputs.cache-hit != 'true'
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          keytool -genkey -v -keystore /tmp/release.keystore -alias release -keyalg RSA -keysize 2048 -validity 10000 -storepass ${{ secrets.KEY_STORE_PASSWORD }} -keypass ${{ secrets.KEY_PASSWORD }} -dname "CN=TwitterPic, OU=Dev, O=TwitterPic, L=City, S=State, C=US"
+          mkdir -p /tmp
+          echo "$KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
 
       - name: Configure signing
         run: |
