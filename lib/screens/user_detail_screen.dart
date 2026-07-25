@@ -17,11 +17,19 @@ import '../widgets/tag_selector_modal.dart';
 import '../widgets/horizontal_button_row.dart';
 
 // Top‑level function for Isolate.run — no instance capture, fully sendable.
-List<Uint8List?> _fetchAllUrls(List<dynamic> args) {
-  final urls = args[0] as List<String>;
-  final libPath = args[1] as String;
+List<Uint8List?> _fetchAllUrls(List<String> urls) {
   final proxy = ProxyManager();
-  proxy.openLibWithPath(libPath);
+  String libName;
+  if (Platform.isWindows) {
+    libName = 'echproxy.dll';
+  } else if (Platform.isLinux) {
+    libName = 'libechproxy.so';
+  } else if (Platform.isMacOS) {
+    libName = 'libechproxy.dylib';
+  } else {
+    libName = 'libechproxy.so';
+  }
+  proxy.openLibWithPath(libName);
   return urls.map((u) {
     try {
       return proxy.fetch(u);
@@ -146,7 +154,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final urls = items.map((e) => e.url).toList();
       final types = items.map((e) => e.type).toList();
 
-      final allBytes = await Isolate.run(() => _fetchAllUrls([urls, ProxyManager.resolvedLibPath!]));
+      final allBytes = await Isolate.run(() => _fetchAllUrls(urls));
 
       var ok = 0;
       for (var i = 0; i < items.length; i++) {

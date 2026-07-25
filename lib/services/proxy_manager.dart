@@ -12,12 +12,26 @@ import 'dart:ui' as ui;
 import 'package:ffi/ffi.dart';
 
 // Top‑level function for Isolate.run — no this capture, fully sendable.
+// Opens the native library by SONAME inside the isolate (same approach as v0.2.4).
 Uint8List? _isolateFetchSingle(List<String> args) {
   final url = args[0];
-  final libPath = args[1];
   final proxy = ProxyManager();
-  proxy.openLibWithPath(libPath);
+  _openBundled(proxy);
   return proxy.fetch(url);
+}
+
+void _openBundled(ProxyManager proxy) {
+  String libName;
+  if (Platform.isWindows) {
+    libName = 'echproxy.dll';
+  } else if (Platform.isLinux) {
+    libName = 'libechproxy.so';
+  } else if (Platform.isMacOS) {
+    libName = 'libechproxy.dylib';
+  } else {
+    libName = 'libechproxy.so';
+  }
+  proxy.openLibWithPath(libName);
 }
 
 typedef _VoidNative = Void Function();
@@ -227,11 +241,10 @@ class ProxyManager {
   Future<Uint8List?> fetchAsync(String url, {int timeoutSecs = 1800}) async {
     final cached = _imageCache[url];
     if (cached != null) return cached;
-    if (resolvedLibPath == null) throw Exception('ProxyManager not initialized');
     const maxRetries = 3;
     for (var attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        final bytes = await Isolate.run(() => _isolateFetchSingle([url, resolvedLibPath!]))
+        final bytes = await Isolate.run(() => _isolateFetchSingle([url]))
             .timeout(Duration(seconds: timeoutSecs));
         if (bytes != null) _imageCache[url] = bytes;
         return bytes;
