@@ -171,8 +171,10 @@ jobs:
           GONOSUMDB: '*'
         run: |
           Push-Location C:\tmp\wintools\cmd\ech-shared
-          go env GOARCH GOOS
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_x86.dll .
+          go env GOARCH GOOS CC
+          where.exe gcc
+          gcc --version
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_x86.dll -x .
           Pop-Location
 
       - name: Setup Flutter
