@@ -20,6 +20,17 @@ Uint8List? _isolateFetchSingle(List<String> args) {
   return proxy.fetch(url);
 }
 
+// Top‑level function for Isolate.run — streaming download to a local file.
+// 返回字节数；异常会通过 isolate 传递到调用方。文件是分块写入的，
+// 不会把整个视频读进内存。
+int _isolateDownloadToFile(List<String> args) {
+  final url = args[0];
+  final path = args[1];
+  final proxy = ProxyManager();
+  _openBundled(proxy);
+  return proxy.fetchToFile(url, path);
+}
+
 void _openBundled(ProxyManager proxy) {
   String libName;
   if (Platform.isWindows) {
@@ -56,6 +67,21 @@ typedef _EchFetchNative = Pointer<Utf8> Function(
 typedef _EchFetchDart = Pointer<Utf8> Function(
     Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
 
+// 流式下载接口（Go 侧 ech-shared v2）：
+// ECHFetchBegin 返回 uintptr 句柄（0 表示失败），ECHRead 分块读取
+// （>0 字节数 / 0=EOF / -1=读取错误 / -2=无效句柄），ECHClose 释放。
+// 句柄跨 FFI 用整数传递（runtime/cgo.Handle），不经过 unsafe.Pointer。
+typedef _EchFetchBeginNative = UintPtr Function(
+    Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _EchFetchBeginDart = int Function(
+    Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+typedef _EchReadNative = Int32 Function(UintPtr, Pointer<Uint8>, Int32);
+typedef _EchReadDart = int Function(int, Pointer<Uint8>, int);
+
+typedef _EchCloseNative = Void Function(UintPtr);
+typedef _EchCloseDart = void Function(int);
+
 typedef _EchLogCountNative = Int32 Function();
 typedef _EchLogCountDart = int Function();
 
@@ -74,6 +100,9 @@ class ProxyManager {
   _EchInitReadyDart? _ready;
   _EchLastErrorDart? _lastError;
   _EchFetchDart? _fetchFfi;
+  _EchFetchBeginDart? _fetchBegin;
+  _EchReadDart? _readChunk;
+  _EchCloseDart? _closeHandle;
   _EchLogCountDart? _logCount;
   _EchGetLogDart? _getLog;
   _FreeCStringDart? _free;
@@ -139,6 +168,13 @@ class ProxyManager {
             'ECHInitLastError');
     _fetchFfi =
         _lib!.lookupFunction<_EchFetchNative, _EchFetchDart>('ECHFetch');
+    _fetchBegin =
+        _lib!.lookupFunction<_EchFetchBeginNative, _EchFetchBeginDart>(
+            'ECHFetchBegin');
+    _readChunk =
+        _lib!.lookupFunction<_EchReadNative, _EchReadDart>('ECHRead');
+    _closeHandle =
+        _lib!.lookupFunction<_EchCloseNative, _EchCloseDart>('ECHClose');
     _logCount =
         _lib!.lookupFunction<_EchLogCountNative, _EchLogCountDart>(
             'ECHGetLogCount');
@@ -256,6 +292,63 @@ class ProxyManager {
     return null;
   }
 
+  // 流式下载到文件：分块读取（ECHFetchBegin/ECHRead），边下边写盘，
+  // 全程内存占用恒定（64KB buffer），大视频不再爆内存。
+  // 必须只在工作 isolate 中调用（阻塞式 FFI 读取），返回下载字节数。
+  int fetchToFile(String url, String path) {
+    final uri = Uri.parse(url).replace(
+      scheme: 'https',
+      host: 'video-cf.twimg.com',
+    );
+    final handle = using((Arena arena) {
+      final urlPtr = uri.toString().toNativeUtf8(allocator: arena);
+      final hostPtr = 'video-cf.twimg.com'.toNativeUtf8(allocator: arena);
+      final refererPtr = 'https://x.com'.toNativeUtf8(allocator: arena);
+      return _fetchBegin!(urlPtr, hostPtr, refererPtr);
+    });
+    if (handle == 0) throw Exception('ECHFetchBegin failed (see Go logs)');
+    try {
+      final raf = File(path).openSync(mode: FileMode.write);
+      try {
+        final buf = calloc<Uint8>(_kStreamBufSize);
+        try {
+          var total = 0;
+          while (true) {
+            final n = _readChunk!(handle, buf, _kStreamBufSize);
+            if (n == 0) break; // EOF
+            if (n < 0) throw Exception('ECHRead error: $n');
+            raf.writeFromSync(buf.asTypedList(n));
+            total += n;
+          }
+          return total;
+        } finally {
+          calloc.free(buf);
+        }
+      } finally {
+        raf.closeSync();
+      }
+    } finally {
+      _closeHandle!(handle);
+    }
+  }
+
+  static const int _kStreamBufSize = 64 * 1024;
+
+  // 带超时与重试的流式下载入口（主 isolate 安全）。
+  Future<int> fetchToFileAsync(String url, String path,
+      {int timeoutSecs = 1800}) async {
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await Isolate.run(() => _isolateDownloadToFile([url, path]))
+            .timeout(Duration(seconds: timeoutSecs));
+      } catch (e) {
+        if (attempt == 2) rethrow;
+        await Future.delayed(Duration(seconds: 5 * (attempt + 1)));
+      }
+    }
+    throw Exception('unreachable');
+  }
+
   // Open native library by absolute path. Pure sync — safe in worker isolates.
   // Caller must ensure the DLL is already loaded in the process (ref‑counted).
   void openLibWithPath(String path) {
@@ -274,6 +367,13 @@ class ProxyManager {
             'ECHInitLastError');
     _fetchFfi =
         _lib!.lookupFunction<_EchFetchNative, _EchFetchDart>('ECHFetch');
+    _fetchBegin =
+        _lib!.lookupFunction<_EchFetchBeginNative, _EchFetchBeginDart>(
+            'ECHFetchBegin');
+    _readChunk =
+        _lib!.lookupFunction<_EchReadNative, _EchReadDart>('ECHRead');
+    _closeHandle =
+        _lib!.lookupFunction<_EchCloseNative, _EchCloseDart>('ECHClose');
     _logCount =
         _lib!.lookupFunction<_EchLogCountNative, _EchLogCountDart>(
             'ECHGetLogCount');

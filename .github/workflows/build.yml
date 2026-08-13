@@ -66,21 +66,11 @@ jobs:
             sed -i 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android">|<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET"/>|' "$MANIFEST"
           fi
           sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
-
-      - name: Inject Android queries for open_filex
-        run: |
-          MANIFEST=/tmp/build_project/android/app/src/main/AndroidManifest.xml
-          sed -i '/<uses-permission\/>/a\\n    <queries>\n        <intent>\n            <action android:name="android.intent.action.VIEW" />\n            <data android:mimeType="video/*" />\n        </intent>\n        <intent>\n            <action android:name="android.intent.action.VIEW" />\n            <data android:mimeType="*/*" />\n        </intent>\n    </queries>' "$MANIFEST"
-
-      - name: Add FileProvider for open_filex (Android 5+ compatibility)
-        run: |
-          MANIFEST=/tmp/build_project/android/app/src/main/AndroidManifest.xml
-          mkdir -p /tmp/build_project/android/app/src/main/res/xml
-          echo '<?xml version="1.0" encoding="utf-8"?>' > /tmp/build_project/android/app/src/main/res/xml/file_paths.xml
-          echo '<paths>' >> /tmp/build_project/android/app/src/main/res/xml/file_paths.xml
-          echo '    <cache-path name="cache" path="." />' >> /tmp/build_project/android/app/src/main/res/xml/file_paths.xml
-          echo '</paths>' >> /tmp/build_project/android/app/src/main/res/xml/file_paths.xml
-          sed -i 's|</application>|    <provider\n        android:name="androidx.core.content.FileProvider"\n        android:authorities="com.example.twitter_pic_flutter.fileprovider"\n        android:exported="false"\n        android:grantUriPermissions="true">\n        <meta-data\n            android:name="android.support.FILE_PROVIDER_PATHS"\n            android:resource="@xml/file_paths" />\n    </provider>\n</application>|' "$MANIFEST"
+          # 放行明文流量：边下边播的本地 HttpServer（127.0.0.1）是 http 明文，
+          # Android 9+ 默认禁止 cleartext，否则 ExoPlayer 无法连接本地代理。
+          # 注意：flutter create 模板里 <application 与 android:label 跨行，
+          # 不能跨行匹配 <application>，直接在 label 属性同行追加最稳。
+          sed -i 's|android:label="推图"|android:label="推图" android:usesCleartextTraffic="true"|' "$MANIFEST"
 
       - name: Place ECH shared library
         run: |

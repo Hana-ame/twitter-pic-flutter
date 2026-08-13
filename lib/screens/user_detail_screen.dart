@@ -1,6 +1,5 @@
 // 用户详情页面：展示头像、标签、投票及媒体内容
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -15,29 +14,6 @@ import '../widgets/twitter_video.dart';
 import '../widgets/tag_display_area.dart';
 import '../widgets/tag_selector_modal.dart';
 import '../widgets/horizontal_button_row.dart';
-
-// Top‑level function for Isolate.run — no instance capture, fully sendable.
-List<Uint8List?> _fetchAllUrls(List<String> urls) {
-  final proxy = ProxyManager();
-  String libName;
-  if (Platform.isWindows) {
-    libName = 'echproxy.dll';
-  } else if (Platform.isLinux) {
-    libName = 'libechproxy.so';
-  } else if (Platform.isMacOS) {
-    libName = 'libechproxy.dylib';
-  } else {
-    libName = 'libechproxy.so';
-  }
-  proxy.openLibWithPath(libName);
-  return urls.map((u) {
-    try {
-      return proxy.fetch(u);
-    } catch (_) {
-      return null;
-    }
-  }).toList();
-}
 
 class UserDetailScreen extends StatefulWidget {
   final UserMetaData profile;
@@ -151,23 +127,23 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final dlDir = Directory('$baseDir/$_username');
       if (!await dlDir.exists()) await dlDir.create(recursive: true);
 
-      final urls = items.map((e) => e.url).toList();
-      final types = items.map((e) => e.type).toList();
-
-      final allBytes = await Isolate.run(() => _fetchAllUrls(urls));
-
+      // 逐项流式下载：ECH 分块写盘（fetchToFileAsync），大视频不再整包进内存；
+      // 单个文件失败（try 内）不影响其余文件。
       var ok = 0;
       for (var i = 0; i < items.length; i++) {
         if (!mounted) return;
-        final bytes = allBytes[i];
-        if (bytes != null) {
-          final ext =
-              types[i] == 'video' || types[i] == 'animated_gif' ? '.mp4' : '.jpg';
+        final item = items[i];
+        try {
+          final ext = item.type == 'video' || item.type == 'animated_gif'
+              ? '.mp4'
+              : '.jpg';
           final base =
-              urls[i].split('/').last.split('?').first.split('.').first;
+              item.url.split('/').last.split('?').first.split('.').first;
           final file = File('${dlDir.path}/${_username}_$base$ext');
-          await file.writeAsBytes(bytes);
+          await widget.proxy.fetchToFileAsync(item.url, file.path);
           ok++;
+        } catch (_) {
+          // 单个失败继续下一个
         }
       }
 
