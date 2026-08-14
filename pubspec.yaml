@@ -13,10 +13,9 @@ dependencies:
   cupertino_icons: ^1.0.6
   ffi: ^2.2.0          # using/Arena/Utf8 在 2.x 中仍可用，无需更改代码
   path_provider: ^2.1.5
-  # 边下边播：下载中调系统播放器播本地流（open_filex 打开 http URL）；
+  # 边下边播（系统播放器/ExoPlayer 播本地流）真机不可行已移除；
   # 下载完成原地播放用 video_player（Windows 由 video_player_win 实现，
   # federated 自动注册，无需手动 registerWith）。
-  open_filex: ^4.5.0
   video_player: ^2.9.0
   video_player_win: ^3.2.2
   # 封面抽帧：仅 Android/iOS 有实现，桌面平台在代码里跳过。
