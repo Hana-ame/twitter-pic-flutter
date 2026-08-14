@@ -101,9 +101,12 @@ class StreamingServer {
       return;
     }
     // 顺序播放：下载已完成则给确定长度，否则 chunked 跟随增长。
+    // 注意：_Task.total 是可变公有字段，!= null 后不能类型提升，
+    // contentLength setter 要非空 int，用局部变量解包。
     if (task.done && task.total != null) {
-      req.response.headers.contentLength = task.total;
-      await _pump(req.response, file, 0, task.total, task);
+      final total = task.total!;
+      req.response.headers.contentLength = total;
+      await _pump(req.response, file, 0, total, task);
       return;
     }
     await _pump(req.response, file, 0, null, task);

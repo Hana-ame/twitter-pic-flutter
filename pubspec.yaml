@@ -18,7 +18,13 @@ dependencies:
   video_player: ^2.9.0
   video_player_win: ^3.2.2
   # 封面抽帧：仅 Android/iOS 有实现，桌面平台在代码里跳过。
-  video_thumbnail: ^0.5.6
+  # 用 fork（v0.5.6-flutter44）：原版 0.5.6 的 Android gradle 是远古写法
+  # （AGP 4.1 classpath + jcenter + 老 DSL），在 Flutter 3.44 模板的
+  # Gradle 9 / AGP 9 下无法构建。fork 仅改 gradle 文件，Java 实现不变。
+  video_thumbnail:
+    git:
+      url: https://github.com/Hana-ame/video_thumbnail
+      ref: v0.5.6-flutter44
 
 dev_dependencies:
   flutter_test:
