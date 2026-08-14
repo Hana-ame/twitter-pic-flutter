@@ -67,10 +67,17 @@ jobs:
           fi
           sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
           # 放行明文流量：边下边播的本地 HttpServer（127.0.0.1）是 http 明文，
-          # Android 9+ 默认禁止 cleartext，否则 ExoPlayer 无法连接本地代理。
+          # Android 9+ 默认禁止 cleartext，否则系统播放器无法连接本地代理。
           # 注意：flutter create 模板里 <application 与 android:label 跨行，
           # 不能跨行匹配 <application>，直接在 label 属性同行追加最稳。
           sed -i 's|android:label="推图"|android:label="推图" android:usesCleartextTraffic="true"|' "$MANIFEST"
+
+      - name: Inject Android queries for open_filex (system player intent)
+        run: |
+          MANIFEST=/tmp/build_project/android/app/src/main/AndroidManifest.xml
+          # Android 11+ 隐式 ACTION_VIEW 调系统播放器需要 queries 声明，
+          # 否则 resolveActivity 查不到任何播放器，open_filex 直接失败。
+          sed -i '/<uses-permission\/>/a\\n    <queries>\n        <intent>\n            <action android:name="android.intent.action.VIEW" />\n            <data android:mimeType="video/*" />\n        </intent>\n        <intent>\n            <action android:name="android.intent.action.VIEW" />\n            <data android:mimeType="*/*" />\n        </intent>\n    </queries>' "$MANIFEST"
 
       - name: Place ECH shared library
         run: |

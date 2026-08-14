@@ -79,11 +79,21 @@ class StreamingServer {
       return;
     }
     final range = _parseRange(req.headers.value(HttpHeaders.rangeHeader));
+    if (range != null && range.endIsOpen) {
+      // open-end Range（bytes=N-）：播放器探测/顺序请求。不能等下载完成
+      // （MediaPlayer 常用 bytes=0- 开头，等待 = 失去边下边播），
+      // 直接 206 + chunked 实时流。Content-Range 长度未知用 *。
+      req.response.statusCode = HttpStatus.partialContent;
+      req.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes ${range.start}-*/*',
+      );
+      await _pump(req.response, file, range.start, null, task);
+      return;
+    }
     if (range != null) {
-      // seek 请求：等待所需范围就绪再回确定的 206。
-      final endReady = await (range.endIsOpen
-          ? _waitUntilDone(task, file)
-          : _waitUntil(task, file, range.end + 1));
+      // 定长 Range（seek）：等待所需范围就绪再回确定的 206。
+      final endReady = await _waitUntil(task, file, range.end + 1);
       if (endReady < 0 || endReady <= range.start) {
         req.response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
         await req.response.close();
@@ -159,17 +169,6 @@ class StreamingServer {
       final size = _safeLength(file);
       if (task.done) return size;
       if (size >= needBytes) return size;
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
-    return -1;
-  }
-
-  // 等待下载完成，返回总字节数；失败返回 -1。
-  Future<int> _waitUntilDone(_Task task, File file) async {
-    final deadline = DateTime.now().add(const Duration(minutes: 30));
-    while (DateTime.now().isBefore(deadline)) {
-      if (task.failed != null) return -1;
-      if (task.done && task.total != null) return task.total!;
       await Future.delayed(const Duration(milliseconds: 100));
     }
     return -1;

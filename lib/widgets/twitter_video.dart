@@ -1,9 +1,15 @@
 // 视频组件：流式下载 + 边下边播 + 封面。
 //
 // 流程：initState 即开始流式下载到临时 spool 文件（ECH 分块写盘，不占内存）；
-// 点击播放：未下载完成时（Android/iOS）经 StreamingServer 播本地 HTTP，
-// moov 在文件头（faststart）所以 ExoPlayer 拿前几 KB 即可开播，其余边下边补；
-// 下载完成则直接播本地文件。
+// 点击播放：
+// - 下载中（Android/iOS）：用 open_filex 调系统播放器播本地 StreamingServer
+//   的 http 流（moov 在文件头 = faststart，系统播放器渐进式播放成熟稳定）。
+//   为什么不用内置 video_player 边下边播：ExoPlayer 对 chunked 无
+//   Content-Length 的本地流真机表现不稳定，系统播放器更可靠。
+// - 下载完成：原地用 video_player 播本地文件（桌面平台也走这条，等下载完）。
+//
+// 比例：播放中按视频实际 aspectRatio 自适应（限高 480），不再用 16:9 硬框，
+// 竖屏视频不会被拉伸。
 //
 // Windows 的 video_player 实现（video_player_win / Media Foundation）播文件
 // 最稳，统一等下载完成后播本地文件；封面抽帧（video_thumbnail）仅 Android/iOS
@@ -16,6 +22,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
@@ -142,17 +149,25 @@ class _TwitterVideoState extends State<TwitterVideo> {
       return;
     }
     if (_spoolPath == null || !File(_spoolPath!).existsSync()) return;
-    try {
-      final VideoPlayerController c;
-      if (_ready || !_canStream) {
-        // 下载完成或桌面平台：直接播本地文件最稳。
-        c = VideoPlayerController.file(File(_spoolPath!));
-      } else {
-        // 边下边播：播放器拉本地 server 的流，数据随下载增长。
-        c = VideoPlayerController.networkUrl(
-          Uri.parse(StreamingServer.instance.urlFor(_token!)),
-        );
+    if (!_ready) {
+      // 下载中：调系统播放器播本地 server 流（边下边播）。
+      if (!_canStream) return; // 桌面平台等下载完成后原地播放
+      final token = _token;
+      if (token == null) return; // streaming 任务还没注册完（极小窗口）
+      try {
+        final url = StreamingServer.instance.urlFor(token);
+        final result = await OpenFilex.open(url, type: 'video/mp4');
+        if (result.type != ResultType.done && mounted) {
+          setState(() => _error = '打开播放器失败: ${result.message}');
+        }
+      } catch (e) {
+        if (mounted) setState(() => _error = e.toString());
       }
+      return;
+    }
+    // 下载完成：原地播放本地文件（最稳，桌面/移动统一）。
+    try {
+      final c = VideoPlayerController.file(File(_spoolPath!));
       await c.initialize();
       _controller = c;
       c.addListener(_onPlayer);
@@ -262,6 +277,9 @@ class _TwitterVideoState extends State<TwitterVideo> {
 
   @override
   Widget build(BuildContext context) {
+    // 播放中：按视频实际比例自适应（限高），不用固定 16:9 硬框，
+    // 否则竖屏视频（如 540x720）会被拉伸/裁切，比例不对。
+    if (_controller != null) return _buildPlaying();
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: Container(
@@ -275,29 +293,45 @@ class _TwitterVideoState extends State<TwitterVideo> {
     );
   }
 
-  Widget _buildContent() {
-    if (_controller != null) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          Container(color: Colors.black),
-          Center(
-            child: _controller!.value.isInitialized
-                ? VideoPlayer(_controller!)
-                : const CircularProgressIndicator(strokeWidth: 2),
+  Widget _buildPlaying() {
+    final c = _controller!;
+    final ratio = c.value.aspectRatio;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 480),
+        child: AspectRatio(
+          aspectRatio: ratio > 0 && ratio.isFinite ? ratio : 16 / 9,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              color: Colors.black,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Center(
+                    child: c.value.isInitialized
+                        ? VideoPlayer(c)
+                        : const CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  if (_isBuffering)
+                    const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2)),
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    child: _controlBar(),
+                  ),
+                ],
+              ),
+            ),
           ),
-          if (_isBuffering)
-            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: _controlBar(),
-          ),
-        ],
-      );
-    }
+        ),
+      ),
+    );
+  }
 
+  Widget _buildContent() {
     if (_downloading) {
       return Column(
         mainAxisSize: MainAxisSize.min,
@@ -311,8 +345,13 @@ class _TwitterVideoState extends State<TwitterVideo> {
           ),
           if (_canStream) ...[
             const SizedBox(height: 4),
+            IconButton(
+              icon: const Icon(Icons.play_circle_fill,
+                  size: 40, color: Colors.black54),
+              onPressed: _play,
+            ),
             Text(
-              '点击可边下边播',
+              '点击打开播放器，边下边播',
               style: TextStyle(color: Colors.grey.shade500, fontSize: 10),
             ),
           ],
