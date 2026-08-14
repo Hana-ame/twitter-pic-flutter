@@ -96,6 +96,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   }
 
   bool _downloading = false;
+  // 批量下载进度（header 转圈按钮处显示 x/y），三个下载入口共用。
+  int _dlDone = 0;
+  int _dlTotal = 0;
   Future<void> _downloadAll() async {
     if (_downloading) return;
     final items = widget.profile.timeline;
@@ -109,7 +112,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       return;
     }
 
-    setState(() => _downloading = true);
+    setState(() {
+      _downloading = true;
+      _dlDone = 0;
+      _dlTotal = items.length;
+    });
 
     try {
       String baseDir;
@@ -145,6 +152,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         } catch (_) {
           // 单个失败继续下一个
         }
+        if (mounted) setState(() => _dlDone = i + 1);
       }
 
       if (!mounted) return;
@@ -185,7 +193,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
       return;
     }
-    setState(() => _downloading = true);
+    setState(() {
+      _downloading = true;
+      _dlDone = 0;
+      _dlTotal = items.length;
+    });
     try {
       String baseDir;
       if (Platform.isAndroid) {
@@ -217,6 +229,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             ok++;
           }
         } catch (_) {}
+        if (mounted) setState(() => _dlDone = i + 1);
       }
 
       if (!mounted) return;
@@ -256,7 +269,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
       return;
     }
-    setState(() => _downloading = true);
+    setState(() {
+      _downloading = true;
+      _dlDone = 0;
+      _dlTotal = items.length;
+    });
     try {
       String baseDir;
       if (Platform.isAndroid) {
@@ -273,7 +290,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       if (!await dlDir.exists()) await dlDir.create(recursive: true);
 
       var ok = 0;
-      for (final item in items) {
+      for (var i = 0; i < items.length; i++) {
+        final item = items[i];
         if (!mounted) return;
         try {
           final bytes = widget.proxy.fetch(item.url);
@@ -289,6 +307,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         } catch (_) {}
         // yield to event loop for UI updates
         await Future.delayed(Duration.zero);
+        if (mounted) setState(() => _dlDone = i + 1);
       }
 
       if (!mounted) return;
@@ -373,6 +392,12 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         SizedBox(width: 14, height: 14, child: const CircularProgressIndicator(strokeWidth: 2)),
+                        const SizedBox(width: 6),
+                        Text(
+                          '下载中 $_dlDone/$_dlTotal',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey.shade700),
+                        ),
                       ],
                     ),
                   )
