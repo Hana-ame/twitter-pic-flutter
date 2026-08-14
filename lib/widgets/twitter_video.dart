@@ -42,6 +42,9 @@ class _TwitterVideoState extends State<TwitterVideo> {
   VideoPlayerController? _controller;
   bool _isPlaying = false;
   bool _isBuffering = false;
+  bool _controlsVisible = true; // 控制栏：播放中 3 秒无操作自动淡出
+  Timer? _controlsTimer;
+  int _lastSec = -1; // 播放进度秒数（秒级刷新，避免每帧 setState）
   int _bufferedBytes = 0; // 已下载字节（下载中进度显示）
   Timer? _progressTimer;
   bool _disposed = false;
@@ -125,6 +128,7 @@ class _TwitterVideoState extends State<TwitterVideo> {
   Future<void> _play() async {
     if (_controller != null) {
       await _controller!.play();
+      _scheduleControlsHide();
       return;
     }
     if (_spoolPath == null || !File(_spoolPath!).existsSync()) return;
@@ -139,7 +143,11 @@ class _TwitterVideoState extends State<TwitterVideo> {
         _controller = null;
         return;
       }
-      setState(() => _isPlaying = true);
+      setState(() {
+        _isPlaying = true;
+        _controlsVisible = true;
+      });
+      _scheduleControlsHide();
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
@@ -151,11 +159,47 @@ class _TwitterVideoState extends State<TwitterVideo> {
     final v = _controller!.value;
     final playing = v.isPlaying;
     final buffering = v.isBuffering;
-    if (playing != _isPlaying || buffering != _isBuffering) {
+    final sec = v.position.inSeconds;
+    if (playing != _isPlaying) {
+      // 播放/暂停切换：播放时重置 3 秒自动隐藏计时，暂停时保持控制栏显示。
+      if (playing) {
+        _scheduleControlsHide();
+      } else {
+        _controlsTimer?.cancel();
+        if (!_controlsVisible) setState(() => _controlsVisible = true);
+      }
+    }
+    // position 秒级变化也触发 setState，否则"秒数不跳"。
+    if (playing != _isPlaying || buffering != _isBuffering || sec != _lastSec) {
       setState(() {
         _isPlaying = playing;
         _isBuffering = buffering;
+        _lastSec = sec;
       });
+    }
+  }
+
+  // 播放中 3 秒无操作自动隐藏控制栏（挡画面）；缓冲/暂停时保持显示。
+  void _scheduleControlsHide() {
+    _controlsTimer?.cancel();
+    _controlsTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      if (_isPlaying && !_isBuffering) {
+        setState(() => _controlsVisible = false);
+      } else {
+        _scheduleControlsHide(); // 缓冲中继续等待
+      }
+    });
+  }
+
+  // 点击视频区域：唤出/隐藏控制栏。
+  void _toggleControls() {
+    if (_controlsVisible) {
+      _controlsTimer?.cancel();
+      setState(() => _controlsVisible = false);
+    } else {
+      setState(() => _controlsVisible = true);
+      _scheduleControlsHide();
     }
   }
 
@@ -214,6 +258,8 @@ class _TwitterVideoState extends State<TwitterVideo> {
   void _teardown() {
     _progressTimer?.cancel();
     _progressTimer = null;
+    _controlsTimer?.cancel();
+    _controlsTimer = null;
     _controller?.removeListener(_onPlayer);
     _controller?.dispose();
     _controller = null;
@@ -263,24 +309,37 @@ class _TwitterVideoState extends State<TwitterVideo> {
             borderRadius: BorderRadius.circular(8),
             child: Container(
               color: Colors.black,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Center(
-                    child: c.value.isInitialized
-                        ? VideoPlayer(c)
-                        : const CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  if (_isBuffering)
-                    const Center(
-                        child: CircularProgressIndicator(strokeWidth: 2)),
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    child: _controlBar(),
-                  ),
-                ],
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _toggleControls,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Center(
+                      child: c.value.isInitialized
+                          ? VideoPlayer(c)
+                          : const CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    if (_isBuffering)
+                      const Center(
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                    // 控制栏：播放中 3 秒无操作淡出（AnimatedOpacity），
+                    // 不遮挡视频画面；点视频唤出/隐藏。
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: IgnorePointer(
+                        ignoring: !_controlsVisible,
+                        child: AnimatedOpacity(
+                          opacity: _controlsVisible ? 1 : 0,
+                          duration: const Duration(milliseconds: 200),
+                          child: _controlBar(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
