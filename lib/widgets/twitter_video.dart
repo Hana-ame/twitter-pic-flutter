@@ -334,7 +334,15 @@ class _TwitterVideoState extends State<TwitterVideo> {
                         child: AnimatedOpacity(
                           opacity: _controlsVisible ? 1 : 0,
                           duration: const Duration(milliseconds: 200),
-                          child: _controlBar(),
+                          child: _VideoControls(
+                            isPlaying: _isPlaying,
+                            position: c.value.position,
+                            duration: c.value.duration,
+                            onPlayPause: () =>
+                                _isPlaying ? _pause() : _play(),
+                            onSeekEnd: (d) => c.seekTo(d),
+                            onFullscreenToggle: _enterFullscreen,
+                          ),
                         ),
                       ),
                     ),
@@ -422,30 +430,15 @@ class _TwitterVideoState extends State<TwitterVideo> {
     );
   }
 
-  Widget _controlBar() {
-    final c = _controller!;
-    return Container(
-      color: Colors.black54,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      child: Row(
-        children: [
-          IconButton(
-            icon: Icon(
-              _isPlaying ? Icons.pause : Icons.play_arrow,
-              color: Colors.white,
-              size: 20,
-            ),
-            onPressed: _isPlaying ? _pause : () => _play(),
-          ),
-          Expanded(
-            child: Text(
-              '${_fmtDuration(c.value.position)} / ${_fmtDuration(c.value.duration)}',
-              style: TextStyle(color: Colors.white.withAlpha(200), fontSize: 11),
-            ),
-          ),
-        ],
-      ),
-    );
+  // 进入全屏：push 全屏路由，与全屏页共享同一个 controller
+  // （chewie 同款做法；全屏路由盖住卡片，共享 texture 无冲突）。
+  void _enterFullscreen() {
+    final c = _controller;
+    if (c == null) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (_) => _FullscreenPlayer(controller: c),
+    ));
   }
 
   static String _fmtBytes(int n) {
@@ -453,10 +446,248 @@ class _TwitterVideoState extends State<TwitterVideo> {
     if (n < 1024 * 1024) return '${(n / 1024).toStringAsFixed(1)} KB';
     return '${(n / 1024 / 1024).toStringAsFixed(1)} MB';
   }
+}
 
-  static String _fmtDuration(Duration d) {
-    final m = d.inMinutes.toString().padLeft(2, '0');
-    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-    return '$m:$s';
+// 视频控制栏（卡片/全屏共用）：播放/暂停 + 可拖动进度条 + 时间 + 全屏按钮。
+// 拖动中只显示拖动位置（_dragSec），松手（onChangeEnd）才 seekTo，
+// 避免拖动过程频繁 seek 卡顿。
+class _VideoControls extends StatefulWidget {
+  final bool isPlaying;
+  final Duration position;
+  final Duration duration;
+  final VoidCallback onPlayPause;
+  final ValueChanged<Duration> onSeekEnd;
+  final VoidCallback? onFullscreenToggle;
+  final bool fullscreen; // 图标方向：全屏页里显示"退出全屏"
+
+  const _VideoControls({
+    required this.isPlaying,
+    required this.position,
+    required this.duration,
+    required this.onPlayPause,
+    required this.onSeekEnd,
+    this.onFullscreenToggle,
+    this.fullscreen = false,
+  });
+
+  @override
+  State<_VideoControls> createState() => _VideoControlsState();
+}
+
+class _VideoControlsState extends State<_VideoControls> {
+  double? _dragSec; // 拖动中的位置（秒），null = 未拖动
+
+  @override
+  Widget build(BuildContext context) {
+    final totalMs = widget.duration.inMilliseconds.toDouble();
+    final maxMs = totalMs > 0 ? totalMs : 1.0; // duration=0 时避免 Slider 断言
+    final posMs = (_dragSec != null
+            ? _dragSec! * 1000
+            : widget.position.inMilliseconds.toDouble())
+        .clamp(0.0, maxMs);
+    final shown = _dragSec != null
+        ? Duration(milliseconds: (_dragSec! * 1000).round())
+        : widget.position;
+    return Container(
+      color: Colors.black54,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Row(
+        children: [
+          IconButton(
+            icon: Icon(
+              widget.isPlaying ? Icons.pause : Icons.play_arrow,
+              color: Colors.white,
+              size: 20,
+            ),
+            onPressed: widget.onPlayPause,
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: const SliderThemeData(
+                trackHeight: 2,
+                thumbShape: RoundSliderThumbShape(enabledThumbRadius: 5),
+                overlayShape: RoundSliderOverlayShape(overlayRadius: 10),
+              ),
+              child: Slider(
+                value: posMs,
+                max: maxMs,
+                onChanged: (v) => setState(() => _dragSec = v / 1000),
+                onChangeEnd: (v) {
+                  setState(() => _dragSec = null);
+                  widget.onSeekEnd(Duration(milliseconds: v.round()));
+                },
+              ),
+            ),
+          ),
+          Text(
+            '${_fmtDuration(shown)} / ${_fmtDuration(widget.duration)}',
+            style: TextStyle(color: Colors.white.withAlpha(200), fontSize: 11),
+          ),
+          if (widget.onFullscreenToggle != null)
+            IconButton(
+              icon: Icon(
+                widget.fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                color: Colors.white,
+                size: 20,
+              ),
+              onPressed: widget.onFullscreenToggle,
+            ),
+          const SizedBox(width: 4),
+        ],
+      ),
+    );
   }
+}
+
+// 全屏播放页：黑底，与卡片共享 controller；点按唤出/隐藏控制栏，
+// 顶部关闭按钮 + 底部控制栏（含退出全屏）。控制栏自动隐藏逻辑与
+// 卡片独立（各自 setState，互不干扰）。
+class _FullscreenPlayer extends StatefulWidget {
+  final VideoPlayerController controller;
+
+  const _FullscreenPlayer({required this.controller});
+
+  @override
+  State<_FullscreenPlayer> createState() => _FullscreenPlayerState();
+}
+
+class _FullscreenPlayerState extends State<_FullscreenPlayer> {
+  bool _isPlaying = false;
+  bool _isBuffering = false;
+  bool _controlsVisible = true;
+  Timer? _controlsTimer;
+  int _lastSec = -1;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onPlayer);
+    widget.controller.play();
+    _scheduleControlsHide();
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onPlayer);
+    _controlsTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onPlayer() {
+    if (!mounted) return;
+    final v = widget.controller.value;
+    final playing = v.isPlaying;
+    final buffering = v.isBuffering;
+    final sec = v.position.inSeconds;
+    if (playing != _isPlaying) {
+      if (playing) {
+        _scheduleControlsHide();
+      } else {
+        _controlsTimer?.cancel();
+        if (!_controlsVisible) setState(() => _controlsVisible = true);
+      }
+    }
+    if (playing != _isPlaying || buffering != _isBuffering || sec != _lastSec) {
+      setState(() {
+        _isPlaying = playing;
+        _isBuffering = buffering;
+        _lastSec = sec;
+      });
+    }
+  }
+
+  // 同卡片：播放中 3 秒无操作隐藏控制栏，缓冲/暂停保持显示。
+  void _scheduleControlsHide() {
+    _controlsTimer?.cancel();
+    _controlsTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      if (_isPlaying && !_isBuffering) {
+        setState(() => _controlsVisible = false);
+      } else {
+        _scheduleControlsHide();
+      }
+    });
+  }
+
+  void _toggleControls() {
+    if (_controlsVisible) {
+      _controlsTimer?.cancel();
+      setState(() => _controlsVisible = false);
+    } else {
+      setState(() => _controlsVisible = true);
+      _scheduleControlsHide();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final ratio = c.value.aspectRatio;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _toggleControls,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Center(
+                child: c.value.isInitialized
+                    ? AspectRatio(
+                        aspectRatio:
+                            ratio > 0 && ratio.isFinite ? ratio : 16 / 9,
+                        child: VideoPlayer(c),
+                      )
+                    : const CircularProgressIndicator(),
+              ),
+              if (_isBuffering)
+                const Center(child: CircularProgressIndicator()),
+              Positioned(
+                top: 0,
+                left: 0,
+                child: AnimatedOpacity(
+                  opacity: _controlsVisible ? 1 : 0,
+                  duration: const Duration(milliseconds: 200),
+                  child: IconButton(
+                    icon: const Icon(Icons.close,
+                        color: Colors.white, size: 24),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  ignoring: !_controlsVisible,
+                  child: AnimatedOpacity(
+                    opacity: _controlsVisible ? 1 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: _VideoControls(
+                      isPlaying: _isPlaying,
+                      position: c.value.position,
+                      duration: c.value.duration,
+                      onPlayPause: () =>
+                          _isPlaying ? c.pause() : c.play(),
+                      onSeekEnd: (d) => c.seekTo(d),
+                      fullscreen: true,
+                      onFullscreenToggle: () => Navigator.of(context).pop(),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _fmtDuration(Duration d) {
+  final m = d.inMinutes.toString().padLeft(2, '0');
+  final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+  return '$m:$s';
 }
