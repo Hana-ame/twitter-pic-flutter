@@ -45,13 +45,16 @@ EchSocket (implements Stream<List<int>>)
 
 ## 待做（需要能联网的环境，按里程碑推进）
 
-- [ ] **M1 绑定层落地**：`boringssl_bindings.dart` 中每个符号签名对照
+- [~] **M1 绑定层落地**（M2 已先行写好绑定，符号核对仍待 CI）：`boringssl_bindings.dart` 中每个符号签名对照
       boringssl 头文件核实（当前为骨架，标注 TODO），CI 编译通过为准。
       注意点：证书校验用 `SSL_set1_host`/X509_VERIFY_PARAM 还是手工校验、
       CA 根来源（Android `/system/etc/security/cacerts`；Windows 无系统 bundle，
       建议 CI 打包 Mozilla CA 列表）。
-- [ ] **M2 握手打通**：EchSocket 完成 TCP⇄BIO 泵 + ECH 握手，
-      对 cloudflare-ech.com 前置验证 `SSL_ech_accepted() == 1`。
+- [~] **M2 握手打通**：`ech_socket.dart` 泵逻辑已写（注释态，随 M1 解禁），
+      含 WANT_READ/WANT_WRITE 状态机与 ECH accepted 校验；
+      待真机/CI 验证。⚠️ 证书校验接通前 EchSocket.connect 直接抛错（防裸奔）。
+      `ech_http_client.dart`:HTTP 头/chunked 流式解析已完成并单测
+      （跨包数据段状态机 bug 已修）。
 - [ ] **M3 HTTP/1.1 + 流式下载**：替换 `fetchToFileAsync` 一条路径，
       视频边下边写盘，内存恒定。
 - [ ] **M4 决策门**：真机对比 Go 版（成功率/耗时/包体/ECH 接受率），
