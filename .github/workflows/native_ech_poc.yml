@@ -1,0 +1,90 @@
+# Native ECH PoC —— 手动触发，不参与正式构建/发布。
+# 目的：
+#   1) 从源码编译 BoringSSL（shared），证明目标平台可出库；
+#   2) 用符号表核对 boringssl_bindings.dart 里引用的符号名真实存在（M1 前置）；
+#   3) 产物上传供真机联调。
+name: native-ech-poc
+
+on:
+  workflow_dispatch:
+
+jobs:
+  boringssl-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go (BoringSSL 构建需要，生成 err_data)
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build BoringSSL (linux-x64 shared)
+        run: |
+          git clone --depth=1 https://boringssl.googlesource.com/boringssl /tmp/boringssl
+          git -C /tmp/boringssl rev-parse HEAD > /tmp/boringssl_commit.txt
+          cmake -S /tmp/boringssl -B /tmp/boringssl/build -GNinja \
+            -DBUILD_SHARED_LIBS=1 -DCMAKE_BUILD_TYPE=Release
+          ninja -C /tmp/boringssl/build
+
+      # 绑定层符号核对：任一缺失即失败（SSL_set_tlsext_host_name 是宏，
+      # 故意不在清单里——见 bindings 内注释）。
+      - name: Verify ECH symbols exist
+        run: |
+          SO=/tmp/boringssl/build/ssl/libssl.so
+          for sym in SSL_CTX_new SSL_new SSL_connect SSL_read SSL_write \
+                     SSL_get_error SSL_set_bio SSL_free SSL_CTX_free \
+                     SSL_CTX_set1_ech_config_list SSL_ech_accepted \
+                     BIO_new BIO_free; do
+            nm -D "$SO" | grep -q " $sym\$" || { echo "MISSING: $sym"; exit 1; }
+            echo "ok: $sym"
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: boringssl-linux-x64
+          path: |
+            /tmp/boringssl/build/ssl/libssl.so
+            /tmp/boringssl/build/crypto/libcrypto.so
+            /tmp/boringssl_commit.txt
+
+  boringssl-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build BoringSSL (windows-x64 shared)
+        shell: pwsh
+        run: |
+          git clone --depth=1 https://boringssl.googlesource.com/boringssl C:\tmp\boringssl
+          cmake -S C:\tmp\boringssl -B C:\tmp\boringssl\build `
+            -DBUILD_SHARED_LIBS=1 -DCMAKE_BUILD_TYPE=Release
+          cmake --build C:\tmp\boringssl\build --config Release
+
+      - name: Verify ECH symbols exist (dumpbin)
+        shell: pwsh
+        run: |
+          $dll = "C:\tmp\boringssl\build\ssl\Release\ssl.dll"
+          if (-not (Test-Path $dll)) { $dll = Get-ChildItem C:\tmp\boringssl\build -Recurse -Filter ssl.dll | Select-Object -First 1 -ExpandProperty FullName }
+          $dump = & dumpbin /exports $dll | Out-String
+          foreach ($sym in @('SSL_CTX_set1_ech_config_list','SSL_ech_accepted','SSL_connect','SSL_read','SSL_write')) {
+            if ($dump -notmatch "\b$sym\b") { Write-Error "MISSING: $sym" }
+            Write-Host "ok: $sym"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: boringssl-windows-x64
+          path: |
+            C:\tmp\boringssl\build\ssl\Release\**
+            C:\tmp\boringssl\build\crypto\Release\**
