@@ -1,49 +1,50 @@
 // test/ech_url_test.dart
 // EchUrl 单元测试：验证 URL 重写逻辑
+// 新格式：path 不包含域名，直接转发到 video-cf.twimg.com
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twitter_pic_flutter/utils/ech_url.dart';
 
 void main() {
   group('EchUrl.rewrite', () {
-    test('rewrites pbs.twimg.com URL', () {
+    test('rewrites pbs.twimg.com URL (strips host)', () {
       final input = 'https://pbs.twimg.com/media/photo.jpg?token=abc';
       final result = EchUrl.rewrite(input, 12345);
-      expect(result, equals('http://127.0.0.1:12345/pbs.twimg.com/media/photo.jpg?token=abc'));
+      expect(result, equals('http://127.0.0.1:12345/media/photo.jpg?token=abc'));
     });
 
-    test('rewrites video-cf.twimg.com URL', () {
+    test('rewrites video-cf.twimg.com URL (strips host)', () {
       final input = 'https://video-cf.twimg.com/ttv/video.mp4';
       final result = EchUrl.rewrite(input, 12345);
-      expect(result, equals('http://127.0.0.1:12345/video-cf.twimg.com/ttv/video.mp4'));
+      expect(result, equals('http://127.0.0.1:12345/ttv/video.mp4'));
     });
 
-    test('rewrites abs.twimg.com URL', () {
+    test('rewrites abs.twimg.com URL (strips host)', () {
       final input = 'https://abs.twimg.com/profile_images/avatar.jpg';
       final result = EchUrl.rewrite(input, 12345);
-      expect(result, equals('http://127.0.0.1:12345/abs.twimg.com/profile_images/avatar.jpg'));
+      expect(result, equals('http://127.0.0.1:12345/profile_images/avatar.jpg'));
     });
 
     test('rewrites URL with query string', () {
       final input = 'https://pbs.twimg.com/media/photo.jpg?name=value&x=1';
       final result = EchUrl.rewrite(input, 12345);
-      expect(result, equals('http://127.0.0.1:12345/pbs.twimg.com/media/photo.jpg?name=value&x=1'));
+      expect(result, equals('http://127.0.0.1:12345/media/photo.jpg?name=value&x=1'));
     });
 
     test('rewrites URL with custom host', () {
       final input = 'https://pbs.twimg.com/media/photo.jpg';
       final result = EchUrl.rewrite(input, 12345, host: '192.168.1.100');
-      expect(result, equals('http://192.168.1.100:12345/pbs.twimg.com/media/photo.jpg'));
+      expect(result, equals('http://192.168.1.100:12345/media/photo.jpg'));
     });
   });
 
   group('EchUrl.isProxyUrl', () {
     test('returns true for localhost URL', () {
-      expect(EchUrl.isProxyUrl('http://127.0.0.1:12345/pbs.twimg.com/photo.jpg'), isTrue);
+      expect(EchUrl.isProxyUrl('http://127.0.0.1:12345/media/photo.jpg'), isTrue);
     });
 
     test('returns true for localhost URL', () {
-      expect(EchUrl.isProxyUrl('http://localhost:12345/pbs.twimg.com/photo.jpg'), isTrue);
+      expect(EchUrl.isProxyUrl('http://localhost:12345/media/photo.jpg'), isTrue);
     });
 
     test('returns false for regular URL', () {
@@ -56,16 +57,16 @@ void main() {
   });
 
   group('EchUrl.extractTarget', () {
-    test('extracts target from proxy URL', () {
-      final proxyUrl = 'http://127.0.0.1:12345/pbs.twimg.com/media/photo.jpg?token=abc';
+    test('extracts target from proxy URL (adds video-cf.twimg.com)', () {
+      final proxyUrl = 'http://127.0.0.1:12345/media/photo.jpg?token=abc';
       final target = EchUrl.extractTarget(proxyUrl);
-      expect(target, equals('https://pbs.twimg.com/media/photo.jpg?token=abc'));
+      expect(target, equals('https://video-cf.twimg.com/media/photo.jpg?token=abc'));
     });
 
     test('extracts target without query', () {
-      final proxyUrl = 'http://127.0.0.1:12345/pbs.twimg.com/media/photo.jpg';
+      final proxyUrl = 'http://127.0.0.1:12345/media/photo.jpg';
       final target = EchUrl.extractTarget(proxyUrl);
-      expect(target, equals('https://pbs.twimg.com/media/photo.jpg'));
+      expect(target, equals('https://video-cf.twimg.com/media/photo.jpg'));
     });
   });
 
@@ -76,6 +77,7 @@ void main() {
       expect(result, isA<Uri>());
       expect(result.host, equals('127.0.0.1'));
       expect(result.port, equals(12345));
+      expect(result.path, equals('/media/photo.jpg'));
     });
   });
 }

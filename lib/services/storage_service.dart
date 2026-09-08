@@ -30,8 +30,32 @@ class StorageService {
   }
 
   static Future<void> _flush() async {
-    await _file!.writeAsString(jsonEncode(_memory));
+    // 串行化 + 临时文件原子替换：快速连续 toggle 时多个 writeAsString
+    // 并发交错可能写坏 storage.json；rename 保证读到的是完整文件。
+    _flushChain = _flushChain.then((_) async {
+      try {
+        final tmp = File('${_file!.path}.tmp');
+        await tmp.writeAsString(jsonEncode(_memory));
+        await tmp.rename(_file!.path);
+      } catch (_) {}
+    });
+    return _flushChain;
   }
+
+  static Future<void> _flushChain = Future.value();
+
+  /// 仅供测试：清空内存态并解除已加载标记，
+  /// 下次 [ensureInitialized] 会重新从磁盘读取。
+  static void resetForTests() {
+    _loaded = false;
+    _memory = {};
+    _file = null;
+    _flushChain = Future.value();
+  }
+
+  /// 仅供测试：等待所有挂起的写盘完成（写盘是串行链，见 [_flush]）。
+  static Future<void> debugFlushPending() => _flushChain;
+
 
   static Map<String, dynamic> _readMap(String key) {
     final s = _read(key);

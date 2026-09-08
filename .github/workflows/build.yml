@@ -7,6 +7,46 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 单元测试：发布前强制执行（create_release 依赖本 job）。
+  flutter_test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.3
+
+      - name: Create Flutter project scaffold
+        run: |
+          flutter create --project-name twitter_pic_flutter /tmp/test_project
+          cp pubspec.yaml /tmp/test_project/pubspec.yaml
+          rm -rf /tmp/test_project/lib /tmp/test_project/test
+          cp -r lib /tmp/test_project/lib
+          cp -r test /tmp/test_project/test
+
+      - name: Install dependencies
+        run: |
+          cd /tmp/test_project
+          flutter pub get
+
+      - name: Static analysis (quality gate)
+        run: |
+          cd /tmp/test_project
+          flutter analyze --fatal-infos
+
+      - name: Dependency audit
+        run: |
+          cd /tmp/test_project
+          dart pub audit
+
+      - name: Run tests
+        run: |
+          cd /tmp/test_project
+          flutter test --coverage
+
   build_android:
     runs-on: ubuntu-latest
     permissions:
@@ -253,7 +293,7 @@ jobs:
 
   create_release:
     runs-on: ubuntu-latest
-    needs: [build_android, build_windows]
+    needs: [build_android, build_windows, flutter_test]
     permissions:
       contents: write
     steps:

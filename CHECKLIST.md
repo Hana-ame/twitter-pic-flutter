@@ -47,3 +47,13 @@
 - Windows 构建需要 VS 环境（CI 自带）
 - Android NDK r27 用于交叉编译 arm64 native 库
 - manifest 注入已精简：仅 `INTERNET` 权限 + 应用名"推图"（cleartext/queries 注入随边下边播移除）
+
+## 单元测试（2026-08-26）
+- [x] `test/stable_hash_test.dart` — FNV-1a 已知向量 / 确定性 / 千级无冲突（防缓存文件名算法漂移）
+- [x] `test/lru_image_cache_test.dart` — 淘汰顺序 / 触碰刷新 / 字节计数 / 更新去重 / 超大条目语义
+- [x] `test/user_model_test.dart` — fromJson 解析与缺省回退
+- [x] `test/storage_service_test.dart` — 落盘重读 / 并发写不损坏 / 无 .tmp 残留 / 规则与自定义标签持久化
+- [x] `test/tag_display_area_test.dart` — 高亮星标渲染（widget test）
+- [x] CI：`flutter_test` job（ubuntu），`create_release` 依赖它 —— 测试不过不发版
+- 说明：可测逻辑已抽为纯 Dart 模块（`lib/utils/stable_hash.dart`、`lib/services/lru_image_cache.dart`），
+  本地无 SDK，统一由 CI 执行

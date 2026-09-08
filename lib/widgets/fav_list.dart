@@ -106,7 +106,7 @@ class _FavListState extends State<FavList> {
   }
 }
 
-class _FavTile extends StatelessWidget {
+class _FavTile extends StatefulWidget {
   final String username;
   final TwitterApi api;
   final ProxyManager proxy;
@@ -114,24 +114,47 @@ class _FavTile extends StatelessWidget {
   const _FavTile({required this.username, required this.api, required this.proxy});
 
   @override
+  State<_FavTile> createState() => _FavTileState();
+}
+
+class _FavTileState extends State<_FavTile> {
+  Future<UserMetaData>? _meta;
+
+  @override
+  void initState() {
+    super.initState();
+    _meta = widget.api.getMetaData(widget.username);
+  }
+
+  @override
+  void didUpdateWidget(_FavTile old) {
+    super.didUpdateWidget(old);
+    // 原实现在 build 里直接 new FutureBuilder future，父组件任意 setState
+    // （导入/导出/加载更多）都会让所有可见 tile 重发请求。
+    if (old.username != widget.username) {
+      _meta = widget.api.getMetaData(widget.username);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return FutureBuilder<UserMetaData>(
-      future: api.getMetaData(username),
+      future: _meta,
       builder: (context, snapshot) {
         final info = snapshot.data?.accountInfo;
         return ListTile(
           leading: ProxyAvatar(
             url: info?.avatar,
-            fallbackText: username[0].toUpperCase(),
-            proxy: proxy,
+            fallbackText: widget.username[0].toUpperCase(),
+            proxy: widget.proxy,
             radius: 16,
           ),
-          title: Text(info?.nick ?? username),
-          subtitle: Text('@$username'),
+          title: Text(info?.nick ?? widget.username),
+          subtitle: Text('@${widget.username}'),
           onTap: () {
             if (snapshot.hasData) {
               Navigator.push(context, MaterialPageRoute(
-                builder: (_) => UserDetailScreen(profile: snapshot.data!, proxy: proxy),
+                builder: (_) => UserDetailScreen(profile: snapshot.data!, proxy: widget.proxy),
               ));
             }
           },

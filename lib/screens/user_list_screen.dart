@@ -1,5 +1,5 @@
 // 用户列表页面：显示所有用户并支持搜索、收藏切换
-import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -28,11 +28,48 @@ class UserListScreenState extends State<UserListScreen> {
   String? _error;
   bool _showFav = false;
   String _search = '';
+  // 搜索防抖 + 结果 future 复用：原实现每次 build（每个按键）都新建
+  // FutureBuilder future，狂发请求且乱序返回会显示错误结果。
+  Timer? _debounce;
+  String _appliedQuery = '';
+  Future<List<TwitterUser>>? _searchFuture;
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  void _onSearchChanged(String v) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      final q = v.trim();
+      if (q == _appliedQuery) return;
+      setState(() => _search = q);
+    });
+  }
+
+  Future<List<TwitterUser>> _ensureSearchFuture(String q) {
+    if (_searchFuture == null || _appliedQuery != q) {
+      _appliedQuery = q;
+      _searchFuture = Future.wait([
+        _api.searchUserList('username', q).catchError((_) => <TwitterUser>[]),
+        _api.searchUserList('nick', q).catchError((_) => <TwitterUser>[]),
+      ]).then((lists) {
+        final seen = <String>{};
+        // seen.add 返回是否新增，一行完成去重。
+        return [...lists[0], ...lists[1]].where((u) => seen.add(u.username)).toList();
+      });
+    }
+    return _searchFuture!;
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _api.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -88,7 +125,7 @@ class UserListScreenState extends State<UserListScreen> {
     return Column(
       children: [
         SearchBarWidget(
-          onChanged: (v) => setState(() => _search = v),
+          onChanged: _onSearchChanged,
         ),
         Expanded(
           child: _search.isNotEmpty ? _buildSearchResults() : _buildDefaultList(),
@@ -99,17 +136,7 @@ class UserListScreenState extends State<UserListScreen> {
 
   Widget _buildSearchResults() {
     return FutureBuilder<List<TwitterUser>>(
-      future: Future.wait([
-        _api.searchUserList('username', _search).catchError((_) => <TwitterUser>[]),
-        _api.searchUserList('nick', _search).catchError((_) => <TwitterUser>[]),
-      ]).then((lists) {
-        final seen = <String>{};
-        return [...lists[0], ...lists[1]].where((u) {
-          if (seen.contains(u.username)) return false;
-          seen.add(u.username);
-          return true;
-        }).toList();
-      }),
+      future: _ensureSearchFuture(_search),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(strokeWidth: 2));
@@ -168,11 +195,6 @@ class UserListScreenState extends State<UserListScreen> {
     );
   }
 
-  @override
-  void dispose() {
-    _api.dispose();
-    super.dispose();
-  }
 }
 
 class _UserTile extends StatefulWidget {

@@ -13,6 +13,8 @@ dependencies:
   cupertino_icons: ^1.0.6
   ffi: ^2.2.0          # using/Arena/Utf8 在 2.x 中仍可用，无需更改代码
   path_provider: ^2.1.5
+  cached_network_image: ^3.4.1  # 磁盘+内存二级缓存 + 降采样解码
+  dio: ^5.7.0                    # 网络层：超时控制、拦截器、结构化异常
   # 边下边播（系统播放器/ExoPlayer 播本地流）真机不可行已移除；
   # 下载完成原地播放用 video_player（Windows 由 video_player_win 实现，
   # federated 自动注册，无需手动 registerWith）。
@@ -33,6 +35,8 @@ dev_dependencies:
 
   flutter_lints: ^3.0.1
   flutter_launcher_icons: ^0.14.1
+  # 测试 StorageService 时 mock path_provider 平台通道
+  path_provider_platform_interface: ^2.1.0
 
 flutter_launcher_icons:
   android: true

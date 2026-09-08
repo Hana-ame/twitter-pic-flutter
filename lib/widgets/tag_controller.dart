@@ -23,7 +23,14 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   @override
   void initState() {
     super.initState();
+    _inputCtrl.addListener(_onInputChanged);
     _load();
+  }
+
+  // 原实现按钮的禁用条件只在 build 时求值、输入不触发重建，
+  // 导致打字后“高亮/屏蔽”按钮永远是灰的（只能按回车提交）。
+  void _onInputChanged() {
+    if (mounted) setState(() {});
   }
 
   void _load() {
@@ -72,69 +79,76 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
 
   @override
   void dispose() {
+    _inputCtrl.removeListener(_onInputChanged);
     _inputCtrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('标签显示控制', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _inputCtrl,
-            decoration: const InputDecoration(
-              hintText: '输入标签名称...',
-              border: OutlineInputBorder(),
-              isDense: true,
+    final hasInput = _inputCtrl.text.trim().isNotEmpty;
+    return Scaffold(
+      appBar: AppBar(title: const Text('标签管理')),
+      body: SafeArea(
+        // SingleChildScrollView：键盘弹出时内容可滚动，小屏不溢出。
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            TextField(
+              controller: _inputCtrl,
+              decoration: const InputDecoration(
+                hintText: '输入标签名称...',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              onSubmitted: (_) => _addTag('highlight'),
             ),
-            onSubmitted: (_) => _addTag('highlight'),
-          ),
-          const SizedBox(height: 8),
-          HorizontalButtonRow(buttons: [
-            ElevatedButton.icon(
-              onPressed: _inputCtrl.text.trim().isEmpty ? null : () => _addTag('highlight'),
-              icon: const Icon(Icons.visibility, size: 16),
-              label: const Text('高亮'),
+            const SizedBox(height: 8),
+            HorizontalButtonRow(buttons: [
+              ElevatedButton.icon(
+                onPressed: hasInput ? () => _addTag('highlight') : null,
+                icon: const Icon(Icons.visibility, size: 16),
+                label: const Text('高亮'),
+              ),
+              ElevatedButton.icon(
+                onPressed: hasInput ? () => _addTag('block') : null,
+                icon: const Icon(Icons.visibility_off, size: 16),
+                label: const Text('屏蔽'),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade50),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            Text('添加后，详情页中命中的标签会特殊显示；'
+                '用户标签命中“屏蔽”时页面顶部会给出提示。',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+            const SizedBox(height: 12),
+            Text('高亮显示 (${_highlight.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 6, runSpacing: 4,
+              children: _highlight.isEmpty
+                  ? [const Text('无高亮标签', style: TextStyle(color: Colors.grey))]
+                  : _highlight.map((t) => Chip(
+                      label: Text(t, style: const TextStyle(fontSize: 12)),
+                      onDeleted: () => _removeTag(t, 'highlight'),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    )).toList(),
             ),
-            ElevatedButton.icon(
-              onPressed: _inputCtrl.text.trim().isEmpty ? null : () => _addTag('block'),
-              icon: const Icon(Icons.visibility_off, size: 16),
-              label: const Text('屏蔽'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade50),
+            const Divider(),
+            Text('已屏蔽 (${_block.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 6, runSpacing: 4,
+              children: _block.isEmpty
+                  ? [const Text('无屏蔽标签', style: TextStyle(color: Colors.grey))]
+                  : _block.map((t) => Chip(
+                      label: Text(t, style: const TextStyle(fontSize: 12)),
+                      onDeleted: () => _removeTag(t, 'block'),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    )).toList(),
             ),
-          ]),
-          const SizedBox(height: 16),
-          Text('高亮显示 (${_highlight.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 4),
-          Wrap(
-            spacing: 6, runSpacing: 4,
-            children: _highlight.isEmpty
-                ? [const Text('无高亮标签', style: TextStyle(color: Colors.grey))]
-                : _highlight.map((t) => Chip(
-                    label: Text(t, style: const TextStyle(fontSize: 12)),
-                    onDeleted: () => _removeTag(t, 'highlight'),
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  )).toList(),
-          ),
-          const Divider(),
-          Text('已屏蔽 (${_block.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 4),
-          Wrap(
-            spacing: 6, runSpacing: 4,
-            children: _block.isEmpty
-                ? [const Text('无屏蔽标签', style: TextStyle(color: Colors.grey))]
-                : _block.map((t) => Chip(
-                    label: Text(t, style: const TextStyle(fontSize: 12)),
-                    onDeleted: () => _removeTag(t, 'block'),
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  )).toList(),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

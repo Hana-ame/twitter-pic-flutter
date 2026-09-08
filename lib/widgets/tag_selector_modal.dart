@@ -1,6 +1,8 @@
 // 标签选择弹窗，支持预设、已有和自定义标签的管理
 import 'package:flutter/material.dart';
 
+import '../services/storage_service.dart';
+
 const _kPresetCategories = [
   {'title': '主体', 'tags': ['男性', '女性', '男女性交', '二次元', '脚', '其他', '无关内容']},
   {'title': '类别性质', 'tags': ['商业AV', '自拍', '原创', '合集收集', 'AI', '欧美', '黑人', 'SM', '男同', '羞辱']},
@@ -60,7 +62,13 @@ class _TagSelectorModalState extends State<TagSelectorModal> {
       if (score < -1) score = -1;
       if (score != 0) _tagScores[e.key] = score;
     }
-    _displayOtherTags = _kInitialFixedTags.toList();
+    _displayOtherTags = [
+      ..._kInitialFixedTags,
+      // 历史自定义标签持久化在 storage（原先加过的重启就丢，且
+      // StorageService.getCustomTags 一直是死代码）。
+      ...StorageService.getCustomTags()
+          .where((t) => !_kInitialFixedTags.contains(t)),
+    ];
     _customTagCtrl.clear();
     _isAddingTag = false;
   }
@@ -93,7 +101,13 @@ class _TagSelectorModalState extends State<TagSelectorModal> {
       return;
     }
     if (!_displayOtherTags.contains(tag)) {
-      _displayOtherTags.add(tag);
+      setState(() => _displayOtherTags.add(tag));
+      // 持久化，下次打开还在。
+      final stored = StorageService.getCustomTags();
+      if (!stored.contains(tag)) {
+        stored.add(tag);
+        StorageService.setCustomTags(stored);
+      }
     }
     _tagScores[tag] = 1;
     _customTagCtrl.clear();

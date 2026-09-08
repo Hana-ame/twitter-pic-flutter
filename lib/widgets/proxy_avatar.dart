@@ -1,11 +1,17 @@
-import 'dart:typed_data';
+// proxy_avatar.dart
+// 通过本机 ECH 代理加载头像。
+//
+// 与旧版差异：
+//   - 删除了 fetchAsync → Image.memory 的手手动流程
+//   - 直接使用 CircleAvatar + Image.network(EchUrl.rewrite(...))
+//   - 框架自动处理缓存、解码、错误状态
 
-// 通过 ECH 代理加载头像的组件
 import 'package:flutter/material.dart';
 
 import '../services/proxy_manager.dart';
+import '../utils/ech_url.dart';
 
-class ProxyAvatar extends StatefulWidget {
+class ProxyAvatar extends StatelessWidget {
   final String? url;
   final String fallbackText;
   final double radius;
@@ -20,47 +26,28 @@ class ProxyAvatar extends StatefulWidget {
   });
 
   @override
-  State<ProxyAvatar> createState() => _ProxyAvatarState();
-}
-
-class _ProxyAvatarState extends State<ProxyAvatar> {
-  Uint8List? _bytes;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void didUpdateWidget(ProxyAvatar old) {
-    super.didUpdateWidget(old);
-    if (old.url != widget.url) {
-      _bytes = null;
-      _load();
-    }
-  }
-
-  Future<void> _load() async {
-    if (widget.url == null) return;
-    try {
-      final bytes = await widget.proxy.fetchAsync(widget.url!);
-      if (!mounted) return;
-      setState(() => _bytes = bytes);
-    } catch (_) {}
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (_bytes != null) {
+    if (url == null) {
       return CircleAvatar(
-        radius: widget.radius,
-        backgroundImage: MemoryImage(_bytes!),
+        radius: radius,
+        child: Text(fallbackText, style: TextStyle(fontSize: radius * 0.8)),
       );
     }
+
+    final port = proxy.port;
+    if (port == null) {
+      return CircleAvatar(
+        radius: radius,
+        child: Text(fallbackText, style: TextStyle(fontSize: radius * 0.8)),
+      );
+    }
+
+    final echUrl = EchUrl.rewrite(url!, port);
+
     return CircleAvatar(
-      radius: widget.radius,
-      child: Text(widget.fallbackText, style: TextStyle(fontSize: widget.radius * 0.8)),
+      radius: radius,
+      backgroundImage: NetworkImage(echUrl),
+      child: null,
     );
   }
 }
