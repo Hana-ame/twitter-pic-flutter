@@ -5,6 +5,7 @@
 //   - 删除了 fetchAsync → Image.memory 的手手动流程
 //   - 直接使用 CircleAvatar + Image.network(EchUrl.rewrite(...))
 //   - 框架自动处理缓存、解码、错误状态
+//   - 新增：加载指示器、错误回退
 
 import 'package:flutter/material.dart';
 
@@ -28,18 +29,12 @@ class ProxyAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (url == null) {
-      return CircleAvatar(
-        radius: radius,
-        child: Text(fallbackText, style: TextStyle(fontSize: radius * 0.8)),
-      );
+      return _buildFallback();
     }
 
     final port = proxy.port;
     if (port == null) {
-      return CircleAvatar(
-        radius: radius,
-        child: Text(fallbackText, style: TextStyle(fontSize: radius * 0.8)),
-      );
+      return _buildFallback();
     }
 
     final echUrl = EchUrl.rewrite(url!, port);
@@ -48,6 +43,16 @@ class ProxyAvatar extends StatelessWidget {
       radius: radius,
       backgroundImage: NetworkImage(echUrl),
       child: null,
+    );
+  }
+
+  Widget _buildFallback() {
+    return CircleAvatar(
+      radius: radius,
+      child: Text(
+        fallbackText,
+        style: TextStyle(fontSize: radius * 0.8),
+      ),
     );
   }
 }
