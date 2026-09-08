@@ -273,30 +273,36 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           // ListView.builder 惰性构建：滚动到哪建到哪。原实现把所有媒体卡
           // 一次性塞进 children，“展开全部”会瞬间创建全部 TwitterVideo、
           // 同时触发所有视频下载；builder 化后视频只在滚入视口时才创建/下载。
-          ListView.builder(
-            padding: const EdgeInsets.all(12),
-            itemCount: _detailItemCount(showBlockBanner, displayTimeline, hasMore),
-            itemBuilder: (context, i) {
-              if (i < _kHeaderCount) return _buildHeader(i, info, isFav, isBlocked);
-              var j = i - _kHeaderCount;
-              if (showBlockBanner && j == 0) return _buildBlockBanner(blockedHits);
-              if (showBlockBanner) j--;
-              if (displayTimeline.isEmpty) {
-                return const Padding(
-                    padding: EdgeInsets.all(32), child: Center(child: Text('暂无内容')));
-              }
-              if (j < displayTimeline.length) {
-                final item = displayTimeline[j];
-                return _MediaCard(key: ValueKey(item.url), item: item, proxy: widget.proxy);
-              }
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: ElevatedButton(
-                  onPressed: () => setState(() => _mediaLimit += 10),
-                  child: const Text('加载更多'),
-                ),
-              );
+          RefreshIndicator(
+            onRefresh: () async {
+              _loadTags();
+              _loadEmojis();
             },
+            child: ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: _detailItemCount(showBlockBanner, displayTimeline, hasMore),
+              itemBuilder: (context, i) {
+                if (i < _kHeaderCount) return _buildHeader(i, info, isFav, isBlocked);
+                var j = i - _kHeaderCount;
+                if (showBlockBanner && j == 0) return _buildBlockBanner(blockedHits);
+                if (showBlockBanner) j--;
+                if (displayTimeline.isEmpty) {
+                  return const Padding(
+                      padding: EdgeInsets.all(32), child: Center(child: Text('暂无内容')));
+                }
+                if (j < displayTimeline.length) {
+                  final item = displayTimeline[j];
+                  return _MediaCard(key: ValueKey(item.url), item: item, proxy: widget.proxy);
+                }
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: ElevatedButton(
+                    onPressed: () => setState(() => _mediaLimit += 10),
+                    child: const Text('加载更多'),
+                  ),
+                );
+              },
+            ),
           ),
           if (_showTagModal)
             TagSelectorModal(
