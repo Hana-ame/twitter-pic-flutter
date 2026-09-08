@@ -48,36 +48,39 @@ class _RankingScreenState extends State<RankingScreen> {
       return const Center(child: Text('暂无排行数据'));
     }
 
-    return Column(
-      children: [
-        Wrap(
-          spacing: 8, runSpacing: 8,
-          alignment: WrapAlignment.center,
-          children: _data!.keys.map((emoji) => GestureDetector(
-            onTap: () => setState(() => _activeEmoji = emoji),
-            child: Container(
-              width: 44, height: 44,
-              decoration: BoxDecoration(
-                color: _activeEmoji == emoji ? Colors.blue.shade50 : Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-                border: _activeEmoji == emoji ? Border.all(color: Colors.blue.shade200) : null,
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: SingleChildScrollView(
+        child: Column(
+          children: [
+            Wrap(
+              spacing: 8, runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: _data!.keys.map((emoji) => GestureDetector(
+                onTap: () => setState(() => _activeEmoji = emoji),
+                child: Container(
+                  width: 44, height: 44,
+                  decoration: BoxDecoration(
+                    color: _activeEmoji == emoji ? Colors.blue.shade50 : Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                    border: _activeEmoji == emoji ? Border.all(color: Colors.blue.shade200) : null,
+                  ),
+                  child: Center(child: Text(emoji, style: const TextStyle(fontSize: 22))),
+                ),
+              )).toList(),
+            ),
+            const SizedBox(height: 16),
+            if (_activeEmoji != null && _data![_activeEmoji] != null)
+              Column(
+                children: [
+                  _buildList('日榜', _data![_activeEmoji]!.day),
+                  _buildList('周榜', _data![_activeEmoji]!.week),
+                  _buildList('月榜', _data![_activeEmoji]!.month),
+                ],
               ),
-              child: Center(child: Text(emoji, style: const TextStyle(fontSize: 22))),
-            ),
-          )).toList(),
+          ],
         ),
-        const SizedBox(height: 16),
-        if (_activeEmoji != null && _data![_activeEmoji] != null)
-          Expanded(
-            child: ListView(
-              children: [
-                _buildList('日榜', _data![_activeEmoji]!.day),
-                _buildList('周榜', _data![_activeEmoji]!.week),
-                _buildList('月榜', _data![_activeEmoji]!.month),
-              ],
-            ),
-          ),
-      ],
+      ),
     );
   }
 
