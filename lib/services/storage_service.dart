@@ -8,6 +8,7 @@ class StorageService {
   static const _kBlockMap = 'block-map';
   static const _kTagRules = 'tag-rules';
   static const _kCustomTags = 'user_custom_tags';
+  static const _kSearchHistory = 'search-history';
 
   static bool _loaded = false;
   static Map<String, String> _memory = {};
@@ -148,5 +149,20 @@ class StorageService {
 
   static void setCustomTags(List<String> tags) {
     _write(_kCustomTags, jsonEncode(tags));
+  }
+
+  // --- search-history ---
+  static List<String> getSearchHistory() {
+    final s = _read(_kSearchHistory);
+    if (s.isEmpty) return [];
+    try {
+      final list = jsonDecode(s);
+      if (list is List) return list.cast<String>();
+    } catch (_) {}
+    return [];
+  }
+
+  static void saveSearchHistory(List<String> history) {
+    _write(_kSearchHistory, jsonEncode(history));
   }
 }
