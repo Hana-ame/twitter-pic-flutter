@@ -5,7 +5,7 @@
 APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit
 CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
 
-exec "$JAVACMD" \
+exec java \
     $JAVA_OPTS \
     $GRADLE_OPTS \
     "-Dorg.gradle.appname=Gradle" \
