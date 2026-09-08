@@ -103,9 +103,24 @@ class _TwitterImageState extends State<TwitterImage> {
       height: widget.height,
       color: Colors.grey[300],
       child: Center(
-        child: Tooltip(
-          message: message,
-          child: const Icon(Icons.broken_image, size: 32, color: Colors.grey),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.broken_image, size: 32, color: Colors.grey),
+            const SizedBox(height: 8),
+            Tooltip(
+              message: message,
+              child: ElevatedButton.icon(
+                onPressed: () => setState(() {}),
+                icon: const Icon(Icons.refresh, size: 14),
+                label: const Text('重试', style: TextStyle(fontSize: 11)),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  minimumSize: const Size(0, 0),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
