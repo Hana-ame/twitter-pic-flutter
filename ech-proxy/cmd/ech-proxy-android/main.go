@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	cloudflare_ech "github.com/Hana-ame/wintools/pkg/ech"
 )
