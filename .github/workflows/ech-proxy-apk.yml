@@ -41,22 +41,20 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
 
       - name: Clone twitter-pic-go (for ech-proxy)
-        uses: actions/checkout@v4
-        with:
-          repository: Hana-ame/twitter-pic-go
-          path: ../twitter-pic-go
-          fetch-depth: 0
+        run: |
+          git clone --depth=1 https://github.com/Hana-ame/twitter-pic-go.git ./twitter-pic-go
+          ls -la ./twitter-pic-go/ech-proxy/cmd/ech-proxy-android/
 
       - name: Build ech-proxy Android library
         run: |
-          cd ../twitter-pic-go/ech-proxy
-          mkdir -p ../../ech-proxy-android/app/src/main/jniLibs/arm64-v8a
+          cd ./twitter-pic-go/ech-proxy
+          mkdir -p ../ech-proxy-android/app/src/main/jniLibs/arm64-v8a
           CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
             CC=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
             go build -buildmode=c-shared -ldflags="-s -w" \
-            -o ../../ech-proxy-android/app/src/main/jniLibs/arm64-v8a/libechproxy.so \
+            -o ../ech-proxy-android/app/src/main/jniLibs/arm64-v8a/libechproxy.so \
             ./cmd/ech-proxy-android/
-          ls -lh ../../ech-proxy-android/app/src/main/jniLibs/arm64-v8a/libechproxy.so
+          ls -lh ../ech-proxy-android/app/src/main/jniLibs/arm64-v8a/libechproxy.so
 
       - name: Build Android APK
         run: |
