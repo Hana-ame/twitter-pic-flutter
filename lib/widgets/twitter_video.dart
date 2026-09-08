@@ -349,6 +349,21 @@ class _TwitterVideoState extends State<TwitterVideo>
               style: const TextStyle(color: Colors.white54, fontSize: 11),
               textAlign: TextAlign.center,
             ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              onPressed: () {
+                setState(() {
+                  _error = null;
+                  _isLoading = true;
+                });
+                _initPlayer();
+              },
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('重试'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              ),
+            ),
           ],
         ),
       ),
