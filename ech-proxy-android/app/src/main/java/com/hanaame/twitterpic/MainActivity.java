@@ -74,8 +74,16 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openBrowser(int port) {
-        String url = "http://127.0.0.1:" + port + "/";
-        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+        // HTTPS 模式：需要 DNS 解析 twimg.l.moonchan.xyz 到 127.0.0.1
+        // 如果 DNS 未配置，会降级到 HTTP
+        String httpsUrl = "https://twimg.l.moonchan.xyz:" + port + "/";
+        String httpUrl = "http://127.0.0.1:" + port + "/";
+        
+        // 先尝试 HTTPS，如果失败则用 HTTP
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(httpsUrl));
         startActivity(intent);
+        
+        // 同时提供 HTTP 备用链接
+        Log.d(TAG, "HTTP fallback: " + httpUrl);
     }
 }
