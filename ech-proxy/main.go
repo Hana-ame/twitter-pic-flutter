@@ -69,10 +69,8 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Proxy Twitter CDN requests
-	if strings.HasPrefix(path, "/pbs.twimg.com") ||
-		strings.HasPrefix(path, "/video.twimg.com") ||
-		strings.HasPrefix(path, "/abs.twimg.com") {
+	// Proxy Twitter CDN requests (all via video-cf.twimg.com)
+	if strings.HasPrefix(path, "/video-cf.twimg.com") {
 
 		targetHost := path[strings.Index(path, "/")+1 : strings.LastIndex(path, "/")]
 		targetPath := path[strings.LastIndex(path, "/"):]

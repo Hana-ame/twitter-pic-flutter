@@ -34,11 +34,11 @@ import (
 //go:embed web/index.html
 var indexHTML string
 
-// Twitter CDN 域名映射
+// Twitter CDN 域名映射（全部走 video-cf.twimg.com）
 var cdnMap = map[string]string{
-	"pbs.twimg.com":       "pbs.twimg.com",
+	"pbs.twimg.com":      "video-cf.twimg.com",
 	"video-cf.twimg.com": "video-cf.twimg.com",
-	"abs.twimg.com":       "abs.twimg.com",
+	"abs.twimg.com":      "video-cf.twimg.com",
 }
 
 const apiHost = "x.moonchan.xyz"
@@ -98,7 +98,7 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 
 	// 2. 初始化 ECH
 	log.Printf("Initializing ECH client...")
-	req, _ := http.NewRequest("HEAD", "https://pbs.twimg.com/favicon.ico", nil)
+	req, _ := http.NewRequest("HEAD", "https://video-cf.twimg.com/favicon.ico", nil)
 	resp, err := cloudflare_ech.Do(req)
 	if err != nil {
 		log.Printf("ECH init failed: %v", err)
