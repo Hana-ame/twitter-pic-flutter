@@ -171,27 +171,32 @@ class UserListScreenState extends State<UserListScreen> {
         ),
       );
     }
-    return ListView.builder(
-      itemCount: _users.length + 1,
-      itemBuilder: (_, i) {
-        if (i == _users.length) {
-          if (_users.isEmpty) return const SizedBox.shrink();
-          return _LoadMoreButton(
-            after: _users.last.username,
-            api: _api,
-            onLoaded: (newUsers) => setState(() => _users.addAll(newUsers)),
-          );
-        }
-        final u = _users[i];
-        if (StorageService.isBlocked(u.username)) return const SizedBox.shrink();
-        return _UserTile(
-          key: ValueKey(u.username),
-          username: u.username,
-          api: _api,
-          proxy: widget.proxy,
-          onTap: (m) => _openDetail(m),
-        );
+    return RefreshIndicator(
+      onRefresh: () async {
+        await _load();
       },
+      child: ListView.builder(
+        itemCount: _users.length + 1,
+        itemBuilder: (_, i) {
+          if (i == _users.length) {
+            if (_users.isEmpty) return const SizedBox.shrink();
+            return _LoadMoreButton(
+              after: _users.last.username,
+              api: _api,
+              onLoaded: (newUsers) => setState(() => _users.addAll(newUsers)),
+            );
+          }
+          final u = _users[i];
+          if (StorageService.isBlocked(u.username)) return const SizedBox.shrink();
+          return _UserTile(
+            key: ValueKey(u.username),
+            username: u.username,
+            api: _api,
+            proxy: widget.proxy,
+            onTap: (m) => _openDetail(m),
+          );
+        },
+      ),
     );
   }
 

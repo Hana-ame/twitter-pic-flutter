@@ -1,5 +1,5 @@
 // twitter_video.dart
-// 视频组件：通过本机 ECH 代理加载，支持流式播放。
+// 视频组件：通过本机 ECH 代理加载，支持流式播放、下载、分享。
 //
 // 与旧版 (v0.2.8) 的差异：
 //   - 删除了 ECHFetchBegin/ECHRead 手动流式落盘
@@ -8,9 +8,12 @@
 //   - video_player 内部自动缓冲，支持边下边播
 //   - 无需 isolate、无需手动进度跟踪
 //   - 控制栏逻辑保留（自动淡出、拖动进度、全屏）
+//   - 新增：下载、分享
 
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
@@ -147,6 +150,47 @@ class _TwitterVideoState extends State<TwitterVideo>
     _showControlsTemporarily();
   }
 
+  Future<void> _downloadVideo() async {
+    final port = widget.proxy.port;
+    if (port == null) return;
+
+    final echUrl = EchUrl.rewrite(widget.url, port);
+    final uri = Uri.parse(echUrl);
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在下载视频...')));
+
+    try {
+      final client = HttpClient();
+      final request = await client.getUrl(uri);
+      final response = await request.close();
+      final bytes = await response.fold<BytesBuilder>(
+        BytesBuilder(),
+        (b, chunk) => b..add(chunk),
+      );
+      final data = bytes.takeBytes();
+      client.close();
+
+      final tempDir = Directory.systemTemp;
+      final fileName = widget.url.split('/').last.split('?').first;
+      final file = File('${tempDir.path}/$fileName');
+      await file.writeAsBytes(data);
+
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'Twitter Video',
+      );
+
+      if (context.mounted) {
+        messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(content: Text('下载失败: $e')));
+      }
+    }
+  }
+
   String _formatDuration(Duration d) {
     final m = d.inMinutes.toString().padLeft(2, '0');
     final s = (d.inSeconds % 60).toString().padLeft(2, '0');
@@ -258,6 +302,11 @@ class _TwitterVideoState extends State<TwitterVideo>
                 style: const TextStyle(color: Colors.white, fontSize: 12),
               ),
               const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.download, color: Colors.white, size: 24),
+                onPressed: _downloadVideo,
+                iconSize: 24,
+              ),
               IconButton(
                 icon: const Icon(Icons.fullscreen, color: Colors.white, size: 24),
                 onPressed: _enterFullscreen,
