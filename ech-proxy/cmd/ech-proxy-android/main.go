@@ -34,13 +34,7 @@ import (
 //go:embed web/index.html
 var indexHTML string
 
-// Twitter CDN 域名映射（全部走 video-cf.twimg.com）
-var cdnMap = map[string]string{
-	"pbs.twimg.com":      "video-cf.twimg.com",
-	"video-cf.twimg.com": "video-cf.twimg.com",
-	"abs.twimg.com":      "video-cf.twimg.com",
-}
-
+const cdnHost = "video-cf.twimg.com"
 const apiHost = "x.moonchan.xyz"
 
 var (
@@ -243,19 +237,14 @@ func router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for prefix, target := range cdnMap {
-		if strings.HasPrefix(path, "/"+prefix+"/") || path == "/"+prefix {
-			echProxyHandler(w, r, target, strings.TrimPrefix(path, "/"+prefix))
-			return
-		}
-	}
-
 	if strings.HasPrefix(path, "/api/") {
 		apiProxyHandler(w, r, apiHost, strings.TrimPrefix(path, "/api"))
 		return
 	}
 
-	http.NotFound(w, r)
+	// 所有其他请求 → video-cf.twimg.com（路径保持不变）
+	// 例：/media/ABC123.png → https://video-cf.twimg.com/media/ABC123.png
+	echProxyHandler(w, r, "video-cf.twimg.com", path)
 }
 
 func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path string) {

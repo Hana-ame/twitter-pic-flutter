@@ -52,8 +52,8 @@ button:hover { background: #1a8cd8; }
 
 <script>
 const API_BASE = '/api';
-const IMG_BASE = '/video-cf.twimg.com';
-const VIDEO_BASE = '/video-cf.twimg.com';
+// CDN 路径直接转发到 video-cf.twimg.com（不带域名前缀）
+// 例：/media/ABC123.png → https://video-cf.twimg.com/media/ABC123.png
 
 async function search() {
   const username = document.getElementById('search').value.trim();
@@ -79,9 +79,9 @@ async function search() {
       
       let html = '';
       if (item.type === 'video') {
-        html = `<video controls preload="metadata"><source src="${VIDEO_BASE}/${item.path}"></video>`;
+        html = `<video controls preload="metadata"><source src="/${item.path}"></video>`;
       } else {
-        html = `<img src="${IMG_BASE}/${item.path}" loading="lazy">`;
+        html = `<img src="/${item.path}" loading="lazy">`;
       }
       
       card.innerHTML = `
