@@ -21,6 +21,37 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+// ─── FFI typedef（必须在顶层定义，不能在 class 内部）──────────────────────
+
+typedef _VoidNative = Void Function();
+typedef _VoidDart = void Function();
+
+typedef _EchStrNative = Void Function(Pointer<Utf8>);
+typedef _EchStrDart = void Function(Pointer<Utf8>);
+
+typedef _EchInitWithBootstrapNative = Void Function(
+    Pointer<Utf8>, Pointer<Utf8>);
+typedef _EchInitWithBootstrapDart = void Function(
+    Pointer<Utf8>, Pointer<Utf8>);
+
+typedef _EchInitReadyNative = Int32 Function();
+typedef _EchInitReadyDart = int Function();
+
+typedef _EchLastErrorNative = Pointer<Utf8> Function();
+typedef _EchLastErrorDart = Pointer<Utf8> Function();
+
+typedef _EchLogCountNative = Int32 Function();
+typedef _EchLogCountDart = int Function();
+
+typedef _EchGetLogNative = Pointer<Utf8> Function(Int32);
+typedef _EchGetLogDart = Pointer<Utf8> Function(int);
+
+typedef _FreeCStringNative = Void Function(Pointer<Utf8>);
+typedef _FreeCStringDart = void Function(Pointer<Utf8>);
+
+typedef _StartProxyNative = Uint16 Function(Pointer<Utf8>);
+typedef _StartProxyDart = int Function(Pointer<Utf8>);
+
 class ProxyManager {
   // ─── Native 库句柄 ───────────────────────────────────────────────────────
   DynamicLibrary? _lib;
@@ -45,38 +76,6 @@ class ProxyManager {
   bool _startInFlight = false;
 
   static const int _kStreamBufSize = 64 * 1024; // 保留兼容，但不再使用
-
-  // ─── FFI typedef（与旧版相同，仅列出用到的）──────────────────────────────
-
-  typedef _VoidNative = Void Function();
-  typedef _VoidDart = void Function();
-
-  typedef _EchStrNative = Void Function(Pointer<Utf8>);
-  typedef _EchStrDart = void Function(Pointer<Utf8>);
-
-  typedef _EchInitWithBootstrapNative = Void Function(
-      Pointer<Utf8>, Pointer<Utf8>);
-  typedef _EchInitWithBootstrapDart = void Function(
-      Pointer<Utf8>, Pointer<Utf8>);
-
-  typedef _EchInitReadyNative = Int32 Function();
-  typedef _EchInitReadyDart = int Function();
-
-  typedef _EchLastErrorNative = Pointer<Utf8> Function();
-  typedef _EchLastErrorDart = Pointer<Utf8> Function();
-
-  typedef _EchLogCountNative = Int32 Function();
-  typedef _EchLogCountDart = int Function();
-
-  typedef _EchGetLogNative = Pointer<Utf8> Function(Int32);
-  typedef _EchGetLogDart = Pointer<Utf8> Function(int);
-
-  typedef _FreeCStringNative = Void Function(Pointer<Utf8>);
-  typedef _FreeCStringDart = void Function(Pointer<Utf8>);
-
-  // 新增 typedef
-  typedef _StartProxyNative = Uint16 Function(Pointer<Utf8>);
-  typedef _StartProxyDart = int Function(Pointer<Utf8>);
 
   // ─── 公共 API ────────────────────────────────────────────────────────────
 
