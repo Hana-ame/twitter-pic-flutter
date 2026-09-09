@@ -8,8 +8,9 @@ import '../services/storage_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
+  final String buildNum;
 
-  const SettingsScreen({super.key, required this.proxy});
+  const SettingsScreen({super.key, required this.proxy, this.buildNum = 'dev'});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -119,8 +120,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // ─── 关于 ───────────────────────────────────────────────────────────
           const _SectionTitle('关于'),
-          _StatusCard(label: '版本', value: 'v1.0.0'),
-          _StatusCard(label: '构建', value: DateTime.now().toString()),
+          _StatusCard(label: '版本', value: 'v0.2.8'),
+          _StatusCard(label: '构建', value: widget.buildNum),
           const SizedBox(height: 8),
 
           const Padding(

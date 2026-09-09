@@ -160,6 +160,15 @@ class _FavTileState extends State<_FavTile> {
     return FutureBuilder<UserMetaData>(
       future: _meta,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return ListTile(
+            dense: true,
+            leading: const CircleAvatar(radius: 16, child: Icon(Icons.error, size: 18)),
+            title: Text(widget.username, style: const TextStyle(fontSize: 14)),
+            subtitle: Text('加载失败', style: const TextStyle(color: Colors.red, fontSize: 11)),
+            onTap: () => setState(() => _meta = widget.api.getMetaData(widget.username)),
+          );
+        }
         final info = snapshot.data?.accountInfo;
         return ListTile(
           leading: ProxyAvatar(

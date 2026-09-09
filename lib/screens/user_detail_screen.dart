@@ -82,20 +82,26 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
   }
 
-  void _handleConfirmTags(Map<String, int> tags) {
+  bool _savingTags = false;
+
+  Future<void> _handleConfirmTags(Map<String, int> tags) async {
+    if (_savingTags) return;
     setState(() {
       _showTagModal = false;
       _userTags = tags.map((k, v) => MapEntry(k, v as dynamic));
+      _savingTags = true;
     });
-    _api.createMetaData(_username, body: tags, doNotTag: false, doNotRenew: true)
-        .then((_) {
+    try {
+      await _api.createMetaData(_username, body: tags, doNotTag: false, doNotRenew: true);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('标签已保存')));
       }
-    }).catchError((e) {
+    } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存失败: $e')));
-    });
+    } finally {
+      if (mounted) setState(() => _savingTags = false);
+    }
   }
 
   Future<void> _handleEmojiVote(String emoji) async {

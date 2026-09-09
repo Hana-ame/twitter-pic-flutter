@@ -201,7 +201,7 @@ class _MyAppState extends State<MyApp> {
               icon: const Icon(Icons.settings_outlined),
               tooltip: '设置',
               onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => SettingsScreen(proxy: _proxy)),
+                MaterialPageRoute(builder: (_) => SettingsScreen(proxy: _proxy, buildNum: _kBuildNum)),
               ),
             ),
             // 入口：重启 ECH 代理

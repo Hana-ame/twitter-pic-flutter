@@ -145,13 +145,22 @@ class UserListScreenState extends State<UserListScreen> {
         return ListView(
           children: [
             _AddUserTile(username: _search, api: _api, onAdded: _load),
-            ...results.map((u) => _UserTile(
-              key: ValueKey(u.username),
-              username: u.username,
-              api: _api,
-              proxy: widget.proxy,
-              onTap: (m) => _openDetail(m),
-            )),
+            if (results.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                child: Center(
+                  child: Text('没有匹配的用户，可点击上方添加',
+                      style: TextStyle(color: Colors.grey, fontSize: 13)),
+                ),
+              )
+            else
+              ...results.map((u) => _UserTile(
+                key: ValueKey(u.username),
+                username: u.username,
+                api: _api,
+                proxy: widget.proxy,
+                onTap: (m) => _openDetail(m),
+              )),
           ],
         );
       },

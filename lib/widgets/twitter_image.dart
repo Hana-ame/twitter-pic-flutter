@@ -175,11 +175,8 @@ class _TwitterImageState extends State<TwitterImage> {
   }
 
   Future<void> _downloadAndShare() async {
-    final port = widget.proxy.port;
-    if (port == null) return;
-
-    final echUrl = EchUrl.rewrite(widget.url, port);
-    final uri = Uri.parse(echUrl);
+    final url = _buildUrl();
+    final uri = Uri.parse(url);
 
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在下载...')));
