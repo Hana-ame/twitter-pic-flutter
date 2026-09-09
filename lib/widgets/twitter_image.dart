@@ -15,6 +15,9 @@ import 'package:share_plus/share_plus.dart';
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
 
+/// 图片加载通道：先走 ECH 代理，失败后自动降级到直连。
+enum _UrlMode { proxy, direct }
+
 class TwitterImage extends StatefulWidget {
   final String url;
   final ProxyManager proxy;
@@ -37,6 +40,15 @@ class TwitterImage extends StatefulWidget {
 
 class _TwitterImageState extends State<TwitterImage> {
   int _retryCount = 0;
+  _UrlMode _mode = _UrlMode.proxy;
+
+  String _buildUrl() {
+    final port = widget.proxy.port;
+    if (_mode == _UrlMode.proxy && port != null) {
+      return EchUrl.rewrite(widget.url, port);
+    }
+    return widget.url;
+  }
 
   void _showPreview() {
     if (widget.proxy.port == null) return;
@@ -55,11 +67,12 @@ class _TwitterImageState extends State<TwitterImage> {
   @override
   Widget build(BuildContext context) {
     final port = widget.proxy.port;
-    if (port == null) {
+    if (port == null && _mode == _UrlMode.proxy) {
       return _buildError('代理未启动');
     }
 
-    final echUrl = EchUrl.rewrite(widget.url, port);
+    final url = _buildUrl();
+    final isDirect = _mode == _UrlMode.direct;
 
     return GestureDetector(
       onTap: _showPreview,
@@ -68,8 +81,8 @@ class _TwitterImageState extends State<TwitterImage> {
         fit: StackFit.expand,
         children: [
           Image.network(
-            echUrl,
-            key: ValueKey(_retryCount),
+            url,
+            key: ValueKey('${url}_$_retryCount'),
             fit: widget.fit,
             width: widget.width,
             height: widget.height,
@@ -89,9 +102,39 @@ class _TwitterImageState extends State<TwitterImage> {
               );
             },
             errorBuilder: (context, error, stackTrace) {
+              // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
+              if (_mode == _UrlMode.proxy) {
+                setState(() {
+                  _mode = _UrlMode.direct;
+                  _retryCount++;
+                });
+                return Container(
+                  width: widget.width,
+                  height: widget.height,
+                  color: Colors.grey[200],
+                  child: const Center(
+                    child: SizedBox(
+                      width: 20, height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                );
+              }
               return _buildError(error.toString());
             },
           ),
+          if (isDirect)
+            Positioned(
+              top: 4, right: 4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.9),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Text('直连', style: TextStyle(color: Colors.white, fontSize: 9)),
+              ),
+            ),
         ],
       ),
     );
@@ -235,13 +278,19 @@ class _ImageViewerState extends State<_ImageViewer> {
   bool _loading = true;
   String? _error;
   int _retryCount = 0;
+  _UrlMode _mode = _UrlMode.proxy;
+
+  String _buildUrl() {
+    final port = widget.proxy.port;
+    if (_mode == _UrlMode.proxy && port != null) {
+      return EchUrl.rewrite(widget.url, port);
+    }
+    return widget.url;
+  }
 
   Future<void> _downloadAndShare() async {
-    final port = widget.proxy.port;
-    if (port == null) return;
-
-    final echUrl = EchUrl.rewrite(widget.url, port);
-    final uri = Uri.parse(echUrl);
+    final url = _buildUrl();
+    final uri = Uri.parse(url);
 
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在下载...')));
@@ -319,11 +368,17 @@ class _ImageViewerState extends State<_ImageViewer> {
               '加载失败',
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
+            if (_mode == _UrlMode.direct)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text('（已尝试直连）', style: TextStyle(color: Colors.white38, fontSize: 10)),
+              ),
             const SizedBox(height: 4),
             GestureDetector(
               onTap: () => setState(() {
                 _error = null;
                 _loading = true;
+                _retryCount++;
               }),
               child: SelectableText(
                 _error ?? '',
@@ -335,6 +390,7 @@ class _ImageViewerState extends State<_ImageViewer> {
               onPressed: () => setState(() {
                 _error = null;
                 _loading = true;
+                _retryCount++;
               }),
               icon: const Icon(Icons.refresh),
               label: const Text('重试'),
@@ -348,11 +404,15 @@ class _ImageViewerState extends State<_ImageViewer> {
         child: CircularProgressIndicator(color: Colors.white),
       );
     }
+
+    final url = _buildUrl();
+    final isDirect = _mode == _UrlMode.direct;
+
     return Center(
       child: InteractiveViewer(
         child: Image.network(
-          EchUrl.rewrite(widget.url, widget.proxy.port!),
-          key: ValueKey(_retryCount),
+          url,
+          key: ValueKey('${url}_$_retryCount'),
           fit: BoxFit.contain,
           loadingBuilder: (context, child, progress) {
             if (progress == null) return child;
@@ -360,41 +420,59 @@ class _ImageViewerState extends State<_ImageViewer> {
               child: CircularProgressIndicator(color: Colors.white),
             );
           },
-          errorBuilder: (context, error, stackTrace) => Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.broken_image, size: 48, color: Colors.white54),
-                const SizedBox(height: 12),
-                Text(
-                  '加载失败',
-                  style: const TextStyle(color: Colors.white70, fontSize: 14),
-                ),
-                const SizedBox(height: 4),
-                GestureDetector(
-                  onTap: () => setState(() {
-                    _error = null;
-                    _loading = true;
-                    _retryCount++;
-                  }),
-                  child: SelectableText(
-                    error.toString(),
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+          errorBuilder: (context, error, stackTrace) {
+            // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
+            if (_mode == _UrlMode.proxy) {
+              setState(() {
+                _mode = _UrlMode.direct;
+                _loading = true;
+                _retryCount++;
+              });
+              return const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              );
+            }
+            setState(() => _error = error.toString());
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.broken_image, size: 48, color: Colors.white54),
+                  const SizedBox(height: 12),
+                  Text(
+                    '加载失败',
+                    style: const TextStyle(color: Colors.white70, fontSize: 14),
                   ),
-                ),
-                const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: () => setState(() {
-                    _error = null;
-                    _loading = true;
-                    _retryCount++;
-                  }),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('重试'),
-                ),
-              ],
-            ),
-          ),
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Text('（已尝试直连）', style: TextStyle(color: Colors.white38, fontSize: 10)),
+                  ),
+                  const SizedBox(height: 4),
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      _error = null;
+                      _loading = true;
+                      _retryCount++;
+                    }),
+                    child: SelectableText(
+                      error.toString(),
+                      style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () => setState(() {
+                      _error = null;
+                      _loading = true;
+                      _retryCount++;
+                    }),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重试'),
+                  ),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
