@@ -54,6 +54,23 @@ class _TwitterVideoState extends State<TwitterVideo>
     _initPlayer();
   }
 
+  @override
+  void didUpdateWidget(TwitterVideo old) {
+    super.didUpdateWidget(old);
+    if (old.url != widget.url || old.proxy.port != widget.proxy.port) {
+      _controller?.removeListener(_onVideoUpdate);
+      _controller?.dispose();
+      _controller = null;
+      _videoValue = null;
+      _error = null;
+      _isLoading = true;
+      _showControls = true;
+      _hideTimer?.cancel();
+      _isDragging = false;
+      _initPlayer();
+    }
+  }
+
   Future<void> _initPlayer() async {
     final port = widget.proxy.port;
     if (port == null) {
