@@ -20,11 +20,21 @@ class SearchBarWidget extends StatefulWidget {
 class _SearchBarWidgetState extends State<SearchBarWidget> {
   List<String> _history = [];
   bool _showHistory = false;
+  final TextEditingController _ctrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _loadHistory();
+    _ctrl.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
   }
 
   void _loadHistory() {
@@ -66,19 +76,30 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
           child: TextField(
+            controller: _ctrl,
             onChanged: widget.onChanged,
             onSubmitted: _onSubmitted,
             onTap: () => setState(() => _showHistory = _history.isNotEmpty),
             decoration: InputDecoration(
               hintText: widget.placeholder,
               prefixIcon: const Icon(Icons.search, size: 20),
-              suffixIcon: _history.isNotEmpty
+              suffixIcon: _ctrl.text.isNotEmpty
                   ? IconButton(
-                      icon: const Icon(Icons.history),
-                      onPressed: () => setState(() => _showHistory = !_showHistory),
-                      tooltip: '搜索历史',
+                      icon: const Icon(Icons.close, size: 18),
+                      onPressed: () {
+                        _ctrl.clear();
+                        widget.onChanged('');
+                        setState(() => _showHistory = false);
+                      },
+                      tooltip: '清除',
                     )
-                  : null,
+                  : (_history.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.history),
+                          onPressed: () => setState(() => _showHistory = !_showHistory),
+                          tooltip: '搜索历史',
+                        )
+                      : null),
               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
               filled: true,
@@ -116,6 +137,7 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
                       leading: const Icon(Icons.history, size: 16),
                       title: Text(h, style: const TextStyle(fontSize: 13)),
                       onTap: () {
+                        _ctrl.text = h;
                         widget.onChanged(h);
                         setState(() => _showHistory = false);
                         FocusScope.of(context).unfocus();

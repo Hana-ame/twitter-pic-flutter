@@ -508,6 +508,9 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   bool _showControls = true;
   Timer? _hideTimer;
   bool _downloading = false;
+  double _playbackSpeed = 1.0;
+  static const List<double> _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+  int _speedIndex = 2;
 
   Future<void> _downloadVideo() async {
     if (_downloading) return;
@@ -609,6 +612,23 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
     final m = d.inMinutes.toString().padLeft(2, '0');
     final s = (d.inSeconds % 60).toString().padLeft(2, '0');
     return '$m:$s';
+  }
+
+  void _cycleSpeed() {
+    setState(() {
+      _speedIndex = (_speedIndex + 1) % _speeds.length;
+      _playbackSpeed = _speeds[_speedIndex];
+      widget.controller.setPlaybackSpeed(_playbackSpeed);
+    });
+  }
+
+  Widget _buildSpeedButton() {
+    return IconButton(
+      icon: const Icon(Icons.speed, color: Colors.white, size: 20),
+      onPressed: _cycleSpeed,
+      iconSize: 20,
+      tooltip: '${_playbackSpeed}x',
+    );
   }
 
   @override
@@ -714,6 +734,7 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
                           style: const TextStyle(color: Colors.white, fontSize: 12),
                         ),
                         const Spacer(),
+                        _buildSpeedButton(),
                         Text(
                           _formatDuration(widget.controller.value.duration),
                           style: const TextStyle(color: Colors.white, fontSize: 12),

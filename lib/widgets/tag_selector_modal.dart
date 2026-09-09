@@ -111,6 +111,7 @@ class _TagSelectorModalState extends State<TagSelectorModal> {
     }
     _tagScores[tag] = 1;
     _customTagCtrl.clear();
+    FocusScope.of(context).unfocus();
     setState(() => _isAddingTag = false);
   }
 
