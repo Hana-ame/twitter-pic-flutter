@@ -20,6 +20,9 @@ import 'package:share_plus/share_plus.dart';
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
 
+/// 视频加载通道：先走 ECH 代理，失败后自动降级到直连。
+enum _UrlMode { proxy, direct }
+
 class TwitterVideo extends StatefulWidget {
   final String url;
   final ProxyManager proxy;
@@ -47,6 +50,15 @@ class _TwitterVideoState extends State<TwitterVideo>
   bool _showControls = true;
   Timer? _hideTimer;
   bool _isDragging = false;
+  _UrlMode _mode = _UrlMode.proxy;
+
+  Uri _buildUrl() {
+    final port = widget.proxy.port;
+    if (_mode == _UrlMode.proxy && port != null) {
+      return EchUrl.rewriteToUri(widget.url, port);
+    }
+    return Uri.parse(widget.url);
+  }
 
   @override
   void initState() {
@@ -67,23 +79,15 @@ class _TwitterVideoState extends State<TwitterVideo>
       _showControls = true;
       _hideTimer?.cancel();
       _isDragging = false;
+      _mode = _UrlMode.proxy;
       _initPlayer();
     }
   }
 
   Future<void> _initPlayer() async {
-    final port = widget.proxy.port;
-    if (port == null) {
-      setState(() {
-        _error = '代理未启动';
-        _isLoading = false;
-      });
-      return;
-    }
-
     try {
-      final echUrl = EchUrl.rewriteToUri(widget.url, port);
-      _controller = VideoPlayerController.networkUrl(echUrl);
+      final url = _buildUrl();
+      _controller = VideoPlayerController.networkUrl(url);
       await _controller!.initialize();
 
       _controller!.addListener(_onVideoUpdate);
@@ -94,6 +98,14 @@ class _TwitterVideoState extends State<TwitterVideo>
         _videoValue = _controller!.value;
       });
     } catch (e) {
+      // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
+      if (_mode == _UrlMode.proxy) {
+        setState(() {
+          _mode = _UrlMode.direct;
+        });
+        await _initPlayer();
+        return;
+      }
       setState(() {
         _error = e.toString();
         _isLoading = false;
@@ -412,6 +424,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   }
 
   Widget _buildError(String message) {
+    final isDirect = _mode == _UrlMode.direct;
     return Container(
       width: widget.width,
       height: widget.height,
@@ -426,12 +439,18 @@ class _TwitterVideoState extends State<TwitterVideo>
               '视频加载失败',
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
+            if (isDirect)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text('（已尝试直连）', style: TextStyle(color: Colors.white38, fontSize: 10)),
+              ),
             const SizedBox(height: 4),
             GestureDetector(
               onTap: () {
                 setState(() {
                   _error = null;
                   _isLoading = true;
+                  _mode = _UrlMode.proxy;
                 });
                 _initPlayer();
               },
@@ -447,6 +466,7 @@ class _TwitterVideoState extends State<TwitterVideo>
                 setState(() {
                   _error = null;
                   _isLoading = true;
+                  _mode = _UrlMode.proxy;
                 });
                 _initPlayer();
               },

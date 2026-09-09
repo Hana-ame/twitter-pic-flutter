@@ -31,6 +31,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   static const _kEmojis = ['😍', '😋', '😱', '🤢', '🐷', '😅', '💩'];
 
   final TwitterApi _api = TwitterApi();
+  UserMetaData _profile;
   bool _showAll = false;
   int _mediaLimit = 10;
   Map<String, dynamic> _userTags = {};
@@ -42,9 +43,18 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _username = widget.profile.accountInfo.username;
+    _profile = widget.profile;
+    _username = _profile.accountInfo.username;
     _loadTags();
     _loadEmojis();
+  }
+
+  @override
+  void didUpdateWidget(UserDetailScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.profile != widget.profile) {
+      _profile = widget.profile;
+    }
   }
 
   Future<void> _loadTags() async {
@@ -70,7 +80,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     setState(() => _updating = true);
     try {
       await _api.createMetaData(_username);
+      // 重新拉取最新元数据
+      final refreshed = await _api.getMetaData(_username, t: DateTime.now().toIso8601String(), forceRefresh: true);
       if (mounted) {
+        setState(() => _profile = refreshed);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('数据已更新')));
       }
     } catch (e) {
@@ -145,7 +158,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     Future<bool> Function(TimelineItem item, File file) fetchOne,
   ) async {
     if (_downloading) return;
-    final items = widget.profile.timeline;
+    final items = _profile.timeline;
     if (items.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('没有可下载的内容'),
@@ -270,10 +283,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final info = widget.profile.accountInfo;
+    final info = _profile.accountInfo;
     final isFav = StorageService.isFav(_username);
     final isBlocked = StorageService.isBlocked(_username);
-    final timeline = widget.profile.timeline;
+    final timeline = _profile.timeline;
     final displayTimeline = _showAll ? timeline : timeline.take(_mediaLimit).toList();
     final hasMore = !_showAll && timeline.length > _mediaLimit;
     // 屏蔽规则生效：用户标签命中“标签管理→屏蔽”列表时给提示条。
@@ -440,7 +453,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
               ),
             )
           else ...[
-            _pill('下载 ${widget.profile.totalUrls}', Icons.download, Colors.indigo, _downloadAll),
+            _pill('下载 ${_profile.totalUrls}', Icons.download, Colors.indigo, _downloadAll),
             _pill('兼容下载', Icons.download_done, Colors.teal, _downloadAllLegacy),
             _pill('应急下载', Icons.emergency, Colors.orange, _downloadEmergency),
           ],

@@ -91,9 +91,11 @@ class TwitterApi {
         .toList();
   }
 
-  Future<UserMetaData> getMetaData(String username, {String? t}) async {
-    final cached = _metaCache[username];
-    if (cached != null) return cached;
+  Future<UserMetaData> getMetaData(String username, {String? t, bool forceRefresh = false}) async {
+    if (!forceRefresh) {
+      final cached = _metaCache[username];
+      if (cached != null) return cached;
+    }
 
     final path = '$username.json.gz';
     final resp = await _dio.get(

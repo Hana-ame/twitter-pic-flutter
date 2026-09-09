@@ -154,13 +154,15 @@ class UserListScreenState extends State<UserListScreen> {
                 ),
               )
             else
-              ...results.map((u) => _UserTile(
-                key: ValueKey(u.username),
-                username: u.username,
-                api: _api,
-                proxy: widget.proxy,
-                onTap: (m) => _openDetail(m),
-              )),
+              ...results
+                  .where((u) => !StorageService.isBlocked(u.username))
+                  .map((u) => _UserTile(
+                    key: ValueKey(u.username),
+                    username: u.username,
+                    api: _api,
+                    proxy: widget.proxy,
+                    onTap: (m) => _openDetail(m),
+                  )),
           ],
         );
       },
