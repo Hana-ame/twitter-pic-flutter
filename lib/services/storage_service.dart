@@ -45,6 +45,7 @@ class StorageService {
     return _flushChain;
   }
 
+  /// 串行写盘链，保证并发写入不会交错。
   static Future<void> _flushChain = Future.value();
 
   /// 仅供测试：清空内存态并解除已加载标记，
