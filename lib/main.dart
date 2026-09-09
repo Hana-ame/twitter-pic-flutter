@@ -14,10 +14,12 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'api/twitter_api.dart';
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
 import 'screens/settings_screen.dart';
 import 'screens/user_list_screen.dart';
+import 'widgets/fav_list.dart';
 import 'widgets/tag_controller.dart';
 
 const _kBuildNum = String.fromEnvironment('BUILD_NUM', defaultValue: 'dev');
@@ -180,15 +182,40 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       title: 'Twitter Pic v$_kBuildNum',
       theme: ThemeData(
-        colorSchemeSeed: Colors.blue,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF4F6CFF),
+          brightness: Brightness.light,
+        ),
         useMaterial3: true,
+        appBarTheme: const AppBarTheme(
+          centerTitle: true,
+          elevation: 0,
+          scrolledUnderElevation: 2,
+          backgroundColor: Colors.transparent,
+          foregroundColor: Color(0xFF4F6CFF),
+        ),
+        cardTheme: CardTheme(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: Colors.grey.shade200),
+          ),
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: Colors.white,
+          indicatorColor: const Color(0xFF4F6CFF).withValues(alpha: 0.12),
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        ),
+        snackBarTheme: SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          backgroundColor: const Color(0xFF333333),
+        ),
       ),
       home: Scaffold(
         appBar: AppBar(
-          title: Text('Twitter Pic v$_kBuildNum'),
-          centerTitle: true,
+          title: const Text('Twitter Pic', style: TextStyle(fontWeight: FontWeight.w600)),
           actions: [
-            // 入口：高亮/屏蔽标签管理
             IconButton(
               icon: const Icon(Icons.local_offer_outlined),
               tooltip: '标签管理',
@@ -196,21 +223,11 @@ class _MyAppState extends State<MyApp> {
                 MaterialPageRoute(builder: (_) => const TagControllerScreen()),
               ),
             ),
-            // 入口：设置
-            IconButton(
-              icon: const Icon(Icons.settings_outlined),
-              tooltip: '设置',
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => SettingsScreen(proxy: _proxy, buildNum: _kBuildNum)),
-              ),
-            ),
-            // 入口：重启 ECH 代理
             IconButton(
               icon: const Icon(Icons.restart_alt),
               tooltip: _startInFlight ? '正在初始化...' : '重启 ECH',
               onPressed: _startInFlight ? null : _restart,
             ),
-            // 入口：调试日志
             IconButton(
               icon: Icon(_showLog ? Icons.close : Icons.list),
               tooltip: '日志',
@@ -224,12 +241,27 @@ class _MyAppState extends State<MyApp> {
   }
 
   Widget _buildLog() {
-    if (_logs.isEmpty) return const Center(child: Text('(no logs)'));
+    if (_logs.isEmpty) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.receipt_long_outlined, size: 48, color: Colors.grey),
+            SizedBox(height: 8),
+            Text('暂无日志', style: TextStyle(color: Colors.grey, fontSize: 13)),
+          ],
+        ),
+      );
+    }
     return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       itemCount: _logs.length,
       itemBuilder: (_, i) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-        child: Text(_logs[i], style: const TextStyle(fontSize: 11)),
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Text(
+          _logs[i],
+          style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+        ),
       ),
     );
   }
@@ -238,26 +270,40 @@ class _MyAppState extends State<MyApp> {
     if (_proxyError != null) {
       return Center(
         child: SingleChildScrollView(
-          padding: EdgeInsets.all(16),
+          padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline, size: 48, color: Colors.red),
-              const SizedBox(height: 8),
-              SelectableText('$_proxyError',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.red, fontSize: 13)),
-              if (_logs.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                const Text('--- Go 日志 ---',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
-                ...(_logs.map((l) => Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Text(l, style: const TextStyle(fontSize: 10)),
-                    ))),
-              ],
+              const Icon(Icons.error_outline, size: 56, color: Colors.red),
               const SizedBox(height: 16),
-              ElevatedButton(
+              const Text('ECH 代理启动失败', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              SelectableText(
+                _proxyError!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.red, fontSize: 13),
+              ),
+              if (_logs.isNotEmpty) ...[
+                const Divider(height: 32),
+                const Text('--- Go 日志 ---',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    children: _logs.map((l) => Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(l, style: const TextStyle(fontSize: 10, fontFamily: 'monospace')),
+                    )).toList(),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 24),
+              FilledButton.icon(
                 onPressed: _startInFlight
                     ? null
                     : () {
@@ -267,7 +313,13 @@ class _MyAppState extends State<MyApp> {
                         });
                         _start();
                       },
-                child: const Text('重试'),
+                icon: _startInFlight
+                    ? const SizedBox(
+                        width: 14, height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.refresh),
+                label: const Text('重试'),
               ),
             ],
           ),
@@ -275,23 +327,133 @@ class _MyAppState extends State<MyApp> {
       );
     }
     if (!_proxyReady) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('正在初始化 ECH ...'),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            const Text('正在初始化 ECH ...', style: TextStyle(color: Colors.grey, fontSize: 14)),
           ],
         ),
       );
     }
-    return UserListScreen(proxy: _proxy);
+    return _HomeScreen(proxy: _proxy);
   }
 
   @override
   void dispose() {
     _proxy.dispose();
     super.dispose();
+  }
+}
+
+// ─── 主界面：底部导航 ────────────────────────────────────────────────────────
+
+class _HomeScreen extends StatefulWidget {
+  final ProxyManager proxy;
+  const _HomeScreen({required this.proxy});
+
+  @override
+  State<_HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<_HomeScreen> {
+  int _tabIndex = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(
+        index: _tabIndex,
+        children: [
+          UserListScreen(proxy: widget.proxy),
+          FavoritesTab(proxy: widget.proxy),
+          SettingsTab(proxy: widget.proxy),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tabIndex,
+       onDestinationSelected: (i) => setState(() => _tabIndex = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.people_outline),
+            selectedIcon: Icon(Icons.people),
+            label: '用户',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.favorite_border),
+            selectedIcon: Icon(Icons.favorite),
+            label: '收藏',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outline),
+            selectedIcon: Icon(Icons.settings),
+            label: '设置',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── 收藏夹 Tab ──────────────────────────────────────────────────────────────
+
+class FavoritesTab extends StatefulWidget {
+  final ProxyManager proxy;
+  const FavoritesTab({required this.proxy});
+
+  @override
+  State<FavoritesTab> createState() => _FavoritesTabState();
+}
+
+class _FavoritesTabState extends State<FavoritesTab> {
+  final TwitterApi _api = TwitterApi();
+
+  @override
+  void dispose() {
+    _api.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: ListView(
+        padding: const EdgeInsets.all(8),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Text(
+              '收藏夹',
+              style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          FavList(api: _api, proxy: widget.proxy),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── 设置 Tab ────────────────────────────────────────────────────────────────
+
+class SettingsTab extends StatefulWidget {
+  final ProxyManager proxy;
+  const SettingsTab({required this.proxy});
+
+  @override
+  State<SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends State<SettingsTab> {
+  @override
+  Widget build(BuildContext context) {
+    return SettingsScreen(proxy: widget.proxy, buildNum: _kBuildNum);
   }
 }

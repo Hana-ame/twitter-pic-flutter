@@ -7,7 +7,6 @@ import '../api/twitter_api.dart';
 import '../models/user.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
-import '../widgets/fav_list.dart';
 import '../widgets/proxy_avatar.dart';
 import '../widgets/search_bar.dart';
 import 'user_detail_screen.dart';
@@ -22,11 +21,10 @@ class UserListScreen extends StatefulWidget {
 }
 
 class UserListScreenState extends State<UserListScreen> {
-  final TwitterApi _api = TwitterApi();
+   final TwitterApi _api = TwitterApi();
   List<TwitterUser> _users = [];
   bool _loading = true;
   String? _error;
-  bool _showFav = false;
   String _search = '';
   // 搜索防抖 + 结果 future 复用：原实现每次 build（每个按键）都新建
   // FutureBuilder future，狂发请求且乱序返回会显示错误结果。
@@ -97,28 +95,7 @@ class UserListScreenState extends State<UserListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Toggle button
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-          child: SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () => setState(() => _showFav = !_showFav),
-              child: Text(_showFav ? '显示用户列表' : '显示收藏夹'),
-            ),
-          ),
-        ),
-
-        if (_showFav)
-          Expanded(child: FavList(api: _api, proxy: widget.proxy))
-        else
-          Expanded(
-            child: _buildUserList(),
-          ),
-      ],
-    );
+    return _buildUserList();
   }
 
   Widget _buildUserList() {
