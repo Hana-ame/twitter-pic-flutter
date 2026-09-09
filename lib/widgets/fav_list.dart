@@ -30,50 +30,55 @@ class _FavListState extends State<FavList> {
     final allUsernames = StorageService.getFavMap().keys.toList().reversed.toList();
     final visible = allUsernames.take(_limit).toList();
 
-    return ListView(
-      children: [
-        ...visible.map((u) => _FavTile(username: u, api: widget.api, proxy: widget.proxy)),
-        if (_limit < allUsernames.length)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => setState(() => _limit += 20),
-                child: const Text('加载更多'),
+    return RefreshIndicator(
+      onRefresh: () async {
+        setState(() => _limit = 10);
+      },
+      child: ListView(
+        children: [
+          ...visible.map((u) => _FavTile(username: u, api: widget.api, proxy: widget.proxy)),
+          if (_limit < allUsernames.length)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => setState(() => _limit += 20),
+                  child: const Text('加载更多'),
+                ),
               ),
             ),
-          ),
-        HorizontalButtonRow(buttons: [
-          ElevatedButton(
-            onPressed: _handleExport,
-            style: ElevatedButton.styleFrom(surfaceTintColor: Colors.transparent),
-            child: const Text('导出收藏'),
-          ),
-          ElevatedButton(
-            onPressed: () => setState(() => _showImport = !_showImport),
-            style: ElevatedButton.styleFrom(surfaceTintColor: Colors.transparent),
-            child: Text(_showImport ? '取消导入' : '导入收藏'),
-          ),
-        ]),
-        if (_showImport)
-          Column(
-            children: [
-              TextField(
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  hintText: '每行一个URL',
-                  border: OutlineInputBorder(),
+          HorizontalButtonRow(buttons: [
+            ElevatedButton(
+              onPressed: _handleExport,
+              style: ElevatedButton.styleFrom(surfaceTintColor: Colors.transparent),
+              child: const Text('导出收藏'),
+            ),
+            ElevatedButton(
+              onPressed: () => setState(() => _showImport = !_showImport),
+              style: ElevatedButton.styleFrom(surfaceTintColor: Colors.transparent),
+              child: Text(_showImport ? '取消导入' : '导入收藏'),
+            ),
+          ]),
+          if (_showImport)
+            Column(
+              children: [
+                TextField(
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    hintText: '每行一个URL',
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: (v) => _importText = v,
                 ),
-                onChanged: (v) => _importText = v,
-              ),
-              ElevatedButton(
-                onPressed: _handleImport,
-                child: const Text('确认导入'),
-              ),
-            ],
-          ),
-      ],
+                ElevatedButton(
+                  onPressed: _handleImport,
+                  child: const Text('确认导入'),
+                ),
+              ],
+            ),
+        ],
+      ),
     );
   }
 
