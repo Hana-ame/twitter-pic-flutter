@@ -239,11 +239,11 @@ class _FavTileState extends State<_FavTile> {
                 reverseTransitionDuration: const Duration(milliseconds: 300),
                 pageBuilder: (_, a, __) => UserDetailScreen(profile: snapshot.data!, proxy: widget.proxy),
                 transitionsBuilder: (_, a, __, child) {
-                  final curved = Curves.easeInOutCubic.transform(a);
+                  final curved = CurvedAnimation(parent: a, curve: Curves.easeInOutCubic);
                   return FadeTransition(
                     opacity: curved,
                     child: Transform.scale(
-                      scale: 0.95 + 0.05 * curved,
+                      scale: 0.95 + 0.05 * curved.value,
                       child: child,
                     ),
                   );
