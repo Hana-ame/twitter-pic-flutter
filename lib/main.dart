@@ -17,6 +17,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
+import 'screens/settings_screen.dart';
 import 'screens/user_list_screen.dart';
 import 'utils/ech_url.dart';
 import 'widgets/tag_controller.dart';
@@ -196,6 +197,14 @@ class _MyAppState extends State<MyApp> {
               tooltip: '标签管理',
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const TagControllerScreen()),
+              ),
+            ),
+            // 入口：设置
+            IconButton(
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: '设置',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => SettingsScreen(proxy: _proxy)),
               ),
             ),
             // 入口：重启 ECH 代理
