@@ -63,6 +63,7 @@ class _TwitterImageState extends State<TwitterImage> {
 
     return GestureDetector(
       onTap: _showPreview,
+      onLongPress: () => _showContextMenu(context),
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -91,6 +92,40 @@ class _TwitterImageState extends State<TwitterImage> {
             },
           ),
         ],
+      ),
+    );
+  }
+
+  void _showContextMenu(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('图片操作', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.fullscreen),
+              title: const Text('全屏查看'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showPreview();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.download),
+              title: const Text('下载并分享'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _downloadAndShare(context);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }
