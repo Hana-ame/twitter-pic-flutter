@@ -51,7 +51,15 @@ class TwitterApi {
     // 全局拦截器：统一异常映射
     _dio.interceptors.add(InterceptorsWrapper(
       onError: (e, handler) {
-        handler.reject(_mapDioError(e));
+        if (e.error is ApiException) {
+          handler.reject(e);
+        } else {
+          handler.reject(DioException(
+            requestOptions: e.requestOptions,
+            type: e.type,
+            error: _mapDioErrorToException(e),
+          ));
+        }
       },
     ));
   }
@@ -145,7 +153,7 @@ class TwitterApi {
   }
 
   /// 将 DioException 映射为结构化 ApiException。
-  ApiException _mapDioError(DioException e) {
+  ApiException _mapDioErrorToException(DioException e) {
     switch (e.type) {
       case DioExceptionType.connectionTimeout:
         return const NetworkException('连接超时');

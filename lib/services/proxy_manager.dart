@@ -289,7 +289,7 @@ class ProxyManager {
 
 // ─── 辅助：获取应用支持目录 ──────────────────────────────────────────────────
 
-Future<File> getApplicationSupportDirectory() async {
+Future<Directory> getApplicationSupportDirectory() async {
   // 使用 path_provider 包
   // 如果不想依赖 path_provider，可以用以下简化实现：
   if (Platform.isWindows) {
