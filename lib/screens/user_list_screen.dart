@@ -503,15 +503,16 @@ class _LoadMoreButtonState extends State<_LoadMoreButton> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      child: ElevatedButton(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: OutlinedButton.icon(
         onPressed: _loading ? null : _loadMore,
-        child: _loading
+        icon: _loading
             ? const SizedBox(
-                width: 16, height: 16,
+                width: 14, height: 14,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
-            : const Text('加载更多'),
+            : const Icon(Icons.expand_more, size: 16),
+        label: _loading ? const Text('加载中...') : const Text('加载更多'),
       ),
     );
   }

@@ -18,6 +18,7 @@ class HorizontalButtonRow extends StatelessWidget {
       height: height,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
         itemCount: buttons.length,
         separatorBuilder: (_, __) => SizedBox(width: spacing),
         itemBuilder: (_, i) => buttons[i],
