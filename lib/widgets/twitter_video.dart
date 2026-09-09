@@ -254,7 +254,27 @@ class _TwitterVideoState extends State<TwitterVideo>
     );
   }
 
-  Widget _buildControls() {
+  // ─── 倍速播放 ──────────────────────────────────────────────────────────────
+  double _playbackSpeed = 1.0;
+  static const List<double> _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+  int _speedIndex = 2;
+
+  void _cycleSpeed() {
+    setState(() {
+      _speedIndex = (_speedIndex + 1) % _speeds.length;
+      _playbackSpeed = _speeds[_speedIndex];
+      _controller?.setPlaybackSpeed(_playbackSpeed);
+    });
+  }
+
+  Widget _buildSpeedButton() {
+    return IconButton(
+      icon: Icon(Icons.speed, color: Colors.white, size: 20),
+      onPressed: _cycleSpeed,
+      iconSize: 20,
+      tooltip: '${_playbackSpeed}x',
+    );
+  }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -302,6 +322,7 @@ class _TwitterVideoState extends State<TwitterVideo>
                 style: const TextStyle(color: Colors.white, fontSize: 12),
               ),
               const SizedBox(width: 8),
+              _buildSpeedButton(),
               IconButton(
                 icon: const Icon(Icons.download, color: Colors.white, size: 24),
                 onPressed: _downloadVideo,
