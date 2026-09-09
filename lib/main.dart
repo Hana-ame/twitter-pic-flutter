@@ -194,7 +194,7 @@ class _MyAppState extends State<MyApp> {
           backgroundColor: Colors.transparent,
           foregroundColor: Color(0xFF4F6CFF),
         ),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -274,7 +274,7 @@ class _MyAppState extends State<MyApp> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline, size: 56, color: Colors.red),
+              const Icon(Icons.error_outlined, size: 56, color: Colors.red),
               const SizedBox(height: 16),
               const Text('ECH 代理启动失败', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
@@ -375,9 +375,9 @@ class _HomeScreenState extends State<_HomeScreen> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,
        onDestinationSelected: (i) => setState(() => _tabIndex = i),
-        destinations: const [
+        destinations: [
           NavigationDestination(
-            icon: Icon(Icons.people_outline),
+            icon: Icon(Icons.people_outlined),
             selectedIcon: Icon(Icons.people),
             label: '用户',
           ),
@@ -387,7 +387,7 @@ class _HomeScreenState extends State<_HomeScreen> {
             label: '收藏',
           ),
           NavigationDestination(
-            icon: Icon(Icons.settings_outline),
+            icon: Icon(Icons.settings_outlined),
             selectedIcon: Icon(Icons.settings),
             label: '设置',
           ),
