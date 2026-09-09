@@ -138,7 +138,8 @@ jobs:
 
       - name: Set unique version
         run: |
-          VERSION=$(grep '^version:' /tmp/build_project/pubspec.yaml | sed 's/version: *//' | sed 's/+.*//')
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
           RN=${{ github.run_number }}
           sed -i "s/^version:.*/version: ${VERSION}+${RN}/" /tmp/build_project/pubspec.yaml
 
@@ -194,7 +195,7 @@ jobs:
         shell: powershell
         run: |
           $content = Get-Content C:\tmp\build_project\pubspec.yaml -Raw
-          $version = [regex]::Match($content, '^version: *([^+]+)').Groups[1].Value
+          $version = "${{ github.ref_name }}".TrimStart('v')
           $rn = "${{ github.run_number }}"
           $content = $content -replace '^version:.*', "version: $version+$rn"
           Set-Content C:\tmp\build_project\pubspec.yaml -Value $content
