@@ -446,7 +446,7 @@ class _SkeletonCircleState extends State<_SkeletonCircle>
   Widget build(BuildContext context) {
     return FadeTransition(
       opacity: Tween<double>(begin: 0.3, end: 1.0).animate(_ctrl),
-      child: const Container(
+      child: Container(
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: Colors.grey,

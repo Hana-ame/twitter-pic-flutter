@@ -479,3 +479,5 @@ class _ImageViewerState extends State<_ImageViewer> {
     ),
   );
 }
+
+}
