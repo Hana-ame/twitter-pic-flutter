@@ -8,9 +8,7 @@
 //   - 新增：点击全屏预览、下载、分享
 
 import 'dart:io';
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
