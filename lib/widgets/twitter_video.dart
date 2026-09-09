@@ -350,8 +350,7 @@ class _TwitterVideoState extends State<TwitterVideo>
                 _isDragging
                     ? _formatDuration(Duration(
                         milliseconds: (_controller!.value.position.inMilliseconds +
-                                (_videoValue?.duration.inMilliseconds ?? 1) ~/ 2))
-                            .inMilliseconds)
+                                (_videoValue?.duration.inMilliseconds ?? 1) ~/ 2)))
                     : _formatDuration(_controller!.value.position),
                 style: const TextStyle(color: Colors.white, fontSize: 12),
               ),

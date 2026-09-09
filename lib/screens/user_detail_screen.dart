@@ -212,10 +212,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           final req = await client.getUrl(Uri.parse(echUrl));
           final res = await req.close();
           if (res.statusCode != 200) return false;
-          final bytes = await res.fold<BytesBuilder>(
-            BytesBuilder(copy: false),
-            (b, c) => b..add(c),
-          ).takeBytes();
+          final bb = BytesBuilder(copy: false);
+          await res.listen((c) => bb.add(c), onDone: () {});
+          final bytes = bb.takeBytes();
           await file.writeAsBytes(bytes);
           return true;
         } catch (_) {
