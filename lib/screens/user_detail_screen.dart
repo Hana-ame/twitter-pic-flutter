@@ -197,90 +197,70 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
   }
 
-  // ─── 下载策略 ──────────────────────────────────────────────────────────────
+  // 主通道：通过本机 ECH 代理流式下载（HttpClient + EchUrl）。
+  Future<void> _downloadAll() => _batchDownload((item, file) async {
+        final port = widget.proxy.port;
+        if (port == null) return false;
+        final echUrl = EchUrl.rewrite(item.url, port);
+        final client = HttpClient();
+        try {
+          final req = await client.getUrl(Uri.parse(echUrl));
+          final res = await req.close();
+          if (res.statusCode != 200) return false;
+          final raf = await file.open(mode: FileMode.write);
+          await for (final chunk in res) {
+            await raf.writeFrom(chunk);
+          }
+          await raf.close();
+          return true;
+        } catch (_) {
+          return false;
+        } finally {
+          client.close();
+        }
+      });
 
-  /// 主通道：ECH 代理 + 流式。
-  Future<bool> _fetchStreamProxy(TimelineItem item, File file) async {
-    final port = widget.proxy.port;
-    if (port == null) return false;
-    final echUrl = EchUrl.rewrite(item.url, port);
-    final client = HttpClient();
-    try {
-      final req = await client.getUrl(Uri.parse(echUrl));
-      final res = await req.close();
-      if (res.statusCode != 200) return false;
-      final raf = await file.open(mode: FileMode.write);
-      await for (final chunk in res) {
-        await raf.writeFrom(chunk);
-      }
-      await raf.close();
-      return true;
-    } catch (_) {
-      return false;
-    } finally {
-      client.close();
-    }
-  }
+  // 兼容下载：走代理但不流式（整包读入内存），用于对比。
+  Future<void> _downloadAllLegacy() => _batchDownload((item, file) async {
+        final port = widget.proxy.port;
+        if (port == null) return false;
+        final echUrl = EchUrl.rewrite(item.url, port);
+        final client = HttpClient();
+        try {
+          final req = await client.getUrl(Uri.parse(echUrl));
+          final res = await req.close();
+          if (res.statusCode != 200) return false;
+          final bb = BytesBuilder(copy: false);
+          await res.listen((c) => bb.add(c), onDone: () {});
+          final bytes = bb.takeBytes();
+          await file.writeAsBytes(bytes);
+          return true;
+        } catch (_) {
+          return false;
+        } finally {
+          client.close();
+        }
+      });
 
-  /// 兼容通道：ECH 代理 + 内存。
-  Future<bool> _fetchMemoryProxy(TimelineItem item, File file) async {
-    final port = widget.proxy.port;
-    if (port == null) return false;
-    final echUrl = EchUrl.rewrite(item.url, port);
-    final client = HttpClient();
-    try {
-      final req = await client.getUrl(Uri.parse(echUrl));
-      final res = await req.close();
-      if (res.statusCode != 200) return false;
-      final bb = BytesBuilder(copy: false);
-      await res.listen((c) => bb.add(c), onDone: () {});
-      final bytes = bb.takeBytes();
-      await file.writeAsBytes(bytes);
-      return true;
-    } catch (_) {
-      return false;
-    } finally {
-      client.close();
-    }
-  }
-
-  /// 应急通道：原始 URL 直连（不经 ECH）。
-  Future<bool> _fetchDirect(TimelineItem item, File file) async {
-    final client = HttpClient();
-    try {
-      final req = await client.getUrl(Uri.parse(item.url));
-      final res = await req.close();
-      if (res.statusCode != 200) return false;
-      final raf = await file.open(mode: FileMode.write);
-      await for (final chunk in res) {
-        await raf.writeFrom(chunk);
-      }
-      await raf.close();
-      return true;
-    } catch (_) {
-      return false;
-    } finally {
-      client.close();
-    }
-  }
-
-  /// 自动降级下载：主通道 → 兼容 → 应急，逐项尝试直到成功。
-  Future<bool> _fetchWithFallback(TimelineItem item, File file) async {
-    if (await _fetchStreamProxy(item, file)) return true;
-    if (await _fetchMemoryProxy(item, file)) return true;
-    return _fetchDirect(item, file);
-  }
-
-  // ─── 批量下载入口 ──────────────────────────────────────────────────────────
-
-  /// 默认下载：自动降级（主 → 兼容 → 应急）。
-  Future<void> _downloadAll() => _batchDownload(_fetchWithFallback);
-
-  /// 仅主通道（ECH 流式），用于对比测试。
-  Future<void> _downloadAllLegacy() => _batchDownload(_fetchStreamProxy);
-
-  /// 仅应急通道（直连），用于代理完全失效时。
-  Future<void> _downloadEmergency() => _batchDownload(_fetchDirect);
+  // 应急下载：直接走原始 URL（不经 ECH），仅在代理完全失效时用。
+  Future<void> _downloadEmergency() => _batchDownload((item, file) async {
+        final client = HttpClient();
+        try {
+          final req = await client.getUrl(Uri.parse(item.url));
+          final res = await req.close();
+          if (res.statusCode != 200) return false;
+          final raf = await file.open(mode: FileMode.write);
+          await for (final chunk in res) {
+            await raf.writeFrom(chunk);
+          }
+          await raf.close();
+          return true;
+        } catch (_) {
+          return false;
+        } finally {
+          client.close();
+        }
+      });
 
   @override
   Widget build(BuildContext context) {
@@ -455,8 +435,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             )
           else ...[
             _pill('下载 ${widget.profile.totalUrls}', Icons.download, Colors.indigo, _downloadAll),
-            _pill('仅主通道', Icons.download_done, Colors.teal, _downloadAllLegacy),
-            _pill('仅应急', Icons.emergency, Colors.orange, _downloadEmergency),
+            _pill('兼容下载', Icons.download_done, Colors.teal, _downloadAllLegacy),
+            _pill('应急下载', Icons.emergency, Colors.orange, _downloadEmergency),
           ],
         ]);
       case 5:
