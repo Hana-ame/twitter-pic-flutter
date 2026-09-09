@@ -63,16 +63,23 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }).catchError((_) {});
   }
 
-  void _handleUpdate() {
-    _api.createMetaData(_username).then((_) {
+  bool _updating = false;
+
+  Future<void> _handleUpdate() async {
+    if (_updating) return;
+    setState(() => _updating = true);
+    try {
+      await _api.createMetaData(_username);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('数据已更新')));
       }
-    }).catchError((e) {
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新失败: $e')));
       }
-    });
+    } finally {
+      if (mounted) setState(() => _updating = false);
+    }
   }
 
   void _handleConfirmTags(Map<String, int> tags) {
@@ -393,7 +400,18 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         return HorizontalButtonRow(buttons: [
           _pill('展开全部', Icons.expand_more, Colors.green, () => setState(() => _showAll = true)),
           _pill(isFav ? '已收藏' : '收藏', Icons.star, Colors.amber, () { setState(() { StorageService.toggleFav(_username); }); }),
-          _pill('更新', Icons.refresh, Colors.blue, _handleUpdate),
+          ActionChip(
+            onPressed: _updating ? null : _handleUpdate,
+            avatar: _updating
+                ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue))
+                : const Icon(Icons.refresh, size: 14, color: Colors.blue),
+            label: const Text('更新', style: TextStyle(fontSize: 11)),
+            backgroundColor: Colors.blue.withValues(alpha: 0.1),
+            surfaceTintColor: Colors.transparent,
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            side: BorderSide(color: Colors.blue.withValues(alpha: 0.4)),
+          ),
           _pill(isBlocked ? '取消屏蔽' : '屏蔽', Icons.block, Colors.red, () { setState(() { StorageService.toggleBlock(_username); }); }),
         ]);
       case 3:

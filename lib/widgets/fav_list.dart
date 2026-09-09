@@ -86,7 +86,12 @@ class _FavListState extends State<FavList> {
   }
 
   void _handleExport() {
-    final text = StorageService.getFavMap().keys.map((k) => 'https://x.moonchan.xyz/$k').join('\n');
+    final map = StorageService.getFavMap();
+    if (map.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('没有可导出的收藏')));
+      return;
+    }
+    final text = map.keys.map((k) => 'https://x.moonchan.xyz/$k').join('\n');
     _copyToClipboard(text);
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制到剪贴板')));
   }
