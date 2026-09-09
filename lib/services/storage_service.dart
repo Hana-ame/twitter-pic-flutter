@@ -3,8 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
-import '../services/proxy_manager.dart' show getApplicationSupportDirectory;
-
 class StorageService {
   static const _kFavMap = 'fav-map';
   static const _kBlockMap = 'block-map';

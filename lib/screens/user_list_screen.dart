@@ -296,7 +296,7 @@ class _UserTileState extends State<_UserTile> {
                     color: isFav ? Colors.red : Colors.grey,
                   ),
                   title: Text(isFav ? '取消收藏' : '加入收藏'),
-                  onPressed: () {
+                  onTap: () {
                     Navigator.pop(ctx);
                     StorageService.toggleFav(widget.username);
                     setState(() {});

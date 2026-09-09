@@ -26,7 +26,6 @@ void main() {
     });
 
     test('getLogs returns empty list when not initialized', () {
-      final manager = ProxyManager();
       // getLogs will throw because FFI not loaded, but we can test the behavior
       // This test is skipped because it requires native library
       // expect(() => manager.getLogs(), throwsA(anything));

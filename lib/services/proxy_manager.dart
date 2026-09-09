@@ -19,7 +19,6 @@
 import 'dart:ffi';
 import 'dart:io';
 import 'package:ffi/ffi.dart';
-import 'package:flutter/services.dart' show rootBundle;
 
 // ─── FFI typedef（必须在顶层定义，不能在 class 内部）──────────────────────
 
@@ -61,7 +60,6 @@ class ProxyManager {
   bool _initialized = false;
 
   // ─── FFI 函数指针 ────────────────────────────────────────────────────────
-  _VoidDart? _initFfi;
   _EchInitWithBootstrapDart? _initWithBootstrap;
   _EchInitReadyDart? _ready;
   _EchLastErrorDart? _lastError;
@@ -77,8 +75,6 @@ class ProxyManager {
   // ─── 状态 ────────────────────────────────────────────────────────────────
   int? _port;
   bool _startInFlight = false;
-
-  static const int _kStreamBufSize = 64 * 1024; // 保留兼容，但不再使用
 
   // ─── 公共 API ────────────────────────────────────────────────────────────
 
@@ -201,7 +197,6 @@ class ProxyManager {
     }
 
     // 加载所有 FFI 函数指针
-    _initFfi = _lib!.lookupFunction<_VoidNative, _VoidDart>('ECHInit');
     _initWithBootstrap = _lib!.lookupFunction<
         _EchInitWithBootstrapNative, _EchInitWithBootstrapDart>(
         'ECHInitWithBootstrap');

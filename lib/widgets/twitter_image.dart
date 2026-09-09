@@ -9,6 +9,7 @@
 //   - 新增：长按菜单（全屏查看、下载分享）
 
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -36,9 +37,6 @@ class TwitterImage extends StatefulWidget {
 }
 
 class _TwitterImageState extends State<TwitterImage> {
-  bool _isLoading = false;
-  String? _error;
-
   void _showPreview() {
     if (widget.proxy.port == null) return;
 

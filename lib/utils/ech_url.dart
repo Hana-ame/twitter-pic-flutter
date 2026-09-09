@@ -13,8 +13,6 @@
 //   → 拼出 https://video-cf.twimg.com/media/photo.jpg?token=abc
 //   → ECH fetch → 流式回写
 
-import 'dart:io';
-
 class EchUrl {
   /// 将原始 URL 改写为走本机 ECH 代理。
   ///
