@@ -10,8 +10,10 @@
 //   - 控制栏逻辑保留（自动淡出、拖动进度、全屏）
 //   - 新增：下载、分享
 
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
 

@@ -52,6 +52,9 @@ typedef _FreeCStringDart = void Function(Pointer<Utf8>);
 typedef _StartProxyNative = Uint16 Function(Pointer<Utf8>);
 typedef _StartProxyDart = int Function(Pointer<Utf8>);
 
+typedef _StopProxyNative = Void Function();
+typedef _StopProxyDart = void Function();
+
 class ProxyManager {
   // ─── Native 库句柄 ───────────────────────────────────────────────────────
   DynamicLibrary? _lib;
@@ -225,7 +228,8 @@ class ProxyManager {
       _startProxy = null; // 旧版库无此符号
     }
     try {
-      _stopProxy = _lib!.lookupFunction<_VoidNative, _VoidDart>('StopProxy');
+      _stopProxy = _lib!.lookupFunction<_StopProxyNative, _StopProxyDart>(
+          'StopProxy');
     } catch (_) {
       _stopProxy = null;
     }
