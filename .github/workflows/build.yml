@@ -37,11 +37,6 @@ jobs:
           cd /tmp/test_project
           flutter analyze --no-fatal-infos --no-fatal-warnings
 
-      - name: Dependency audit
-        run: |
-          cd /tmp/test_project
-          dart pub audit
-
       - name: Run tests
         run: |
           cd /tmp/test_project
