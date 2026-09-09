@@ -163,6 +163,32 @@ class _FavTileState extends State<_FavTile> {
               ));
             }
           },
+          onLongPress: () {
+            showModalBottomSheet(
+              context: context,
+              builder: (ctx) => SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('用户操作', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.favorite, color: Colors.red),
+                      title: const Text('取消收藏'),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        StorageService.toggleFav(widget.username);
+                        setState(() {});
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ),
+            );
+          },
         );
       },
     );
