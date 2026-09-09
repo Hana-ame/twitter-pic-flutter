@@ -271,16 +271,18 @@ class _TwitterVideoState extends State<TwitterVideo>
 
   Widget _buildSpeedButton() {
     return IconButton(
-      icon: Icon(Icons.speed, color: Colors.white, size: 20),
+      icon: const Icon(Icons.speed, color: Colors.white, size: 20),
       onPressed: _cycleSpeed,
       iconSize: 20,
       tooltip: '${_playbackSpeed}x',
     );
   }
+
+  Widget _buildControls() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
+        gradient: const LinearGradient(
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
           colors: [Colors.black87, Colors.transparent],
