@@ -8,7 +8,6 @@ import '../models/user.dart';
 import '../screens/user_detail_screen.dart';
 import '../services/proxy_manager.dart';
 import 'proxy_avatar.dart';
-import 'horizontal_button_row.dart';
 
 class FavList extends StatefulWidget {
   final TwitterApi api;
@@ -30,12 +29,33 @@ class _FavListState extends State<FavList> {
     final allUsernames = StorageService.getFavMap().keys.toList().reversed.toList();
     final visible = allUsernames.take(_limit).toList();
 
+    if (allUsernames.isEmpty && !_showImport) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.favorite_border, size: 56, color: Colors.grey),
+            const SizedBox(height: 12),
+            const Text('收藏夹为空', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text('在用户列表中长按用户即可收藏', style: TextStyle(fontSize: 13, color: Colors.grey)),
+          ],
+        ),
+      );
+    }
+
     return RefreshIndicator(
       onRefresh: () async {
         setState(() => _limit = 10);
       },
       child: ListView(
+        padding: const EdgeInsets.symmetric(vertical: 4),
         children: [
+          if (visible.isEmpty && !_showImport)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Text('没有收藏的用户', style: TextStyle(color: Colors.grey, fontSize: 13)),
+            ),
           ...visible.map((u) => _FavTile(
             username: u, api: widget.api, proxy: widget.proxy,
             onUnfav: () => setState(() {}),
@@ -43,42 +63,53 @@ class _FavListState extends State<FavList> {
           if (_limit < allUsernames.length)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
-              child: SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () => setState(() => _limit += 20),
-                  child: const Text('加载更多'),
-                ),
+              child: OutlinedButton.icon(
+                onPressed: () => setState(() => _limit += 20),
+                icon: const Icon(Icons.expand_more, size: 16),
+                label: Text('显示更多 (${allUsernames.length - _limit} 个)'),
               ),
             ),
-          HorizontalButtonRow(buttons: [
-            ElevatedButton(
-              onPressed: _handleExport,
-              style: ElevatedButton.styleFrom(surfaceTintColor: Colors.transparent),
-              child: const Text('导出收藏'),
-            ),
-            ElevatedButton(
-              onPressed: () => setState(() => _showImport = !_showImport),
-              style: ElevatedButton.styleFrom(surfaceTintColor: Colors.transparent),
-              child: Text(_showImport ? '取消导入' : '导入收藏'),
-            ),
-          ]),
-          if (_showImport)
-            Column(
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Row(
               children: [
-                TextField(
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    hintText: '每行一个URL',
-                    border: OutlineInputBorder(),
-                  ),
-                  onChanged: (v) => _importText = v,
+                OutlinedButton.icon(
+                  onPressed: _handleExport,
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('导出'),
                 ),
-                ElevatedButton(
-                  onPressed: _handleImport,
-                  child: const Text('确认导入'),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () => setState(() => _showImport = !_showImport),
+                  icon: const Icon(Icons.paste, size: 16),
+                  label: Text(_showImport ? '取消' : '导入'),
                 ),
               ],
+            ),
+          ),
+          if (_showImport)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Column(
+                children: [
+                  TextField(
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      hintText: '每行一个URL',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.all(12),
+                    ),
+                    onChanged: (v) => _importText = v,
+                  ),
+                  const SizedBox(height: 8),
+                  FilledButton.icon(
+                    onPressed: _handleImport,
+                    icon: const Icon(Icons.check),
+                    label: const Text('确认导入'),
+                  ),
+                ],
+              ),
             ),
         ],
       ),
@@ -88,12 +119,16 @@ class _FavListState extends State<FavList> {
   void _handleExport() {
     final map = StorageService.getFavMap();
     if (map.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('没有可导出的收藏')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Row(children: [Icon(Icons.info_outline, size: 18), SizedBox(width: 8), Text('没有可导出的收藏')])),
+      );
       return;
     }
     final text = map.keys.map((k) => 'https://x.moonchan.xyz/$k').join('\n');
     _copyToClipboard(text);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制到剪贴板')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Row(children: [Icon(Icons.check_circle, size: 18), SizedBox(width: 8), Text('已复制到剪贴板')])),
+    );
   }
 
   void _handleImport() {
@@ -111,7 +146,9 @@ class _FavListState extends State<FavList> {
       _importText = '';
       _showImport = false;
     });
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('导入成功')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Row(children: [Icon(Icons.check_circle, size: 18), SizedBox(width: 8), Text('导入成功')])),
+    );
   }
 
   void _copyToClipboard(String text) {
