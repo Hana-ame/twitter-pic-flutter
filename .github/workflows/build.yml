@@ -140,6 +140,10 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
+          # 日期 tag（vYYYYMMDD.HHMMSS）转成合法三段版本号 YYYYMMDD.0.HHMMSS
+          if [[ "$VERSION" =~ ^([0-9]{8})\.([0-9]{6})$ ]]; then
+            VERSION="${BASH_REMATCH[1]}.0.${BASH_REMATCH[2]}"
+          fi
           RN=${{ github.run_number }}
           sed -i "s/^version:.*/version: ${VERSION}+${RN}/" /tmp/build_project/pubspec.yaml
 
@@ -195,6 +199,10 @@ jobs:
         run: |
           $content = Get-Content C:\tmp\build_project\pubspec.yaml -Raw
           $version = "${{ github.ref_name }}".TrimStart('v')
+          # 日期 tag（vYYYYMMDD.HHMMSS）转成合法三段版本号 YYYYMMDD.0.HHMMSS
+          if ($version -match '^(\d{8})\.(\d{6})$') {
+            $version = "$($matches[1]).0.$($matches[2])"
+          }
           $rn = "${{ github.run_number }}"
           $content = $content -replace '^version:.*', "version: $version+$rn"
           Set-Content C:\tmp\build_project\pubspec.yaml -Value $content
