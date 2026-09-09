@@ -31,7 +31,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   static const _kEmojis = ['😍', '😋', '😱', '🤢', '🐷', '😅', '💩'];
 
   final TwitterApi _api = TwitterApi();
-  UserMetaData _profile;
+  late UserMetaData _profile;
   bool _showAll = false;
   int _mediaLimit = 10;
   Map<String, dynamic> _userTags = {};
@@ -250,7 +250,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           final res = await req.close();
           if (res.statusCode != 200) return false;
           final bb = BytesBuilder(copy: false);
-          await res.listen((c) => bb.add(c), onDone: () {});
+          await for (final chunk in res) {
+            bb.add(chunk);
+          }
           final bytes = bb.takeBytes();
           await file.writeAsBytes(bytes);
           return true;
@@ -297,7 +299,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('@${_username}'),
+        title: Text('@$_username'),
         actions: [
           IconButton(
             icon: Icon(Icons.edit, size: 20),

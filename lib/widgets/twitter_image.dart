@@ -403,7 +403,6 @@ class _ImageViewerState extends State<_ImageViewer> {
     }
 
     final url = _buildUrl();
-    final isDirect = _mode == _UrlMode.direct;
 
     return Center(
       child: InteractiveViewer(
