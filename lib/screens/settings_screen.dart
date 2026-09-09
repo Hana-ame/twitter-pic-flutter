@@ -123,7 +123,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // ─── 关于 ───────────────────────────────────────────────────────────
           _SectionTitle(title: '关于', icon: Icons.info_outline, color: Colors.blueGrey),
-          _StatusCard(icon: Icons.tag, label: '版本', value: 'v0.2.8'),
+          _StatusCard(icon: Icons.tag, label: '版本', value: 'v0.4.0'),
           _StatusCard(icon: Icons.build, label: '构建', value: widget.buildNum),
           const SizedBox(height: 8),
 
