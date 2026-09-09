@@ -427,10 +427,19 @@ class _TwitterVideoState extends State<TwitterVideo>
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
             const SizedBox(height: 4),
-            SelectableText(
-              message,
-              style: const TextStyle(color: Colors.white54, fontSize: 11),
-              textAlign: TextAlign.center,
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  _error = null;
+                  _isLoading = true;
+                });
+                _initPlayer();
+              },
+              child: SelectableText(
+                message,
+                style: const TextStyle(color: Colors.white54, fontSize: 11),
+                textAlign: TextAlign.center,
+              ),
             ),
             const SizedBox(height: 12),
             ElevatedButton.icon(
