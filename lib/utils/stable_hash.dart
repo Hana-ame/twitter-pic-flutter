@@ -4,17 +4,17 @@
 // spool 文件名时，重启后缓存全部失效，不同 URL 还可能撞名互相覆盖。
 // 这里用 FNV-1a 64 位：实现简单、分布均匀、无依赖。
 
-import 'dart:typed_data';
-
 /// 返回输入字符串的 FNV-1a 64 位哈希，16 位小写十六进制（零填充）。
 String stableHash(String input) {
-  // Use Uint64 for unsigned 64-bit arithmetic
-  var h = Uint64(0xcbf29ce484222325);
+  const offset64 = BigInt.from(0xcbf29ce484222325);
+  const prime64 = BigInt.from(0x100000001b3);
+  const mask64 = BigInt.from(0xFFFFFFFFFFFFFFFF);
+  
+  BigInt h = offset64;
   for (final c in input.codeUnits) {
-    h = h ^ c;
-    h = h * 0x100000001b3;
+    h = h ^ BigInt.from(c);
+    h = (h * prime64) & mask64;
   }
-  // Convert to hex string
   final hex = h.toRadixString(16);
   return hex.padLeft(16, '0');
 }
