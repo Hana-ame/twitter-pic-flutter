@@ -122,7 +122,10 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
                       },
                       trailing: IconButton(
                         icon: const Icon(Icons.close, size: 14),
-                        onPressed: () => setState(() => _history.remove(h)),
+                        onPressed: () {
+                          setState(() => _history.remove(h));
+                          StorageService.saveSearchHistory(_history);
+                        },
                       ),
                     )).toList(),
                   ),
