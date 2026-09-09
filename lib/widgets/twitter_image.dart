@@ -119,10 +119,7 @@ class _TwitterImageState extends State<TwitterImage> {
             ListTile(
               leading: const Icon(Icons.download),
               title: const Text('下载并分享'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _downloadAndShare(context);
-              },
+              onPressed: () => Navigator.pop(ctx),
             ),
             const SizedBox(height: 8),
           ],

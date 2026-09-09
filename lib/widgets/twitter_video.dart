@@ -106,7 +106,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   void _scheduleHideControls() {
     _hideTimer?.cancel();
     _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && _controller?.value.isPlaying ?? false) {
+      if (mounted && (_controller?.value.isPlaying ?? false)) {
         setState(() => _showControls = false);
       }
     });
