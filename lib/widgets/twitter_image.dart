@@ -9,7 +9,7 @@
 //   - 新增：长按菜单（全屏查看、下载分享）
 
 import 'dart:io';
-import 'package flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';

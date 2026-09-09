@@ -36,7 +36,10 @@ class _FavListState extends State<FavList> {
       },
       child: ListView(
         children: [
-          ...visible.map((u) => _FavTile(username: u, api: widget.api, proxy: widget.proxy)),
+          ...visible.map((u) => _FavTile(
+            username: u, api: widget.api, proxy: widget.proxy,
+            onUnfav: () => setState(() {}),
+          )),
           if (_limit < allUsernames.length)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
@@ -115,8 +118,14 @@ class _FavTile extends StatefulWidget {
   final String username;
   final TwitterApi api;
   final ProxyManager proxy;
+  final VoidCallback? onUnfav;
 
-  const _FavTile({required this.username, required this.api, required this.proxy});
+  const _FavTile({
+    required this.username,
+    required this.api,
+    required this.proxy,
+    this.onUnfav,
+  });
 
   @override
   State<_FavTile> createState() => _FavTileState();
@@ -180,7 +189,7 @@ class _FavTileState extends State<_FavTile> {
                       onTap: () {
                         Navigator.pop(ctx);
                         StorageService.toggleFav(widget.username);
-                        setState(() {});
+                        widget.onUnfav?.call();
                       },
                     ),
                     const SizedBox(height: 8),
