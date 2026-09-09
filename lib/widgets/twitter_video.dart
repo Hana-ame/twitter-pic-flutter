@@ -448,7 +448,6 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   VideoPlayerValue? _videoValue;
   bool _showControls = true;
   Timer? _hideTimer;
-  bool _isDragging = false;
 
   @override
   void initState() {
@@ -487,13 +486,11 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   }
 
   void _onSeekStart() {
-    _isDragging = true;
     _hideTimer?.cancel();
     setState(() => _showControls = true);
   }
 
   void _onSeekEnd(Duration value) {
-    _isDragging = false;
     widget.controller.seekTo(value);
     _scheduleHideControls();
   }
