@@ -64,7 +64,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   }
 
   void _handleUpdate() {
-    _api.createMetaData(_username).catchError((e) {
+    _api.createMetaData(_username).then((_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('数据已更新')));
+      }
+    }).catchError((e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新失败: $e')));
       }
@@ -77,7 +81,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       _userTags = tags.map((k, v) => MapEntry(k, v as dynamic));
     });
     _api.createMetaData(_username, body: tags, doNotTag: false, doNotRenew: true)
-        .catchError((e) {
+        .then((_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('标签已保存')));
+      }
+    }).catchError((e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存失败: $e')));
     });
