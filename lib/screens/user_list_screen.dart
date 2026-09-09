@@ -422,11 +422,36 @@ class _AddUserTileState extends State<_AddUserTile> {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      dense: true,
-      leading: const CircleAvatar(radius: 16, child: Icon(Icons.person_add, size: 18)),
-      title: Text(_isClicked ? '已添加' : '添加 @${widget.username}', style: const TextStyle(fontSize: 14)),
-      onTap: _onClick,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Card(
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: BorderSide(color: Colors.green.withValues(alpha: 0.3)),
+        ),
+        child: ListTile(
+          dense: true,
+          leading: CircleAvatar(
+            radius: 18,
+            backgroundColor: Colors.green.withValues(alpha: 0.1),
+            child: Icon(
+              _isClicked ? Icons.check : Icons.person_add,
+              size: 18,
+              color: _isClicked ? Colors.green : Colors.green.shade700,
+            ),
+          ),
+          title: Text(
+            _isClicked ? '已添加 @${widget.username}' : '添加 @${widget.username}',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              color: _isClicked ? Colors.green : Colors.green.shade700,
+            ),
+          ),
+          onTap: _isClicked ? null : _onClick,
+        ),
+      ),
     );
   }
 }

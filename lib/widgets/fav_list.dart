@@ -200,12 +200,26 @@ class _FavTileState extends State<_FavTile> {
       future: _meta,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          return ListTile(
-            dense: true,
-            leading: const CircleAvatar(radius: 16, child: Icon(Icons.error, size: 18)),
-            title: Text(widget.username, style: const TextStyle(fontSize: 14)),
-            subtitle: Text('加载失败', style: const TextStyle(color: Colors.red, fontSize: 11)),
-            onTap: () => setState(() => _meta = widget.api.getMetaData(widget.username)),
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            child: Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                side: BorderSide(color: Colors.red.withValues(alpha: 0.3)),
+              ),
+              child: ListTile(
+                dense: true,
+                leading: CircleAvatar(
+                  radius: 18,
+                  backgroundColor: Colors.red.withValues(alpha: 0.1),
+                  child: const Icon(Icons.error, size: 18, color: Colors.red),
+                ),
+                title: Text(widget.username, style: const TextStyle(fontSize: 14)),
+                subtitle: const Text('加载失败，点击重试', style: TextStyle(color: Colors.red, fontSize: 11)),
+                onTap: () => setState(() => _meta = widget.api.getMetaData(widget.username)),
+              ),
+            ),
           );
         }
         final info = snapshot.data?.accountInfo;
