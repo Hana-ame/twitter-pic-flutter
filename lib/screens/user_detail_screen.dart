@@ -1,5 +1,6 @@
 // 用户详情页面：展示头像、标签、投票及媒体内容
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
@@ -36,7 +37,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   Map<String, int> _emojiCounts = {};
   String? _votingEmoji;
   bool _showTagModal = false;
-  bool _loadingTags = false;
   late String _username;
 
   @override

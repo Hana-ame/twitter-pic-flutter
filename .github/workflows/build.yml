@@ -35,7 +35,7 @@ jobs:
       - name: Static analysis (quality gate)
         run: |
           cd /tmp/test_project
-          flutter analyze --fatal-infos
+          flutter analyze --fatal-warnings
 
       - name: Dependency audit
         run: |

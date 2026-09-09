@@ -13,18 +13,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
 import 'screens/settings_screen.dart';
 import 'screens/user_list_screen.dart';
-import 'utils/ech_url.dart';
 import 'widgets/tag_controller.dart';
 
 const _kBuildNum = String.fromEnvironment('BUILD_NUM', defaultValue: 'dev');
 const _kDohHost = 'moonchan.xyz';
-const _kDohUrl = 'https://moonchan.xyz/doh';
 
 // ─── DoH 域名解析（系统 DNS → 腾讯 DNS → 阿里 DNS）──────────────────────────
 

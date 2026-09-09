@@ -22,9 +22,6 @@ import 'package:ffi/ffi.dart';
 
 // ─── FFI typedef（必须在顶层定义，不能在 class 内部）──────────────────────
 
-typedef _VoidNative = Void Function();
-typedef _VoidDart = void Function();
-
 typedef _EchStrNative = Void Function(Pointer<Utf8>);
 typedef _EchStrDart = void Function(Pointer<Utf8>);
 
