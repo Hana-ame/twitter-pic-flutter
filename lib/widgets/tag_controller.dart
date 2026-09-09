@@ -2,7 +2,6 @@
 import 'package:flutter/material.dart';
 
 import '../services/storage_service.dart';
-import 'horizontal_button_row.dart';
 
 const _kDefaultBlockTags = [
   '无关内容', '男性', '男娘', '人妖', '露屌', '阳痿', '男同',
@@ -28,7 +27,7 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   }
 
   // 原实现按钮的禁用条件只在 build 时求值、输入不触发重建，
-  // 导致打字后“高亮/屏蔽”按钮永远是灰的（只能按回车提交）。
+  // 导致打字后"高亮/屏蔽"按钮永远是灰的（只能按回车提交）。
   void _onInputChanged() {
     if (mounted) setState(() {});
   }
@@ -85,71 +84,117 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext  context) {
     final hasInput = _inputCtrl.text.trim().isNotEmpty;
     return Scaffold(
       appBar: AppBar(title: const Text('标签管理')),
       body: SafeArea(
-        // SingleChildScrollView：键盘弹出时内容可滚动，小屏不溢出。
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
             TextField(
               controller: _inputCtrl,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 hintText: '输入标签名称...',
-                border: OutlineInputBorder(),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                prefixIcon: const Icon(Icons.label_outline, size: 20),
                 isDense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
               ),
               onSubmitted: (_) => _addTag('highlight'),
             ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: hasInput ? () => _addTag('highlight') : null,
+                    icon: const Icon(Icons.visibility, size: 16),
+                    label: const Text('高亮'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.green.shade50,
+                      foregroundColor: Colors.green.shade800,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: hasInput ? () => _addTag('block') : null,
+                    icon: const Icon(Icons.visibility_off, size: 16),
+                    label: const Text('屏蔽'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.red.shade50,
+                      foregroundColor: Colors.red.shade700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
-            HorizontalButtonRow(buttons: [
-              ElevatedButton.icon(
-                onPressed: hasInput ? () => _addTag('highlight') : null,
-                icon: const Icon(Icons.visibility, size: 16),
-                label: const Text('高亮'),
-              ),
-              ElevatedButton.icon(
-                onPressed: hasInput ? () => _addTag('block') : null,
-                icon: const Icon(Icons.visibility_off, size: 16),
-                label: const Text('屏蔽'),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade50),
-              ),
-            ]),
-            const SizedBox(height: 4),
-            Text('添加后，详情页中命中的标签会特殊显示；'
-                '用户标签命中“屏蔽”时页面顶部会给出提示。',
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
-            const SizedBox(height: 12),
-            Text('高亮显示 (${_highlight.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            Wrap(
-              spacing: 6, runSpacing: 4,
-              children: _highlight.isEmpty
-                  ? [const Text('无高亮标签', style: TextStyle(color: Colors.grey))]
-                  : _highlight.map((t) => Chip(
-                      label: Text(t, style: const TextStyle(fontSize: 12)),
-                      onDeleted: () => _removeTag(t, 'highlight'),
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    )).toList(),
+            Text(
+              '添加后，详情页中命中的标签会特殊显示；'
+              '用户标签命中"屏蔽"时页面顶部会给出提示。',
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
             ),
-            const Divider(),
-            Text('已屏蔽 (${_block.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            Wrap(
-              spacing: 6, runSpacing: 4,
-              children: _block.isEmpty
-                  ? [const Text('无屏蔽标签', style: TextStyle(color: Colors.grey))]
-                  : _block.map((t) => Chip(
-                      label: Text(t, style: const TextStyle(fontSize: 12)),
-                      onDeleted: () => _removeTag(t, 'block'),
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    )).toList(),
-            ),
+            const SizedBox(height: 20),
+            _buildSectionHeader(
+              Icons.visibility, Colors.green, '高亮显示', _highlight.length),
+            const SizedBox(height: 8),
+            _buildTagList(_highlight, Colors.green, 'highlight'),
+            const SizedBox(height: 20),
+            _buildSectionHeader(
+              Icons.visibility_off, Colors.red, '已屏蔽', _block.length),
+            const SizedBox(height: 8),
+            _buildTagList(_block, Colors.red, 'block'),
+            const SizedBox(height: 32),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildSectionHeader(
+      IconData  icon, Color  color, String  title, int  count) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 8),
+        Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+        const SizedBox(width: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text('$count', style: TextStyle(fontSize: 11, color: color)),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTagList(List<String>  tags, Color  color, String  type) {
+    if (tags.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text(
+          type == 'highlight' ? '无高亮标签' : '无屏蔽标签',
+          style: const TextStyle(color: Colors.grey, fontSize: 13),
+        ),
+      );
+    }
+    return Wrap(
+      spacing: 6, runSpacing: 6,
+      children: tags.map((t) => ActionChip(
+        label: Text(t, style: const TextStyle(fontSize: 12)),
+        avatar: Icon(Icons.close, size: 14, color: color),
+        onPressed: () => _removeTag(t, type),
+        backgroundColor: color.withValues(alpha: 0.08),
+        side: BorderSide(color: color.withValues(alpha: 0.3)),
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      )).toList(),
     );
   }
 }
