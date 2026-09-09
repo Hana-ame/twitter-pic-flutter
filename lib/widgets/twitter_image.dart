@@ -6,6 +6,7 @@
 //   - 直接使用 Image.network(EchUrl.rewrite(url, port))
 //   - 框架自动处理缓存、解码、错误状态
 //   - 新增：点击全屏预览、下载、分享
+//   - 新增：长按菜单（全屏查看、下载分享）
 
 import 'dart:io';
 import 'package:flutter/material.dart';
