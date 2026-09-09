@@ -30,6 +30,12 @@ class StorageService {
     _loaded = true;
   }
 
+  /// 清空所有存储数据。
+  static Future<void> clearAll() async {
+    _memory = {};
+    _flush();
+  }
+
   static Future<void> _flush() async {
     // 串行化 + 临时文件原子替换：快速连续 toggle 时多个 writeAsString
     // 并发交错可能写坏 storage.json；rename 保证读到的是完整文件。

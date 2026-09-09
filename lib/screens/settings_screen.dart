@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/proxy_manager.dart';
+import '../services/storage_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
@@ -16,6 +17,25 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _restarting = false;
+
+  Future<void> _clearData() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清除数据'),
+        content: const Text('将清除所有收藏、屏蔽列表、标签规则、搜索历史。\n\n此操作不可撤销。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('清除')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await StorageService.clearAll();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('数据已清除')));
+    }
+  }
 
   Future<void> _restart() async {
     if (_restarting) return;
@@ -88,6 +108,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('查看日志'),
             subtitle: const Text('显示 Go 侧调试日志'),
             onTap: () => _showLogs(context),
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_sweep, color: Colors.red),
+            title: const Text('清除数据'),
+            subtitle: const Text('清除收藏、屏蔽、标签、搜索历史'),
+            onTap: _clearData,
           ),
           const Divider(),
 
