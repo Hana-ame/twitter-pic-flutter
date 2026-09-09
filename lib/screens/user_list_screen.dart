@@ -124,10 +124,15 @@ class UserListScreenState extends State<UserListScreen> {
             _AddUserTile(username: _search, api: _api, onAdded: _load),
             if (results.isEmpty)
               const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-                child: Center(
-                  child: Text('没有匹配的用户，可点击上方添加',
-                      style: TextStyle(color: Colors.grey, fontSize: 13)),
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 32),
+                child: Column(
+                  children: [
+                    Icon(Icons.search_off, size: 40, color: Colors.grey),
+                    SizedBox(height: 8),
+                    Text('没有匹配的用户', style: TextStyle(fontSize: 14)),
+                    SizedBox(height: 4),
+                    Text('可点击上方按钮直接添加', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  ],
                 ),
               )
             else
@@ -153,8 +158,31 @@ class UserListScreenState extends State<UserListScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('加载失败: $_error', style: const TextStyle(fontSize: 12)),
-            ElevatedButton(onPressed: () { setState(() { _loading = true; _error = null; }); _load(); }, child: const Text('重试')),
+            const Icon(Icons.error_outlined, size: 48, color: Colors.red),
+            const SizedBox(height: 12),
+            Text('加载失败', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            SelectableText('$_error', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () { setState(() { _loading = true; _error = null; }); _load(); },
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
+    if (_users.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.people_outlined, size: 56, color: Colors.grey),
+            const SizedBox(height: 12),
+            const Text('还没有用户', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text('使用上方搜索框搜索用户后添加', style: TextStyle(fontSize: 13, color: Colors.grey)),
           ],
         ),
       );
@@ -244,6 +272,44 @@ class _UserTileState extends State<_UserTile> {
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 36, height: 36,
+              child: _SkeletonCircle(),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    height: 14,
+                    width: 120,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    height: 10,
+                    width: 80,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     final info = _meta?.accountInfo;
     final nick = info?.nick;
     final avatar = info?.avatar;
@@ -257,10 +323,10 @@ class _UserTileState extends State<_UserTile> {
         radius: 16,
       ),
       title: Text(
-        _loading ? widget.username : (nick ?? widget.username),
+        nick ?? widget.username,
         style: const TextStyle(fontSize: 14),
       ),
-      subtitle: Text('@${widget.username}', style: const TextStyle(fontSize: 11)),
+      subtitle: Text('@${widget.username}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
       trailing: isFav
           ? const Icon(Icons.favorite, color: Colors.red, size: 18)
           : null,
@@ -347,6 +413,45 @@ class _AddUserTileState extends State<_AddUserTile> {
       leading: const CircleAvatar(radius: 16, child: Icon(Icons.person_add, size: 18)),
       title: Text(_isClicked ? '已添加' : '添加 @${widget.username}', style: const TextStyle(fontSize: 14)),
       onTap: _onClick,
+    );
+  }
+}
+
+class _SkeletonCircle extends StatefulWidget {
+  const _SkeletonCircle();
+  @override
+  State<_SkeletonCircle> createState() => _SkeletonCircleState();
+}
+
+class _SkeletonCircleState extends State<_SkeletonCircle>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.3, end: 1.0).animate(_ctrl),
+      child: const Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.grey,
+        ),
+      ),
     );
   }
 }
