@@ -9,8 +9,7 @@
 //   - 新增：长按菜单（全屏查看、下载分享）
 
 import 'dart:io';
-import 'dart:typed_data';
-import 'package:flutter/material.dart';
+import 'package flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
@@ -144,27 +143,32 @@ class _TwitterImageState extends State<TwitterImage> {
 
     try {
       final client = HttpClient();
-      final request = await client.getUrl(uri);
-      final response = await request.close();
-      final bytes = await response.fold<BytesBuilder>(
-        BytesBuilder(),
-        (b, chunk) => b..add(chunk),
-      );
-      final data = bytes.takeBytes();
-      client.close();
+      try {
+        final request = await client.getUrl(uri);
+        final response = await request.close();
+        if (response.statusCode != 200) {
+          throw Exception('HTTP ${response.statusCode}');
+        }
 
-      final tempDir = Directory.systemTemp;
-      final fileName = widget.url.split('/').last.split('?').first;
-      final file = File('${tempDir.path}/$fileName');
-      await file.writeAsBytes(data);
+        final tempDir = Directory.systemTemp;
+        final fileName = widget.url.split('/').last.split('?').first;
+        final file = File('${tempDir.path}/$fileName');
+        final raf = await file.open(mode: FileMode.write);
+        await for (final chunk in response) {
+          await raf.writeFrom(chunk);
+        }
+        await raf.close();
 
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        subject: 'Twitter Image',
-      );
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          subject: 'Twitter Image',
+        );
 
-      if (context.mounted) {
-        messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+        if (context.mounted) {
+          messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+        }
+      } finally {
+        client.close();
       }
     } catch (e) {
       if (context.mounted) {
@@ -241,27 +245,32 @@ class _ImageViewerState extends State<_ImageViewer> {
 
     try {
       final client = HttpClient();
-      final request = await client.getUrl(uri);
-      final response = await request.close();
-      final bytes = await response.fold<BytesBuilder>(
-        BytesBuilder(),
-        (b, chunk) => b..add(chunk),
-      );
-      final data = bytes.takeBytes();
-      client.close();
+      try {
+        final request = await client.getUrl(uri);
+        final response = await request.close();
+        if (response.statusCode != 200) {
+          throw Exception('HTTP ${response.statusCode}');
+        }
 
-      final tempDir = Directory.systemTemp;
-      final fileName = widget.url.split('/').last.split('?').first;
-      final file = File('${tempDir.path}/$fileName');
-      await file.writeAsBytes(data);
+        final tempDir = Directory.systemTemp;
+        final fileName = widget.url.split('/').last.split('?').first;
+        final file = File('${tempDir.path}/$fileName');
+        final raf = await file.open(mode: FileMode.write);
+        await for (final chunk in response) {
+          await raf.writeFrom(chunk);
+        }
+        await raf.close();
 
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        subject: 'Twitter Image',
-      );
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          subject: 'Twitter Image',
+        );
 
-      if (context.mounted) {
-        messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+        if (context.mounted) {
+          messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+        }
+      } finally {
+        client.close();
       }
     } catch (e) {
       if (context.mounted) {

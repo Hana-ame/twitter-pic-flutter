@@ -12,7 +12,6 @@
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
@@ -146,6 +145,8 @@ class _TwitterVideoState extends State<TwitterVideo>
         fullscreenDialog: true,
         builder: (_) => _FullscreenVideo(
           controller: _controller!,
+          url: widget.url,
+          proxy: widget.proxy,
           onExit: () => Navigator.of(context).pop(),
         ),
       ),
@@ -165,27 +166,32 @@ class _TwitterVideoState extends State<TwitterVideo>
 
     try {
       final client = HttpClient();
-      final request = await client.getUrl(uri);
-      final response = await request.close();
-      final bytes = await response.fold<BytesBuilder>(
-        BytesBuilder(),
-        (b, chunk) => b..add(chunk),
-      );
-      final data = bytes.takeBytes();
-      client.close();
+      try {
+        final request = await client.getUrl(uri);
+        final response = await request.close();
+        if (response.statusCode != 200) {
+          throw Exception('HTTP ${response.statusCode}');
+        }
 
-      final tempDir = Directory.systemTemp;
-      final fileName = widget.url.split('/').last.split('?').first;
-      final file = File('${tempDir.path}/$fileName');
-      await file.writeAsBytes(data);
+        final tempDir = Directory.systemTemp;
+        final fileName = widget.url.split('/').last.split('?').first;
+        final file = File('${tempDir.path}/$fileName');
+        final raf = await file.open(mode: FileMode.write);
+        await for (final chunk in response) {
+          await raf.writeFrom(chunk);
+        }
+        await raf.close();
 
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        subject: 'Twitter Video',
-      );
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          subject: 'Twitter Video',
+        );
 
-      if (context.mounted) {
-        messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+        if (context.mounted) {
+          messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+        }
+      } finally {
+        client.close();
       }
     } catch (e) {
       if (context.mounted) {
@@ -292,16 +298,16 @@ class _TwitterVideoState extends State<TwitterVideo>
               child: Text('视频操作', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
             ListTile(
-              leading: const Icon(Icons.download),
-              title: const Text('下载视频'),
+              leading: const Icon(Icons.fullscreen),
+              title: const Text('全屏播放'),
               onTap: () {
                 Navigator.pop(ctx);
-                _downloadVideo();
+                _enterFullscreen();
               },
             ),
             ListTile(
-              leading: const Icon(Icons.share),
-              title: const Text('分享视频'),
+              leading: const Icon(Icons.download),
+              title: const Text('下载并分享'),
               onTap: () {
                 Navigator.pop(ctx);
                 _downloadVideo();
@@ -435,9 +441,16 @@ class _TwitterVideoState extends State<TwitterVideo>
 
 class _FullscreenVideo extends StatefulWidget {
   final VideoPlayerController controller;
+  final String url;
+  final ProxyManager proxy;
   final VoidCallback onExit;
 
-  const _FullscreenVideo({required this.controller, required this.onExit});
+  const _FullscreenVideo({
+    required this.controller,
+    required this.url,
+    required this.proxy,
+    required this.onExit,
+  });
 
   @override
   State<_FullscreenVideo> createState() => _FullscreenVideoState();
@@ -448,6 +461,57 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   VideoPlayerValue? _videoValue;
   bool _showControls = true;
   Timer? _hideTimer;
+  bool _downloading = false;
+
+  Future<void> _downloadVideo() async {
+    if (_downloading) return;
+    final port = widget.proxy.port;
+    if (port == null) return;
+
+    final echUrl = EchUrl.rewrite(widget.url, port);
+    final uri = Uri.parse(echUrl);
+
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _downloading = true);
+    messenger.showSnackBar(const SnackBar(content: Text('正在下载视频...')));
+
+    try {
+      final client = HttpClient();
+      try {
+        final request = await client.getUrl(uri);
+        final response = await request.close();
+        if (response.statusCode != 200) {
+          throw Exception('HTTP ${response.statusCode}');
+        }
+
+        final tempDir = Directory.systemTemp;
+        final fileName = widget.url.split('/').last.split('?').first;
+        final file = File('${tempDir.path}/$fileName');
+        final raf = await file.open(mode: FileMode.write);
+        await for (final chunk in response) {
+          await raf.writeFrom(chunk);
+        }
+        await raf.close();
+
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          subject: 'Twitter Video',
+        );
+
+        if (context.mounted) {
+          messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+        }
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(content: Text('下载失败: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _downloading = false);
+    }
+  }
 
   @override
   void initState() {
@@ -546,6 +610,16 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
                       onPressed: widget.onExit,
                     ),
                     const Spacer(),
+                    IconButton(
+                      icon: _downloading
+                          ? const SizedBox(
+                              width: 20, height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Icon(Icons.download, color: Colors.white),
+                      onPressed: _downloading ? null : _downloadVideo,
+                      tooltip: '下载并分享',
+                    ),
                   ],
                 ),
               ),
