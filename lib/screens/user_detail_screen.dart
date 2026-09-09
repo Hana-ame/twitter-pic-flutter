@@ -328,17 +328,28 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                 if (showBlockBanner) j--;
                 if (displayTimeline.isEmpty) {
                   return const Padding(
-                      padding: EdgeInsets.all(32), child: Center(child: Text('暂无内容')));
+                    padding: EdgeInsets.symmetric(vertical: 48, horizontal: 16),
+                    child: Column(
+                      children: [
+                        Icon(Icons.photo_library_outlined, size: 48, color: Colors.grey),
+                        SizedBox(height: 12),
+                        Text('暂无内容', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                        SizedBox(height: 4),
+                        Text('该用户还没有发布任何媒体', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                      ],
+                    ),
+                  );
                 }
                 if (j < displayTimeline.length) {
                   final item = displayTimeline[j];
                   return _MediaCard(key: ValueKey(item.url), item: item, proxy: widget.proxy);
                 }
                 return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: ElevatedButton(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: OutlinedButton.icon(
                     onPressed: () => setState(() => _mediaLimit += 10),
-                    child: const Text('加载更多'),
+                    icon: const Icon(Icons.expand_more, size: 16),
+                    label: const Text('加载更多'),
                   ),
                 );
               },
@@ -397,23 +408,37 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   Widget _buildHeader(int i, TwitterUser info, bool isFav, bool isBlocked) {
     switch (i) {
       case 0:
-        return Row(
-          children: [
-            ProxyAvatar(
-              url: info.avatar,
-              fallbackText: _username[0].toUpperCase(),
-              proxy: widget.proxy,
-              radius: 28,
-            ),
-            const SizedBox(width: 12),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(info.nick ?? _username, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                Text('@$_username', style: TextStyle(color: Colors.grey.shade600)),
-              ],
-            ),
-          ],
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              ProxyAvatar(
+                url: info.avatar,
+                fallbackText: _username[0].toUpperCase(),
+                proxy: widget.proxy,
+                radius: 32,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      info.nick ?? _username,
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '@$_username',
+                      style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         );
       case 1:
         return const SizedBox(height: 12);
