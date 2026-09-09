@@ -192,7 +192,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           final res = await req.close();
           if (res.statusCode != 200) return false;
           final raf = await file.open(mode: FileMode.write);
-          await res.pipe(raf);
+          await res.drain<List<int>>();
           await raf.close();
           return true;
         } catch (_) {
@@ -233,7 +233,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           final res = await req.close();
           if (res.statusCode != 200) return false;
           final raf = await file.open(mode: FileMode.write);
-          await res.pipe(raf);
+          await res.drain<List<int>>();
           await raf.close();
           return true;
         } catch (_) {
