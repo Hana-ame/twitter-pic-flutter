@@ -6,9 +6,9 @@
 
 /// 返回输入字符串的 FNV-1a 64 位哈希，16 位小写十六进制（零填充）。
 String stableHash(String input) {
-  const offset64 = BigInt.from(0xcbf29ce484222325);
-  const prime64 = BigInt.from(0x100000001b3);
-  const mask64 = BigInt.from(0xFFFFFFFFFFFFFFFF);
+  final offset64 = BigInt.from(0xcbf29ce484222325);
+  final prime64 = BigInt.from(0x100000001b3);
+  final mask64 = BigInt.from(0xFFFFFFFFFFFFFFFF);
   
   BigInt h = offset64;
   for (final c in input.codeUnits) {
