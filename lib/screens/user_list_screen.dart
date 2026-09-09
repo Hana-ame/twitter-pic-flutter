@@ -96,8 +96,8 @@ class UserListScreenState extends State<UserListScreen> {
         final curved = Curves.easeInOutCubic.transform(a);
         return FadeTransition(
           opacity: curved,
-          child: ScaleTransition(
-            scale: AnimatedScale(scale: 0.95 + 0.05 * curved),
+          child: Transform.scale(
+            scale: 0.95 + 0.05 * curved,
             child: child,
           ),
         );
