@@ -45,6 +45,8 @@ class _FavListState extends State<FavList> {
     }
 
     return RefreshIndicator(
+      color: const Color(0xFF4F6CFF),
+      backgroundColor: Colors.white,
       onRefresh: () async {
         setState(() => _limit = 10);
       },
@@ -218,8 +220,20 @@ class _FavTileState extends State<_FavTile> {
           subtitle: Text('@${widget.username}'),
           onTap: () {
             if (snapshot.hasData) {
-              Navigator.push(context, MaterialPageRoute(
-                builder: (_) => UserDetailScreen(profile: snapshot.data!, proxy: widget.proxy),
+              Navigator.push(context, PageRouteBuilder(
+                transitionDuration: const Duration(milliseconds: 300),
+                reverseTransitionDuration: const Duration(milliseconds: 300),
+                pageBuilder: (_, a, __) => UserDetailScreen(profile: snapshot.data!, proxy: widget.proxy),
+                transitionsBuilder: (_, a, __, child) {
+                  final curved = Curves.easeInOutCubic.transform(a);
+                  return FadeTransition(
+                    opacity: curved,
+                    child: ScaleTransition(
+                      scale: AnimatedScale(scale: 0.95 + 0.05 * curved),
+                      child: child,
+                    ),
+                  );
+                },
               ));
             }
           },

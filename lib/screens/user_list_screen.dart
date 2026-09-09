@@ -88,8 +88,20 @@ class UserListScreenState extends State<UserListScreen> {
   }
 
   void _openDetail(UserMetaData profile) {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => UserDetailScreen(profile: profile, proxy: widget.proxy),
+    Navigator.push(context, PageRouteBuilder(
+      transitionDuration: const Duration(milliseconds: 300),
+      reverseTransitionDuration: const Duration(milliseconds: 300),
+      pageBuilder: (_, a, __) => UserDetailScreen(profile: profile, proxy: widget.proxy),
+      transitionsBuilder: (_, a, __, child) {
+        final curved = Curves.easeInOutCubic.transform(a);
+        return FadeTransition(
+          opacity: curved,
+          child: ScaleTransition(
+            scale: AnimatedScale(scale: 0.95 + 0.05 * curved),
+            child: child,
+          ),
+        );
+      },
     ));
   }
 
@@ -188,6 +200,8 @@ class UserListScreenState extends State<UserListScreen> {
       );
     }
     return RefreshIndicator(
+      color: const Color(0xFF4F6CFF),
+      backgroundColor: Colors.white,
       onRefresh: () async {
         await _load();
       },

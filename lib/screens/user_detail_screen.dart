@@ -314,6 +314,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           // 一次性塞进 children，“展开全部”会瞬间创建全部 TwitterVideo、
           // 同时触发所有视频下载；builder 化后视频只在滚入视口时才创建/下载。
           RefreshIndicator(
+            color: const Color(0xFF4F6CFF),
+            backgroundColor: Colors.white,
             onRefresh: () async {
               await _loadTags();
               await _loadEmojis();
