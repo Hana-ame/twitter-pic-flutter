@@ -12,7 +12,7 @@ import 'package:flutter/material.dart';
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
 
-class ProxyAvatar extends StatelessWidget {
+class ProxyAvatar extends StatefulWidget {
   final String? url;
   final String fallbackText;
   final double radius;
@@ -27,31 +27,70 @@ class ProxyAvatar extends StatelessWidget {
   });
 
   @override
+  State<ProxyAvatar> createState() => _ProxyAvatarState();
+}
+
+class _ProxyAvatarState extends State<ProxyAvatar> {
+  bool _error = false;
+
+  @override
+  void didUpdateWidget(ProxyAvatar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url || oldWidget.proxy.port != widget.proxy.port) {
+      _error = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (url == null) {
+    if (widget.url == null || widget.proxy.port == null || _error) {
       return _buildFallback();
     }
 
-    final port = proxy.port;
-    if (port == null) {
-      return _buildFallback();
-    }
+    final echUrl = EchUrl.rewrite(widget.url!, widget.proxy.port!);
 
-    final echUrl = EchUrl.rewrite(url!, port);
-
-    return CircleAvatar(
-      radius: radius,
-      backgroundImage: NetworkImage(echUrl),
-      child: null,
+    return ClipOval(
+      child: SizedBox(
+        width: widget.radius * 2,
+        height: widget.radius * 2,
+        child: Image.network(
+          echUrl,
+          fit: BoxFit.cover,
+          width: widget.radius * 2,
+          height: widget.radius * 2,
+          errorBuilder: (context, error, stackTrace) {
+            setState(() => _error = true);
+            return _buildFallbackInner();
+          },
+          loadingBuilder: (context, child, progress) {
+            if (progress == null) return child;
+            return _buildFallbackInner();
+          },
+        ),
+      ),
     );
   }
 
   Widget _buildFallback() {
     return CircleAvatar(
-      radius: radius,
+      radius: widget.radius,
       child: Text(
-        fallbackText,
-        style: TextStyle(fontSize: radius * 0.8),
+        widget.fallbackText,
+        style: TextStyle(fontSize: widget.radius * 0.8),
+      ),
+    );
+  }
+
+  Widget _buildFallbackInner() {
+    return Container(
+      width: widget.radius * 2,
+      height: widget.radius * 2,
+      color: Colors.grey[300],
+      child: Center(
+        child: Text(
+          widget.fallbackText,
+          style: TextStyle(fontSize: widget.radius * 0.8, color: Colors.white),
+        ),
       ),
     );
   }

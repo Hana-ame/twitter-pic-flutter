@@ -363,7 +363,7 @@ class _AddUserTileState extends State<_AddUserTile> {
   }
 }
 
-class _LoadMoreButton extends StatelessWidget {
+class _LoadMoreButton extends StatefulWidget {
   final String after;
   final TwitterApi api;
   final void Function(List<TwitterUser>) onLoaded;
@@ -371,21 +371,40 @@ class _LoadMoreButton extends StatelessWidget {
   const _LoadMoreButton({required this.after, required this.api, required this.onLoaded});
 
   @override
+  State<_LoadMoreButton> createState() => _LoadMoreButtonState();
+}
+
+class _LoadMoreButtonState extends State<_LoadMoreButton> {
+  bool _loading = false;
+
+  Future<void> _loadMore() async {
+    if (_loading) return;
+    setState(() => _loading = true);
+    try {
+      final users = await widget.api.getUserList(after: widget.after);
+      if (!mounted) return;
+      widget.onLoaded(users);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('加载失败: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
       child: ElevatedButton(
-        onPressed: () async {
-          try {
-            final users = await api.getUserList(after: after);
-            onLoaded(users);
-          } catch (e) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('加载失败: $e')));
-            }
-          }
-        },
-        child: const Text('加载更多'),
+        onPressed: _loading ? null : _loadMore,
+        child: _loading
+            ? const SizedBox(
+                width: 16, height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Text('加载更多'),
       ),
     );
   }

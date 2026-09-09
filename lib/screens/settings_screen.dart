@@ -5,13 +5,46 @@ import 'package:flutter/material.dart';
 
 import '../services/proxy_manager.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
 
   const SettingsScreen({super.key, required this.proxy});
 
   @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  bool _restarting = false;
+
+  Future<void> _restart() async {
+    if (_restarting) return;
+    setState(() => _restarting = true);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('正在重启 ECH ...'), duration: Duration.zero),
+    );
+    try {
+      widget.proxy.stop();
+      await widget.proxy.start(bootstrapIp: '127.0.0.1');
+      if (mounted) {
+        setState(() => _restarting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('代理已重启')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _restarting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('重启失败: $e')),
+        );
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final proxy = widget.proxy;
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
       body: ListView(
@@ -42,13 +75,13 @@ class SettingsScreen extends StatelessWidget {
             leading: const Icon(Icons.restart_alt, color: Colors.blue),
             title: const Text('重启代理'),
             subtitle: const Text('重新初始化 ECH 代理'),
-            onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('正在重启 ECH ...'), duration: Duration.zero),
-              );
-              proxy.stop();
-              proxy.start(bootstrapIp: '127.0.0.1');
-            },
+            trailing: _restarting
+                ? const SizedBox(
+                    width: 16, height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : null,
+            onTap: _restarting ? null : _restart,
           ),
           ListTile(
             leading: const Icon(Icons.bug_report, color: Colors.orange),
@@ -80,7 +113,7 @@ class SettingsScreen extends StatelessWidget {
   }
 
   void _showLogs(BuildContext context) {
-    final logs = proxy.getLogs();
+    final logs = widget.proxy.getLogs();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(

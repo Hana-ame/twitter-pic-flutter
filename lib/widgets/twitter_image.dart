@@ -37,6 +37,8 @@ class TwitterImage extends StatefulWidget {
 }
 
 class _TwitterImageState extends State<TwitterImage> {
+  int _retryCount = 0;
+
   void _showPreview() {
     if (widget.proxy.port == null) return;
 
@@ -68,6 +70,7 @@ class _TwitterImageState extends State<TwitterImage> {
         children: [
           Image.network(
             echUrl,
+            key: ValueKey(_retryCount),
             fit: widget.fit,
             width: widget.width,
             height: widget.height,
@@ -117,7 +120,10 @@ class _TwitterImageState extends State<TwitterImage> {
             ListTile(
               leading: const Icon(Icons.download),
               title: const Text('下载并分享'),
-              onTap: () => Navigator.pop(ctx),
+              onTap: () {
+                Navigator.pop(ctx);
+                _downloadAndShare();
+              },
             ),
             const SizedBox(height: 8),
           ],
@@ -126,48 +132,11 @@ class _TwitterImageState extends State<TwitterImage> {
     );
   }
 
-  Widget _buildError(String message) {
-    return Container(
-      width: widget.width,
-      height: widget.height,
-      color: Colors.grey[300],
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.broken_image, size: 32, color: Colors.grey),
-            const SizedBox(height: 8),
-            Tooltip(
-              message: message,
-              child: ElevatedButton.icon(
-                onPressed: () => setState(() {}),
-                icon: const Icon(Icons.refresh, size: 14),
-                label: const Text('重试', style: TextStyle(fontSize: 11)),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  minimumSize: const Size(0, 0),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 全屏图片查看器
-class _ImageViewer extends StatelessWidget {
-  final String url;
-  final ProxyManager proxy;
-
-  const _ImageViewer({required this.url, required this.proxy});
-
-  Future<void> _downloadAndShare(BuildContext context) async {
-    final port = proxy.port;
+  Future<void> _downloadAndShare() async {
+    final port = widget.proxy.port;
     if (port == null) return;
 
-    final echUrl = EchUrl.rewrite(url, port);
+    final echUrl = EchUrl.rewrite(widget.url, port);
     final uri = Uri.parse(echUrl);
 
     final messenger = ScaffoldMessenger.of(context);
@@ -184,13 +153,108 @@ class _ImageViewer extends StatelessWidget {
       final data = bytes.takeBytes();
       client.close();
 
-      // 保存到临时目录
       final tempDir = Directory.systemTemp;
-      final fileName = url.split('/').last.split('?').first;
+      final fileName = widget.url.split('/').last.split('?').first;
       final file = File('${tempDir.path}/$fileName');
       await file.writeAsBytes(data);
 
-      // 分享
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'Twitter Image',
+      );
+
+      if (context.mounted) {
+        messenger.showSnackBar(const SnackBar(content: Text('已分享')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(content: Text('下载失败: $e')));
+      }
+    }
+  }
+
+  Widget _buildError(String message) {
+    return Container(
+      width: widget.width,
+      height: widget.height,
+      color: Colors.grey[300],
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.broken_image, size: 32, color: Colors.grey),
+            const SizedBox(height: 8),
+            ElevatedButton.icon(
+              onPressed: () => setState(() => _retryCount++),
+              icon: const Icon(Icons.refresh, size: 14),
+              label: const Text('重试', style: TextStyle(fontSize: 11)),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                minimumSize: const Size(0, 0),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Tooltip(
+              message: message,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  message.length > 40 ? '${message.substring(0, 40)}...' : message,
+                  style: const TextStyle(fontSize: 9, color: Colors.grey),
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 全屏图片查看器
+class _ImageViewer extends StatefulWidget {
+  final String url;
+  final ProxyManager proxy;
+
+  const _ImageViewer({required this.url, required this.proxy});
+
+  @override
+  State<_ImageViewer> createState() => _ImageViewerState();
+}
+
+class _ImageViewerState extends State<_ImageViewer> {
+  bool _loading = true;
+  String? _error;
+  int _retryCount = 0;
+
+  Future<void> _downloadAndShare() async {
+    final port = widget.proxy.port;
+    if (port == null) return;
+
+    final echUrl = EchUrl.rewrite(widget.url, port);
+    final uri = Uri.parse(echUrl);
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在下载...')));
+
+    try {
+      final client = HttpClient();
+      final request = await client.getUrl(uri);
+      final response = await request.close();
+      final bytes = await response.fold<BytesBuilder>(
+        BytesBuilder(),
+        (b, chunk) => b..add(chunk),
+      );
+      final data = bytes.takeBytes();
+      client.close();
+
+      final tempDir = Directory.systemTemp;
+      final fileName = widget.url.split('/').last.split('?').first;
+      final file = File('${tempDir.path}/$fileName');
+      await file.writeAsBytes(data);
+
       await Share.shareXFiles(
         [XFile(file.path)],
         subject: 'Twitter Image',
@@ -217,7 +281,7 @@ class _ImageViewer extends StatelessWidget {
         actions: [
           IconButton(
             icon: const Icon(Icons.download),
-            onPressed: () => _downloadAndShare(context),
+            onPressed: _downloadAndShare,
             tooltip: '下载并分享',
           ),
           IconButton(
@@ -227,11 +291,84 @@ class _ImageViewer extends StatelessWidget {
           ),
         ],
       ),
-      body: Center(
-        child: InteractiveViewer(
-          child: Image.network(
-            EchUrl.rewrite(url, proxy.port!),
-            fit: BoxFit.contain,
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.broken_image, size: 48, color: Colors.white54),
+            const SizedBox(height: 12),
+            Text(
+              '加载失败',
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            const SizedBox(height: 4),
+            SelectableText(
+              _error ?? '',
+              style: const TextStyle(color: Colors.white54, fontSize: 11),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () => setState(() {
+                _error = null;
+                _loading = true;
+              }),
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
+    if (_loading) {
+      return const Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      );
+    }
+    return Center(
+      child: InteractiveViewer(
+        child: Image.network(
+          EchUrl.rewrite(widget.url, widget.proxy.port!),
+          key: ValueKey(_retryCount),
+          fit: BoxFit.contain,
+          loadingBuilder: (context, child, progress) {
+            if (progress == null) return child;
+            return const Center(
+              child: CircularProgressIndicator(color: Colors.white),
+            );
+          },
+          errorBuilder: (context, error, stackTrace) => Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.broken_image, size: 48, color: Colors.white54),
+                const SizedBox(height: 12),
+                Text(
+                  '加载失败',
+                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                ),
+                const SizedBox(height: 4),
+                SelectableText(
+                  error.toString(),
+                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: () => setState(() {
+                    _error = null;
+                    _loading = true;
+                    _retryCount++;
+                  }),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重试'),
+                ),
+              ],
+            ),
           ),
         ),
       ),

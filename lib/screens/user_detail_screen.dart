@@ -47,15 +47,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     _loadEmojis();
   }
 
-  void _loadTags() {
-    _api.getTags(_username).then((data) {
+  Future<void> _loadTags() async {
+    await _api.getTags(_username).then((data) {
       if (!mounted) return;
       setState(() => _userTags = Map<String, dynamic>.from(data['tags'] as Map? ?? {}));
     }).catchError((_) {});
   }
 
-  void _loadEmojis() {
-    _api.getEmojis(_username).then((data) {
+  Future<void> _loadEmojis() async {
+    await _api.getEmojis(_username).then((data) {
       if (!mounted) return;
       setState(() {
         _emojiCounts = data.map((k, v) => MapEntry(k, (v as num).toInt()));
@@ -278,8 +278,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           // 同时触发所有视频下载；builder 化后视频只在滚入视口时才创建/下载。
           RefreshIndicator(
             onRefresh: () async {
-              _loadTags();
-              _loadEmojis();
+              await _loadTags();
+              await _loadEmojis();
             },
             child: ListView.builder(
               padding: const EdgeInsets.all(12),
