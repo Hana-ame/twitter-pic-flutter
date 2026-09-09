@@ -225,6 +225,7 @@ class _TwitterVideoState extends State<TwitterVideo>
           // 视频画面
           GestureDetector(
             onTap: _toggleControls,
+            onLongPress: () => _showContextMenu(context),
             child: VideoPlayer(_controller!),
           ),
 
@@ -275,6 +276,40 @@ class _TwitterVideoState extends State<TwitterVideo>
       onPressed: _cycleSpeed,
       iconSize: 20,
       tooltip: '${_playbackSpeed}x',
+    );
+  }
+
+  void _showContextMenu(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('视频操作', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.download),
+              title: const Text('下载视频'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _downloadVideo();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share),
+              title: const Text('分享视频'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _downloadVideo();
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
     );
   }
 
