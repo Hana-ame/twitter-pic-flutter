@@ -80,48 +80,51 @@ class _TwitterImageState extends State<TwitterImage> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          Image.network(
-            url,
-            key: ValueKey('${url}_$_retryCount'),
-            fit: widget.fit,
-            width: widget.width,
-            height: widget.height,
-            loadingBuilder: (context, child, progress) {
-              if (progress == null) return child;
-              return Container(
-                width: widget.width,
-                height: widget.height,
-                color: Colors.grey[200],
-                child: const Center(
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              );
-            },
-            errorBuilder: (context, error, stackTrace) {
-              // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
-              if (_mode == _UrlMode.proxy) {
-                setState(() {
-                  _mode = _UrlMode.direct;
-                  _retryCount++;
-                });
+          Hero(
+            tag: 'img_${widget.url}',
+            child: Image.network(
+              url,
+              key: ValueKey('${url}_$_retryCount'),
+              fit: widget.fit,
+              width: widget.width,
+              height: widget.height,
+              loadingBuilder: (context, child, progress) {
+                if (progress == null) return child;
                 return Container(
                   width: widget.width,
                   height: widget.height,
                   color: Colors.grey[200],
                   child: const Center(
                     child: SizedBox(
-                      width: 20, height: 20,
+                      width: 20,
+                      height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     ),
                   ),
                 );
-              }
-              return _buildError(error.toString());
-            },
+              },
+              errorBuilder: (context, error, stackTrace) {
+                // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
+                if (_mode == _UrlMode.proxy) {
+                  setState(() {
+                    _mode = _UrlMode.direct;
+                    _retryCount++;
+                  });
+                  return Container(
+                    width: widget.width,
+                    height: widget.height,
+                    color: Colors.grey[200],
+                    child: const Center(
+                      child: SizedBox(
+                        width: 20, height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  );
+                }
+                return _buildError(error.toString());
+              },
+            ),
           ),
           if (isDirect)
             Positioned(
@@ -406,64 +409,66 @@ class _ImageViewerState extends State<_ImageViewer> {
 
     return Center(
       child: InteractiveViewer(
-        child: Image.network(
-          url,
-          key: ValueKey('${url}_$_retryCount'),
-          fit: BoxFit.contain,
-          loadingBuilder: (context, child, progress) {
-            if (progress == null) return child;
-            return const Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            );
-          },
-          errorBuilder: (context, error, stackTrace) {
-            // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
-            if (_mode == _UrlMode.proxy) {
-              setState(() {
-                _mode = _UrlMode.direct;
-                _loading = true;
-                _retryCount++;
-              });
+        child: Hero(
+          tag: 'img_${widget.url}',
+          child: Image.network(
+            url,
+            key: ValueKey('${url}_$_retryCount'),
+            fit: BoxFit.contain,
+            loadingBuilder: (context, child, progress) {
+              if (progress == null) return child;
               return const Center(
                 child: CircularProgressIndicator(color: Colors.white),
               );
-            }
-            setState(() => _error = error.toString());
-            return Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.broken_image, size: 48, color: Colors.white54),
-                  const SizedBox(height: 12),
-                  Text(
-                    '加载失败',
-                    style: const TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
-                  const Padding(
-                    padding: EdgeInsets.only(top: 4),
-                    child: Text('（已尝试直连）', style: TextStyle(color: Colors.white38, fontSize: 10)),
-                  ),
-                  const SizedBox(height: 4),
-                  GestureDetector(
-                    onTap: () => setState(() {
-                      _error = null;
-                      _loading = true;
-                      _retryCount++;
-                    }),
-                    child: SelectableText(
-                      error.toString(),
-                      style: const TextStyle(color: Colors.white54, fontSize: 11),
+            },
+            errorBuilder: (context, error, stackTrace) {
+              // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
+              if (_mode == _UrlMode.proxy) {
+                setState(() {
+                  _mode = _UrlMode.direct;
+                  _loading = true;
+                  _retryCount++;
+                });
+                return const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
+                );
+              }
+              setState(() => _error = error.toString());
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.broken_image, size: 48, color: Colors.white54),
+                    const SizedBox(height: 12),
+                    Text(
+                      '加载失败',
+                      style: const TextStyle(color: Colors.white70, fontSize: 14),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    onPressed: () => setState(() {
-                      _error = null;
-                      _loading = true;
-                      _retryCount++;
-                    }),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('重试'),
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text('（已尝试直连）', style: TextStyle(color: Colors.white38, fontSize: 10)),
+                    ),
+                    const SizedBox(height: 4),
+                    GestureDetector(
+                      onTap: () => setState(() {
+                        _error = null;
+                        _loading = true;
+                        _retryCount++;
+                      }),
+                      child: SelectableText(
+                        error.toString(),
+                        style: const TextStyle(color: Colors.white54, fontSize: 11),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: () => setState(() {
+                        _error = null;
+                        _loading = true;
+                        _retryCount++;
+                      }),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('重试'),
                   ),
                 ],
               ),
@@ -471,6 +476,6 @@ class _ImageViewerState extends State<_ImageViewer> {
           },
         ),
       ),
-    );
-  }
+    ),
+  );
 }
