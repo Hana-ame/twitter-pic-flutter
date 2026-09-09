@@ -69,13 +69,13 @@ jobs:
 
       - name: Build ECH shared library (arm64)
         run: |
-          git clone --depth=1 https://github.com/Hana-ame/wintools.git /tmp/wintools
-          cd /tmp/wintools/cmd/ech-shared
+          cd ech-proxy
           CGO_ENABLED=1 \
           GOOS=android \
           GOARCH=arm64 \
           CC=aarch64-linux-android21-clang \
-          go build -buildmode=c-shared -ldflags="-s -w" -o /tmp/libechproxy.so
+          go build -buildmode=c-shared -ldflags="-s -w" \
+          -o /tmp/libechproxy.so ./cmd/ech-flutter-shared/
           /tmp/android-ndk-r27/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy --strip-unneeded /tmp/libechproxy.so
           ls -lh /tmp/libechproxy.so
 
@@ -171,9 +171,8 @@ jobs:
 
       - name: Build ECH shared library (windows)
         run: |
-          git clone --depth=1 https://github.com/Hana-ame/wintools.git C:\tmp\wintools
-          Push-Location C:\tmp\wintools\cmd\ech-shared
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll .
+          Push-Location ech-proxy
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll ./cmd/ech-flutter-shared/
           Pop-Location
 
       - name: Setup Flutter
