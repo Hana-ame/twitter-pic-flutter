@@ -73,17 +73,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 8),
 
           // ─── 代理状态 ───────────────────────────────────────────────────────
-          const _SectionTitle('代理状态'),
+          _SectionTitle(title: '代理状态', icon: Icons.router, color: Colors.blue),
           _StatusCard(
+            icon: Icons.circle,
             label: '状态',
             value: proxy.isRunning ? '运行中' : '已停止',
             color: proxy.isRunning ? Colors.green : Colors.red,
           ),
           _StatusCard(
+            icon: Icons.numbers,
             label: '端口',
             value: proxy.port?.toString() ?? '-',
           ),
           _StatusCard(
+            icon: Icons.check_circle,
             label: '初始化',
             value: proxy.isInitialized ? '已完成' : '未初始化',
             color: proxy.isInitialized ? Colors.green : Colors.grey,
@@ -91,7 +94,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 8),
 
           // ─── 操作 ───────────────────────────────────────────────────────────
-          const _SectionTitle('操作'),
+          _SectionTitle(title: '操作', icon: Icons.settings, color: Colors.orange),
           ListTile(
             leading: const Icon(Icons.restart_alt, color: Colors.blue),
             title: const Text('重启代理'),
@@ -119,9 +122,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(),
 
           // ─── 关于 ───────────────────────────────────────────────────────────
-          const _SectionTitle('关于'),
-          _StatusCard(label: '版本', value: 'v0.2.8'),
-          _StatusCard(label: '构建', value: widget.buildNum),
+          _SectionTitle(title: '关于', icon: Icons.info_outline, color: Colors.blueGrey),
+          _StatusCard(icon: Icons.tag, label: '版本', value: 'v0.2.8'),
+          _StatusCard(icon: Icons.build, label: '构建', value: widget.buildNum),
           const SizedBox(height: 8),
 
           const Padding(
@@ -168,15 +171,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
 class _SectionTitle extends StatelessWidget {
   final String title;
-  const _SectionTitle(this.title);
+  final IconData icon;
+  final Color color;
+
+  const _SectionTitle({required this.title, required this.icon, required this.color});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Text(
-        title,
-        style: const TextStyle(fontSize: 12, color: Colors.blue, fontWeight: FontWeight.bold),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 6),
+          Text(
+            title,
+            style: TextStyle(fontSize: 13, color: color, fontWeight: FontWeight.w600),
+          ),
+        ],
       ),
     );
   }
@@ -185,14 +197,21 @@ class _SectionTitle extends StatelessWidget {
 class _StatusCard extends StatelessWidget {
   final String label;
   final String value;
+  final IconData icon;
   final Color? color;
 
-  const _StatusCard({required this.label, required this.value, this.color});
+  const _StatusCard({
+    required this.label,
+    required this.value,
+    required this.icon,
+    this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
     return ListTile(
       dense: true,
+      leading: Icon(icon, size: 18, color: color ?? Colors.grey[600]),
       title: Text(label, style: const TextStyle(fontSize: 14)),
       trailing: Text(
         value,
