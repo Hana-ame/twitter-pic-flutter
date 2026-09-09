@@ -198,15 +198,18 @@ class _TwitterImageState extends State<TwitterImage> {
               ),
             ),
             const SizedBox(height: 4),
-            Tooltip(
+          Tooltip(
               message: message,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Text(
-                  message.length > 40 ? '${message.substring(0, 40)}...' : message,
-                  style: const TextStyle(fontSize: 9, color: Colors.grey),
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
+              child: GestureDetector(
+                onTap: () => setState(() => _retryCount++),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Text(
+                    message.length > 40 ? '${message.substring(0, 40)}...' : message,
+                    style: const TextStyle(fontSize: 9, color: Colors.grey),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                  ),
                 ),
               ),
             ),
@@ -317,9 +320,15 @@ class _ImageViewerState extends State<_ImageViewer> {
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
             const SizedBox(height: 4),
-            SelectableText(
-              _error ?? '',
-              style: const TextStyle(color: Colors.white54, fontSize: 11),
+            GestureDetector(
+              onTap: () => setState(() {
+                _error = null;
+                _loading = true;
+              }),
+              child: SelectableText(
+                _error ?? '',
+                style: const TextStyle(color: Colors.white54, fontSize: 11),
+              ),
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
@@ -362,9 +371,16 @@ class _ImageViewerState extends State<_ImageViewer> {
                   style: const TextStyle(color: Colors.white70, fontSize: 14),
                 ),
                 const SizedBox(height: 4),
-                SelectableText(
-                  error.toString(),
-                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                GestureDetector(
+                  onTap: () => setState(() {
+                    _error = null;
+                    _loading = true;
+                    _retryCount++;
+                  }),
+                  child: SelectableText(
+                    error.toString(),
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
