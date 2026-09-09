@@ -542,19 +542,31 @@ class _MediaCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isVideo = item.type == 'video' || item.type == 'animated_gif';
     return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
+      margin: const EdgeInsets.symmetric(vertical: 5, horizontal: 8),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade200),
+      ),
       child: Column(
         children: [
-          // 图片复用 TwitterImage（尺寸缓存/按显示尺寸解码/错误重试展示），
-          // 去掉原先复制的一份几乎相同的加载逻辑。
           if (isVideo)
             TwitterVideo(url: item.url, proxy: proxy)
           else
             TwitterImage(url: item.url, proxy: proxy),
           if (item.date != null)
             Padding(
-              padding: const EdgeInsets.all(4),
-              child: Text(item.date!, style: const TextStyle(fontSize: 10, color: Colors.grey)),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(
+                children: [
+                  const Icon(Icons.schedule, size: 12, color: Colors.grey),
+                  const SizedBox(width: 4),
+                  Text(
+                    item.date!,
+                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                  ),
+                ],
+              ),
             ),
         ],
       ),
