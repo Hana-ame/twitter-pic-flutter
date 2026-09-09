@@ -96,6 +96,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _votingEmoji = null);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('投票失败: $e')));
     }
   }
 

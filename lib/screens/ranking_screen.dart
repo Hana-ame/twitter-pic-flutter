@@ -18,6 +18,7 @@ class _RankingScreenState extends State<RankingScreen> {
   Map<String, EmojiPeriodData>? _data;
   String? _activeEmoji;
   bool _loading = true;
+  String? _loadingUser;
 
   @override
   void initState() {
@@ -103,12 +104,24 @@ class _RankingScreenState extends State<RankingScreen> {
             ),
             title: Text('@${e.value.username}', style: const TextStyle(fontSize: 14)),
             trailing: Text('${e.value.votes}票', style: const TextStyle(fontSize: 12, color: Colors.blue)),
-            onTap: () {
-              widget.api.getMetaData(e.value.username).then((profile) {
-                if (profile.accountInfo.username.isNotEmpty) {
+            onTap: () async {
+              if (_loadingUser != null) return;
+              final username = e.value.username;
+              setState(() => _loadingUser = username);
+              try {
+                final profile = await widget.api.getMetaData(username);
+                if (mounted && profile.accountInfo.username.isNotEmpty) {
                   widget.onSelectUser(profile);
                 }
-              });
+              } catch (_) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('加载用户失败: $username')),
+                  );
+                }
+              } finally {
+                if (mounted) setState(() => _loadingUser = null);
+              }
             },
           )),
         ],
