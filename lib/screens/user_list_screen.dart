@@ -259,6 +259,7 @@ class _UserTileState extends State<_UserTile> {
     final info = _meta?.accountInfo;
     final nick = info?.nick;
     final avatar = info?.avatar;
+    final isFav = StorageService.isFav(widget.username);
     return ListTile(
       dense: true,
       leading: ProxyAvatar(
@@ -272,8 +273,40 @@ class _UserTileState extends State<_UserTile> {
         style: const TextStyle(fontSize: 14),
       ),
       subtitle: Text('@${widget.username}', style: const TextStyle(fontSize: 11)),
+      trailing: isFav
+          ? const Icon(Icons.favorite, color: Colors.red, size: 18)
+          : null,
       onTap: () {
         if (_meta != null) widget.onTap(_meta!);
+      },
+      onLongPress: () {
+        showModalBottomSheet(
+          context: context,
+          builder: (ctx) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('用户操作', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                ListTile(
+                  leading: Icon(
+                    isFav ? Icons.favorite : Icons.favorite_border,
+                    color: isFav ? Colors.red : Colors.grey,
+                  ),
+                  title: Text(isFav ? '取消收藏' : '加入收藏'),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    StorageService.toggleFav(widget.username);
+                    setState(() {});
+                  },
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
       },
     );
   }
