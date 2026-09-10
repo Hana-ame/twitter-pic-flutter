@@ -44,21 +44,21 @@ class _FavListState extends State<FavList> {
       );
     }
 
-    return RefreshIndicator(
-      color: const Color(0xFF4F6CFF),
-      backgroundColor: Colors.white,
-      onRefresh: () async {
-        setState(() => _limit = 10);
-      },
-      child: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 4),
+    // 必须是 Column，不能再套一层 ListView：本组件的父级（FavoritesTab）已经是
+    // 纵向可滚动的 ListView，纵向 ListView 嵌纵向 ListView 会让内层拿到无界高度
+    // → 内层渲染失败，收藏夹里"标题在、条目全空"（这就是"收藏了却看不见"）。
+    // 滚动与下拉刷新都交给父级。
+    return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (visible.isEmpty && !_showImport)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 24),
               child: Text('没有收藏的用户', style: TextStyle(color: Colors.grey, fontSize: 13)),
             ),
+          // 带 key：取消收藏后剩下的 tile 不会按位置错配、也不会重发元数据请求。
           ...visible.map((u) => _FavTile(
+            key: ValueKey('fav_$u'),
             username: u, api: widget.api, proxy: widget.proxy,
             onUnfav: () => setState(() {}),
           )),
@@ -114,7 +114,6 @@ class _FavListState extends State<FavList> {
               ),
             ),
         ],
-      ),
     );
   }
 

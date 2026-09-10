@@ -372,6 +372,9 @@ class FavoritesTab extends StatefulWidget {
 
 class _FavoritesTabState extends State<FavoritesTab> {
   final TwitterApi _api = TwitterApi();
+  // 下拉刷新时 +1：换 key 重建 FavList（重读收藏并收起"显示更多"），
+  // 比导出 State 更省事，也避免把内部 State 变成公开 API。
+  int _listTick = 0;
 
   @override
   void dispose() {
@@ -382,9 +385,20 @@ class _FavoritesTabState extends State<FavoritesTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: ListView(
-        padding: const EdgeInsets.all(8),
-        children: [
+      // RefreshIndicator 由外层这个唯一的滚动视图承载（FavList 内部是 Column，
+      // 不能再自己套一层可滚动组件，见 fav_list.dart 注释）。
+      body: RefreshIndicator(
+        color: const Color(0xFF4F6CFF),
+        backgroundColor: Colors.white,
+        onRefresh: () async {
+          // 收藏数据在 StorageService 内存里，重建即重读。
+          setState(() => _listTick++);
+        },
+        child: ListView(
+          // 内容不满一屏时也要能下拉
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(8),
+          children: [
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Text(
@@ -397,8 +411,13 @@ class _FavoritesTabState extends State<FavoritesTab> {
             ),
           ),
           const SizedBox(height: 8),
-          FavList(api: _api, proxy: widget.proxy),
-        ],
+          FavList(
+            key: ValueKey('favlist$_listTick'),
+            api: _api,
+            proxy: widget.proxy,
+          ),
+          ],
+        ),
       ),
     );
   }
