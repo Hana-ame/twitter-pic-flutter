@@ -1,8 +1,11 @@
 // settings_screen.dart
-// 设置页面：查看代理状态、清除缓存、关于信息
+// 设置页面：查看代理状态、网络诊断、清除缓存、关于信息
+
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../api/twitter_api.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../utils/doh_resolver.dart';
@@ -28,6 +31,107 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _restarting = false;
+
+  // ─── 网络诊断 ─────────────────────────────────────────────────────────────
+  bool _diagRunning = false;
+  final List<_DiagItem> _diag = [];
+
+  /// 发起一次 HTTP 探测，返回简短结果文本。
+  Future<String> _httpProbe(String url, {int timeoutSec = 8}) async {
+    final client = HttpClient()
+      ..connectionTimeout = Duration(seconds: timeoutSec);
+    client.badCertificateCallback = (cert, host, port) => true;
+    final sw = Stopwatch()..start();
+    try {
+      final req = await client
+          .getUrl(Uri.parse(url))
+          .timeout(Duration(seconds: timeoutSec));
+      final res = await req.close().timeout(Duration(seconds: timeoutSec));
+      final len = res.contentLength;
+      // 只读少量 body 确认通道，不整包下载。
+      await res.drain<void>().timeout(Duration(seconds: timeoutSec));
+      return 'HTTP ${res.statusCode} · ${sw.elapsedMilliseconds}ms · ${len >= 0 ? len : '?'}B';
+    } catch (e) {
+      return '失败: $e';
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _runDiag() async {
+    if (_diagRunning) return;
+    setState(() {
+      _diagRunning = true;
+      _diag.clear();
+    });
+
+    Future<void> step(String label, Future<String> Function() fn) async {
+      if (!mounted) return;
+      setState(() => _diag.add(_DiagItem(label: label, running: true)));
+      String result;
+      try {
+        result = await fn();
+      } catch (e) {
+        result = '失败: $e';
+      }
+      if (!mounted) return;
+      setState(() {
+        final i = _diag.indexWhere((d) => d.label == label);
+        if (i >= 0) {
+          _diag[i] = _DiagItem(
+            label: label,
+            result: result,
+            ok: !result.startsWith('失败'),
+          );
+        }
+      });
+    }
+
+    // 1. API 直连：拉用户列表，检查数量
+    await step('1. API 直连 (x.moonchan.xyz)', () async {
+      final api = TwitterApi();
+      try {
+        final users = await api.getUserList();
+        return 'HTTP 200 · ${users.length} 个用户';
+      } finally {
+        api.dispose();
+      }
+    });
+
+    // 2. 第一个用户的 metadata：timeline 条数 + 头像 URL
+    await step('2. 用户元数据 (timeline/头像)', () async {
+      final api = TwitterApi();
+      try {
+        final users = await api.getUserList();
+        if (users.isEmpty) return '失败: 用户列表为空';
+        final u = users.first;
+        final meta = await api.getMetaData(u.username, forceRefresh: true);
+        final avatar = meta.accountInfo.avatar ?? '(无头像字段)';
+        return '${meta.timeline.length} 条 timeline\n头像: $avatar';
+      } finally {
+        api.dispose();
+      }
+    });
+
+    // 3. pbs.moonchan.xyz 镜像通道（头像）
+    await step('3. pbs.moonchan.xyz (头像镜像)', () {
+      return _httpProbe('https://pbs.moonchan.xyz/media/x.jpg');
+    });
+
+    // 4. video-cf 经本机 ECH 代理
+    await step('4. video-cf 经 ECH 代理', () async {
+      final port = widget.proxy.port;
+      if (port == null) return '失败: 代理未启动 (port=null)';
+      return _httpProbe('http://127.0.0.1:$port/favicon.ico');
+    });
+
+    // 5. video-cf 直连（预期失败：被墙，需 ECH）
+    await step('5. video-cf 直连 (预期失败)', () {
+      return _httpProbe('https://video-cf.twimg.com/favicon.ico');
+    });
+
+    if (mounted) setState(() => _diagRunning = false);
+  }
 
   Future<void> _clearData() async {
     final confirmed = await showDialog<bool>(
@@ -132,6 +236,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const Divider(),
 
+          // ─── 网络诊断 ───────────────────────────────────────────────────────
+          _SectionTitle(title: '网络诊断', icon: Icons.science, color: Colors.teal),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: FilledButton.tonalIcon(
+              onPressed: _diagRunning ? null : _runDiag,
+              icon: _diagRunning
+                  ? const SizedBox(
+                      width: 14, height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.play_arrow, size: 16),
+              label: Text(_diagRunning ? '测试中...' : '运行全部通道测试'),
+            ),
+          ),
+          const SizedBox(height: 4),
+          ..._diag.map((d) => _DiagTile(item: d)),
+          const SizedBox(height: 8),
+          const Divider(),
+
           // ─── 关于 ───────────────────────────────────────────────────────────
           _SectionTitle(title: '关于', icon: Icons.info_outline, color: Colors.blueGrey),
           _StatusCard(icon: Icons.info_outline, label: '版本', value: widget.buildNum),
@@ -231,6 +355,61 @@ class _StatusCard extends StatelessWidget {
           fontWeight: color != null ? FontWeight.bold : null,
         ),
       ),
+    );
+  }
+}
+
+/// 单条诊断结果。
+class _DiagItem {
+  final String label;
+  final String result;
+  final bool ok;
+  final bool running;
+
+  _DiagItem({
+    required this.label,
+    this.result = '',
+    this.ok = false,
+    this.running = false,
+  });
+}
+
+class _DiagTile extends StatelessWidget {
+  final _DiagItem item;
+
+  const _DiagTile({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final Color color;
+    final IconData icon;
+    if (item.running) {
+      color = Colors.blueGrey;
+      icon = Icons.hourglass_top;
+    } else if (item.ok) {
+      color = Colors.green;
+      icon = Icons.check_circle;
+    } else {
+      color = Colors.red;
+      icon = Icons.error;
+    }
+
+    return ListTile(
+      dense: true,
+      leading: Icon(icon, size: 16, color: color),
+      title: Text(
+        item.label,
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+      subtitle: item.result.isEmpty
+          ? null
+          : Text(item.result, style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+      trailing: item.running
+          ? const SizedBox(
+              width: 12, height: 12,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : null,
     );
   }
 }
