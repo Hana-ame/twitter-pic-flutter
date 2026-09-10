@@ -10,6 +10,7 @@ import '../api/twitter_api.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../utils/doh_resolver.dart';
+import '../utils/ech_url.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
@@ -226,6 +227,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // 5. video-cf 直连（预期失败：被墙，需 ECH）
     await step('5. video-cf 直连 (预期失败)', () {
       return _httpProbe('https://video-cf.twimg.com/favicon.ico');
+    });
+
+    // 6. 真实头像 URL → host 替换 → 实际请求
+    await step('6. 头像 host 替换验证', () async {
+      final api = TwitterApi();
+      try {
+        final users = await api.getUserList();
+        if (users.isEmpty) return '失败: 用户列表为空';
+        final raw = await _fetchRawJson(users.first.username);
+        final avatar = raw?.json?['account_info']?['profile_image']?.toString();
+        if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
+        final uri = Uri.parse(avatar);
+        final replaced = uri.host == 'video-cf.twimg.com'
+            ? 'http://127.0.0.1:${widget.proxy.port}/${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}'
+            : 'https://pbs.moonchan.xyz${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}';
+        final probe = await _httpProbe(replaced);
+        return '原始: $avatar\n替换: $replaced\n→ $probe';
+      } finally {
+        api.dispose();
+      }
+    });
+
+    // 7. 真实媒体 URL → EchUrl.rewrite → 经代理请求
+    await step('7. 媒体 URL 代理替换验证', () async {
+      final port = widget.proxy.port;
+      if (port == null) return '失败: 代理未启动 (port=null)';
+      final api = TwitterApi();
+      try {
+        final users = await api.getUserList();
+        if (users.isEmpty) return '失败: 用户列表为空';
+        final raw = await _fetchRawJson(users.first.username);
+        final tl = raw?.json?['timeline'];
+        if (tl is! List || tl.isEmpty) return '失败: timeline 为空';
+        final first = tl.first;
+        if (first is! Map) return '失败: timeline[0] 非对象';
+        final mediaUrl = first['url']?.toString();
+        if (mediaUrl == null || mediaUrl.isEmpty) return '失败: timeline[0] 无 url';
+        final rewritten = EchUrl.rewrite(mediaUrl, port);
+        final probe = await _httpProbe(rewritten);
+        return '原始: $mediaUrl\n替换: $rewritten\n→ $probe';
+      } finally {
+        api.dispose();
+      }
     });
 
     if (mounted) setState(() => _diagRunning = false);
