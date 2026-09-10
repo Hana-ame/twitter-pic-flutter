@@ -143,6 +143,10 @@ class ProxyManager {
 
   /// 获取 Go 侧日志（调试用）。
   List<String> getLogs() {
+    // native 库未加载（_loadLib 失败）时返回空列表：直接解引用 _logCount!
+    // 会抛 "Null check operator used on a null value"，把真实的
+    // "Native library not found" 错误掩盖掉。
+    if (_logCount == null || _getLog == null || _free == null) return const [];
     final n = _logCount!();
     final list = <String>[];
     for (var i = 0; i < n; i++) {

@@ -213,7 +213,16 @@ class UserListScreenState extends State<UserListScreen> {
             return _LoadMoreButton(
               after: _users.last.username,
               api: _api,
-              onLoaded: (newUsers) => setState(() => _users.addAll(newUsers)),
+              onLoaded: (newUsers) => setState(() {
+                // 去重：tile 用 key: ValueKey(u.username)，服务端返回重叠
+                // 用户（after 边界含边界/列表中途变更）会产生重复 Key →
+                // "Duplicate keys found" 断言崩溃。
+                _users.addAll(
+                  newUsers.where(
+                    (n) => !_users.any((o) => o.username == n.username),
+                  ),
+                );
+              }),
             );
           }
           final u = _users[i];

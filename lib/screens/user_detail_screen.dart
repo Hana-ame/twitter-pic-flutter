@@ -153,10 +153,13 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   int _dlDone = 0;
   int _dlTotal = 0;
 
-  // 批量下载根目录：Android 公共 Download，Windows 用户 Downloads，
-  // 其余平台用应用文档目录。
+  // 批量下载根目录：Windows 用用户 Downloads，其余平台用应用私有文档目录。
+  //
+  // Android 不能硬编码 /storage/emulated/0/Download：targetSdk 34 分区存储下
+  // 写公共目录需 MANAGE_EXTERNAL_STORAGE 权限，Directory.create() 会抛
+  // Permission denied 并被外层 catch 吞成"下载失败"（三个下载模式全挂）。
+  // 私有文档目录无需任何权限，下载后可通过分享或"打开目录"访问。
   Future<String> _downloadBaseDir() async {
-    if (Platform.isAndroid) return '/storage/emulated/0/Download';
     if (Platform.isWindows) {
       final home =
           Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
@@ -209,7 +212,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
       if (!mounted) return;
       if (Platform.isAndroid) {
-        await Process.run('am', ['start', '-a', 'ACTION_VIEW', '-d', dlDir.path]);
+        // am start -d 需要 URI 而非裸路径（裸路径打不开目录且无返回值检查）。
+        // Process.run 失败只返回非零 exitCode，不抛异常。
+        await Process.run('am', [
+          'start', '-a', 'ACTION_VIEW', '-d', 'file://${dlDir.path}',
+        ]);
       } else if (Platform.isWindows) {
         await Process.run('explorer', [dlDir.path]);
       }
@@ -230,24 +237,54 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
   }
 
+  /// 流式写入文件，成功返回 true。
+  ///
+  /// 连接或写入任一步失败时关闭句柄并删除半写文件——原实现 writeFrom 抛错
+  /// （磁盘满/连接中断）时 RAF 不关闭，残留部分写入文件。
+  Future<bool> _streamToFile(HttpClient client, Uri uri, File file) async {
+    HttpClientResponse? res;
+    RandomAccessFile? raf;
+    var ok = false;
+    try {
+      final req = await client.getUrl(uri);
+      final resp = await req.close();
+      res = resp;
+      if (resp.statusCode != 200) return false;
+      final rafHandle = await file.open(mode: FileMode.write);
+      raf = rafHandle;
+      await for (final chunk in resp) {
+        await rafHandle.writeFrom(chunk);
+      }
+      await rafHandle.close();
+      raf = null;
+      ok = true;
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      if (raf != null) {
+        try {
+          await raf.close();
+        } catch (_) {}
+      }
+      res?.close();
+      if (!ok) {
+        try {
+          await file.delete();
+        } catch (_) {}
+      }
+    }
+  }
+
   // 主通道：通过本机 ECH 代理流式下载（HttpClient + EchUrl）。
   Future<void> _downloadAll() => _batchDownload((item, file) async {
         final port = widget.proxy.port;
         if (port == null) return false;
         final echUrl = EchUrl.rewrite(item.url, port);
         final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 30);
         try {
-          final req = await client.getUrl(Uri.parse(echUrl));
-          final res = await req.close();
-          if (res.statusCode != 200) return false;
-          final raf = await file.open(mode: FileMode.write);
-          await for (final chunk in res) {
-            await raf.writeFrom(chunk);
-          }
-          await raf.close();
-          return true;
-        } catch (_) {
-          return false;
+          return await _streamToFile(client, Uri.parse(echUrl), file);
         } finally {
           client.close();
         }
@@ -259,6 +296,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         if (port == null) return false;
         final echUrl = EchUrl.rewrite(item.url, port);
         final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 30);
         try {
           final req = await client.getUrl(Uri.parse(echUrl));
           final res = await req.close();
@@ -280,18 +318,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   // 应急下载：直接走原始 URL（不经 ECH），仅在代理完全失效时用。
   Future<void> _downloadEmergency() => _batchDownload((item, file) async {
         final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 30);
         try {
-          final req = await client.getUrl(Uri.parse(item.url));
-          final res = await req.close();
-          if (res.statusCode != 200) return false;
-          final raf = await file.open(mode: FileMode.write);
-          await for (final chunk in res) {
-            await raf.writeFrom(chunk);
-          }
-          await raf.close();
-          return true;
-        } catch (_) {
-          return false;
+          return await _streamToFile(client, Uri.parse(item.url), file);
         } finally {
           client.close();
         }

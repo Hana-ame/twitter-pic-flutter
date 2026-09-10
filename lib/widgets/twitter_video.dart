@@ -90,6 +90,14 @@ class _TwitterVideoState extends State<TwitterVideo>
       _controller = VideoPlayerController.networkUrl(url);
       await _controller!.initialize();
 
+      // initialize 期间视频可能已滚出列表被 dispose：后续副作用必须先判
+      // mounted，否则触发 "setState() called after dispose()" 崩溃。
+      if (!mounted) {
+        await _controller!.dispose();
+        _controller = null;
+        return;
+      }
+
       _controller!.addListener(_onVideoUpdate);
       _controller!.setLooping(false);
 
@@ -98,6 +106,7 @@ class _TwitterVideoState extends State<TwitterVideo>
         _videoValue = _controller!.value;
       });
     } catch (e) {
+      if (!mounted) return;
       // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
       if (_mode == _UrlMode.proxy) {
         setState(() {
