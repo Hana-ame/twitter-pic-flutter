@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
+import '../utils/doh_resolver.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
