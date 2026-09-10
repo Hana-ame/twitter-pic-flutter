@@ -203,15 +203,13 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 		proxyServer = nil
 	}
 
-	// 1. 配置 ECH
+	// 1. DoH 配置由调用方负责：Flutter 侧在调用 StartProxy 之前已经通过
+	//    ECHSetDohURL / ECHInitWithBootstrap 设过 dohUrl 和 bootstrapIP。
+	//    这里不再硬编码域名或 IP，否则会覆盖调用方传入的配置（原实现让
+	//    Flutter 的 dohHost/dohUrl 参数形同虚设）。bootstrapIP 参数保留以
+	//    维持 ABI 兼容，仅用于日志。
 	bootstrap := C.GoString(bootstrapIP)
-	if bootstrap != "" {
-		log.Printf("ECH: DoH=moonchan.xyz, bootstrapIP=%s", bootstrap)
-		cloudflare_ech.SetDoHConfig("moonchan.xyz", bootstrap)
-	} else {
-		log.Printf("ECH: DoH=https://moonchan.xyz/doh")
-		cloudflare_ech.SetDohURL("https://moonchan.xyz/doh")
-	}
+	log.Printf("ECH: DoH config set by caller, bootstrapIP=%q", bootstrap)
 
 	// 2. 初始化 ECH
 	log.Printf("Initializing ECH client...")
@@ -366,7 +364,7 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 		return
 	}
 
-	targetURL := "https://" + targetHost + "/" + path
+	targetURL := "https://" + targetHost + "/" + strings.TrimPrefix(path, "/")
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
 	req, err := http.NewRequest(r.Method, targetURL, nil)
