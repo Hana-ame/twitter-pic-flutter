@@ -35,7 +35,13 @@ class UnknownException extends ApiException {
 }
 
 class TwitterApi {
-  static final Map<String, UserMetaData> _metaCache = {};
+  // 缓存存 Future<UserMetaData> 而非结果：同一用户并发 getMetaData 复用
+  // 同一个 in-flight 请求，避免并发 miss 全部各自拉取（重复流量）。
+  static final Map<String, Future<UserMetaData>> _metaCache = {};
+  // 缓存写入时间，配合 _kCacheTtl 过期——原静态缓存无 TTL 无上限，
+  // 进程内无限增长且永不失效。
+  static final Map<String, DateTime> _metaCacheTime = {};
+  static const Duration _kCacheTtl = Duration(minutes: 10);
 
   late final Dio _dio;
 
@@ -94,20 +100,44 @@ class TwitterApi {
   Future<UserMetaData> getMetaData(String username, {String? t, bool forceRefresh = false}) async {
     if (!forceRefresh) {
       final cached = _metaCache[username];
-      if (cached != null) return cached;
+      final cachedAt = _metaCacheTime[username];
+      if (cached != null &&
+          cachedAt != null &&
+          DateTime.now().difference(cachedAt) < _kCacheTtl) {
+        return cached;
+      }
+      // 过期丢弃，重新拉取。
+      _metaCache.remove(username);
+      _metaCacheTime.remove(username);
     }
 
-    final path = '$username.json.gz';
+    final inFlight = _fetchMetaData(username, t);
+    _metaCache[username] = inFlight;
+    _metaCacheTime[username] = DateTime.now();
+    try {
+      return await inFlight;
+    } catch (_) {
+      // 失败不进缓存，下次调用重试。
+      _metaCache.remove(username);
+      _metaCacheTime.remove(username);
+      rethrow;
+    }
+  }
+
+  Future<UserMetaData> _fetchMetaData(String username, String? t) async {
     final resp = await _dio.get(
-      path,
+      '$username.json.gz',
       queryParameters: {
         't': t ?? DateTime.now().toIso8601String().split('T')[0],
       },
     );
-    final json = resp.data as Map<String, dynamic>;
-    final meta = UserMetaData.fromJson(json);
-    _metaCache[username] = meta;
-    return meta;
+    final json = resp.data;
+    // API 返回 HTML 错误页/空响应/解压失败时 resp.data 不是 Map，直接
+    // as 转型会抛 TypeError 并绕过拦截器的异常映射。
+    if (json is! Map<String, dynamic>) {
+      throw UnknownException('getMetaData($username) 返回非 JSON 响应');
+    }
+    return UserMetaData.fromJson(json);
   }
 
   Future<void> createMetaData(
@@ -124,6 +154,9 @@ class TwitterApi {
         if (doNotRenew) 'do_not_renew': 'true',
       },
     );
+    // 写操作成功后清缓存：标签/屏蔽/内容更新后 UI 读缓存会得到脏数据。
+    _metaCache.remove(username);
+    _metaCacheTime.remove(username);
   }
 
   Future<Map<String, dynamic>> getTags(String username) async {

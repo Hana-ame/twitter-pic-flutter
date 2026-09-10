@@ -68,6 +68,19 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.profile != widget.profile) {
       _profile = widget.profile;
+      // 换用户时必须重置标签/表情/展开状态并重新加载，否则上一个用户
+      // 的标签和表情投票会串到新用户页面上。
+      final newUsername = widget.profile.accountInfo.username;
+      if (newUsername != _username) {
+        _username = newUsername;
+        _userTags = {};
+        _emojiCounts = {};
+        _votingEmoji = null;
+        _showAll = false;
+        _mediaLimit = 10;
+        _loadTags();
+        _loadEmojis();
+      }
     }
   }
 
