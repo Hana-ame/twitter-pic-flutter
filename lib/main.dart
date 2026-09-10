@@ -9,9 +9,6 @@
 //   5. 新增 _startInFlight 守卫，防止并发启动
 //   6. 重启后端口可能变化，通过 _port 字段统一管理
 
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
 import 'api/twitter_api.dart';
@@ -19,59 +16,11 @@ import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
 import 'screens/settings_screen.dart';
 import 'screens/user_list_screen.dart';
+import 'utils/doh_resolver.dart';
 import 'widgets/fav_list.dart';
 import 'widgets/tag_controller.dart';
 
 const _kBuildNum = String.fromEnvironment('BUILD_NUM', defaultValue: 'dev');
-const _kDohHost = 'moonchan.xyz';
-
-// ─── DoH 域名解析（系统 DNS → 腾讯 DNS → 阿里 DNS）──────────────────────────
-
-Future<String> _resolveDomainRobustly(String domain) async {
-  try {
-    final result = await InternetAddress.lookup(domain);
-    if (result.isNotEmpty) return result.first.address;
-  } catch (e) {
-    print('System DNS failed: $e');
-  }
-
-  final dohUrls = [
-    'http://119.29.29.29/d?dn=$domain',
-    'https://223.5.5.5/resolve?name=$domain&type=1',
-  ];
-
-  for (final url in dohUrls) {
-    final client = HttpClient();
-    try {
-      client.badCertificateCallback = (cert, host, port) => true;
-      final request = await client.getUrl(Uri.parse(url));
-      request.headers.set('Accept', 'application/dns-json');
-      final response = await request.close();
-      final body = await response.transform(utf8.decoder).join();
-
-      if (response.statusCode == 200 && body.isNotEmpty) {
-        if (url.contains('119.29.29.29')) {
-          final ips = body.split(';');
-          if (ips.isNotEmpty && ips.first.contains('.')) return ips.first;
-        }
-        if (url.contains('223.5.5.5')) {
-          final json = jsonDecode(body);
-          if (json['Status'] == 0 && json['Answer'] != null) {
-            for (final ans in json['Answer']) {
-              if (ans['type'] == 1) return ans['data'].toString();
-            }
-          }
-        }
-      }
-    } catch (e) {
-      print('HTTP DNS failed: $url -> $e');
-    } finally {
-      client.close();
-    }
-  }
-
-  throw Exception('failed to resolve $domain');
-}
 
 // ─── 入口 ────────────────────────────────────────────────────────────────────
 
@@ -112,7 +61,7 @@ class _MyAppState extends State<MyApp> {
       String? ip;
       for (var i = 0; i < 5; i++) {
         try {
-          ip = await _resolveDomainRobustly(_kDohHost);
+          ip = await resolveDomainRobustly(kDohHost);
           break;
         } catch (e) {
           if (i >= 4) rethrow;

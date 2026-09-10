@@ -46,7 +46,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     try {
       widget.proxy.stop();
-      await widget.proxy.start(bootstrapIp: '127.0.0.1');
+      final ip = await resolveDomainRobustly(kDohHost);
+      await widget.proxy.start(bootstrapIp: ip);
       if (mounted) {
         setState(() => _restarting = false);
         ScaffoldMessenger.of(context).showSnackBar(
