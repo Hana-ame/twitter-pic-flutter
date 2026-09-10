@@ -24,11 +24,8 @@ import '../utils/ech_url.dart';
 import 'progressive_image.dart';
 
 class TwitterImage extends StatefulWidget {
-  /// 实际加载的 URL（列表里通常是缩略图变体）。
+  /// 实际加载的 URL（一律 origin，不做 name= 档位）。
   final String url;
-
-  /// 原图 URL：Hero 动画、下载、缩略图失败后的回退都用它。默认等于 [url]。
-  final String? originalUrl;
 
   final ProxyManager proxy;
   final BoxFit fit;
@@ -46,7 +43,6 @@ class TwitterImage extends StatefulWidget {
     super.key,
     required this.url,
     required this.proxy,
-    this.originalUrl,
     this.fit = BoxFit.cover,
     this.width,
     this.height,
@@ -61,12 +57,6 @@ class TwitterImage extends StatefulWidget {
 class _TwitterImageState extends State<TwitterImage> {
   /// 真实宽高比未知前先占的位（竖构图为主，接近常见推图比例）。
   static const double _kFallbackAspect = 3 / 4;
-
-  /// 缩略图变体取不到时（CDN 不认这个 name=）回退到原图，最多回退一次。
-  String? _displayOverride;
-
-  String get _fullUrl => widget.originalUrl ?? widget.url;
-  String get _displayUrl => _displayOverride ?? widget.url;
 
   double _aspect = _kFallbackAspect;
   int _retryCount = 0;
@@ -93,11 +83,10 @@ class _TwitterImageState extends State<TwitterImage> {
   @override
   void didUpdateWidget(TwitterImage old) {
     super.didUpdateWidget(old);
-    if (old.url != widget.url || old.originalUrl != widget.originalUrl) {
+    if (old.url != widget.url) {
       _aspect = _kFallbackAspect;
       _retryCount = 0;
       _autoRetried = false;
-      _displayOverride = null;
       _sizeUrl = null;
       _watchSize();
     }
@@ -123,7 +112,7 @@ class _TwitterImageState extends State<TwitterImage> {
     if (port == null) return null;
     // 全部走 ECH 代理：EchUrl.rewrite 丢弃原始域名，代理统一拼
     // https://video-cf.twimg.com/<path>（图片与视频同通道）。
-    return EchUrl.rewrite(_displayUrl, port);
+    return EchUrl.rewrite(widget.url, port);
   }
 
   void _detachSizeListener() {
@@ -210,7 +199,7 @@ class _TwitterImageState extends State<TwitterImage> {
           fit: StackFit.expand,
           children: [
             Hero(
-              tag: 'img_${_fullUrl}',
+              tag: 'img_${widget.url}',
               child: Image(
                 image: ProgressiveImageProvider(url),
                 key: ValueKey('$url#$_retryCount'),
@@ -237,12 +226,9 @@ class _TwitterImageState extends State<TwitterImage> {
                   );
                 },
                 errorBuilder: (context, error, stackTrace) {
-                  // 首次失败自动重试一次；若加载的是缩略图变体，这次回退到
-                  // 原图（万一 CDN 不认这个 name=，也不会一直报错）。
+                  // 首次失败自动重试一次（代理可能刚起来或抽了一下），
+                  // 再失败就交给用户手动重试。
                   if (!_autoRetried) {
-                    if (_displayOverride == null && _fullUrl != widget.url) {
-                      _displayOverride = _fullUrl;
-                    }
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (mounted) _retry();
                     });
@@ -311,8 +297,7 @@ class _TwitterImageState extends State<TwitterImage> {
       );
       return;
     }
-    // 下载永远拿原图，而不是列表里的缩略图变体。
-    final url = EchUrl.rewrite(_fullUrl, port);
+    final url = EchUrl.rewrite(widget.url, port);
 
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在下载...')));

@@ -481,10 +481,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     });
   }
 
-  /// 预取 [from] 起 [count] 张列表缩略图：滑到那里时基本已经在缓存里了。
+  /// 预取 [from] 起 [count] 张图片：滑到那里时基本已经在缓存里了。
   ///
-  /// 只取缩略图变体（name=medium，一张几十到一百多 KB），不做原图预热，
-  /// 免得为了滑动体验把流量打爆。
+  /// 媒体一律 origin（不做 name= 档位），预取是滑动体验的主要保障。
+  /// 视频不预热（动辄几 MB）。
   void _precacheAhead(int from, int count) {
     if (!mounted) return;
     final port = widget.proxy.port;
@@ -493,15 +493,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     var scheduled = 0;
     for (var i = from; i < timeline.length && scheduled < count; i++) {
       final url = timeline[i].url;
-      // 视频没有 name= 变体，别预热（动辄几 MB）。
-      if (!MediaUrl.hasSizeVariant(url)) continue;
+      if (!MediaUrl.isImage(url)) continue;
       scheduled++;
-      final thumb = MediaUrl.gridFor(
-        url,
-        neededPixels: MediaUrl.gridPixelsFor(context),
-      );
       precacheImage(
-        ProgressiveImageProvider(EchUrl.rewrite(thumb, port)),
+        ProgressiveImageProvider(EchUrl.rewrite(url, port)),
         context,
       ).catchError((_) {});
     }
@@ -699,13 +694,8 @@ class _MediaCard extends StatelessWidget {
             TwitterVideo(url: item.url, proxy: proxy)
           else
             TwitterImage(
-              // 列表里按卡片实际像素宽度挑最小够用的 name 档位（小图省流量、
-              // 大屏不模糊），全屏与下载仍走原图。
-              url: MediaUrl.gridFor(
-                item.url,
-                neededPixels: MediaUrl.gridPixelsFor(context),
-              ),
-              originalUrl: item.url,
+              // 一律 origin：与全屏预览、下载用同一个 URL。
+              url: item.url,
               proxy: proxy,
               gallery: gallery,
               galleryIndex: galleryIndex,

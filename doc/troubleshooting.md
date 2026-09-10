@@ -159,10 +159,15 @@ comma-ok；每个 goroutine 各自 recover。
 `ListView.builder` 默认 `cacheExtent` 只有 250 逻辑像素（一张卡片就 ~450px），
 往下滑时下一张**还没构建**；已滚过的图又很快被默认 100MB 的 `ImageCache` 挤掉。
 
-**修法**：列表按显示尺寸取 `name=` 缩略图档位（`medium` ≈ `orig` 的 46~49%）、
+**修法**（当时）：列表按显示尺寸取 `name=` 缩略图档位（`medium` ≈ `orig` 的 46~49%）、
 `cacheExtent: 1800`、进页面预热 6 张 + 续载预热 4 张、`ImageCache` 放宽到 160MB/1500 张。
 
-**确认**：调试日志里应大量出现 `?name=small|medium` 且 `← 200` 的字节数明显变小。
+**现状**：档位已全部移除（一律 origin，见 README「媒体 URL 一律 origin」）。补偿只剩三条 ——
+`cacheExtent: 1800`、进页面/续载预热、`ImageCache` 160MB/1500 张。**这个案例因此没有真正关闭**：
+白屏若再次出现，先查这三条有没有被改动，不要靠重新引入 `name=` 档位来救。
+
+**确认**：调试日志里的上游 URL 应始终带 `name=orig`；白屏时要看的是"请求有没有发出去"
+（缺 `→` = 预取没到位），而不是"字节数够不够小"。
 
 ---
 
@@ -180,8 +185,8 @@ comma-ok；每个 goroutine 各自 recover。
 不要靠推理，看调试日志：
 
 ```
-→ https://video-cf.twimg.com/media/xxx?format=jpg&name=medium (from 127.0.0.1:34567)
-← 200 https://video-cf.twimg.com/media/xxx?format=jpg&name=medium (182042 B)
+→ https://video-cf.twimg.com/media/xxx?format=jpg&name=orig (from 127.0.0.1:34567)
+← 200 https://video-cf.twimg.com/media/xxx?format=jpg&name=orig (371715 B)
 ```
 
 - 上游是 `video-cf.twimg.com` → 走了 ECH；

@@ -50,6 +50,8 @@
 
 - 四档全部可用；`medium` ≈ `orig` 的 46~49%，`small` ≈ 18~20%。
 - 这两张图的 `large == orig`（原图未超过 2048，`large` 返回同一份字节）。
+- **App 现在不使用这些档位**（一律 origin，见「媒体 URL 一律 origin」一节）：同一张图只对应
+  一个 canonical URL，缓存 key 不再被打散；代价是列表带宽变大，由预取与逐块解码承担。
 - 视频 `Range: bytes=0-1023` → **206 + Content-Range**（ExoPlayer 起播的前提）。
 - 新进程里第一次 ECH 请求要 7~11s（先 DoH 取 ECH 配置），之后 0.4~1.5s —— 所以
   App 启动即拉起代理，进画廊时已经在热路径上。
@@ -79,7 +81,7 @@ lib/
 │   └── storage_service.dart       # 收藏 / 屏蔽 / 标签规则持久化
 ├── utils/
 │   ├── ech_url.dart               # 媒体 URL → 本机代理 URL
-│   ├── media_url.dart             # name= 缩略图档位（按显示像素选）
+│   ├── media_url.dart             # 图片判定（预取时跳过视频）
 │   └── doh_resolver.dart          # DoH 自举 IP 解析
 ├── widgets/
 │   ├── progressive_image.dart     # 逐块解码 ImageProvider（核心）
@@ -133,18 +135,25 @@ doc/troubleshooting.md                     # 症状 → 根因 → 怎么确认
 - 按 URL 命中 `ImageCache`，滚回来不重新下载；30s 无数据才中断。
 - PNG 等不支持部分解码的格式自动退化为"下完再显示"，不报错。
 
-### 3. 缩略图档位
+### 3. 媒体 URL 一律 origin（不做档位）
 
-线上 API 抽查 6 个用户、2209 条：图片全是 `pbs.twimg.com/media/<id>?format=jpg&name=orig`
-（最重的一档），视频是 `video.twimg.com/.../<id>.mp4?tag=29`（其中 238 条连查询参数都没有）。
+线上 API 抽查 6 个用户、2209 条：图片全是 `pbs.twimg.com/media/<id>?format=jpg&name=orig`，
+视频是 `video.twimg.com/.../<id>.mp4?tag=29`（其中 238 条连查询参数都没有）。
 
-列表按**卡片实际像素宽度**挑最小够用的档（`MediaUrl.gridFor`）：`≤680 → small`、
-`≤1200 → medium`、否则 `large`；全屏预览与下载仍取原图。视频一律不改写。
+**App 不改写 `name=`**：API 给什么 URL 就加载什么 URL，同一张图只对应一个 canonical URL。
+
+- 理由：档位会让同一张图产生 4 个 URL（缓存 key 被打散），并且把"客户端该选哪一档"变成
+  一条必须三端对齐的规则——历史上就分叉过（App 按 DPR 选档、gallery 固定 `small`、
+  网页端完全不选）。现在这条规则不存在了。
+- 代价：列表按最大字节数加载（实测 `small` 只有 `orig` 的 18~20%）。补偿手段是
+  `cacheExtent` 提前构建 + 进页面/续载预取 + 放宽 `ImageCache`（见下一节）。
+- 唯一保留的判定是"能不能预取"：`MediaUrl.isImage()` 只认 `pbs.twimg.com`，
+  视频（动辄几 MB）不预热。
 
 ### 4. 列表性能
 
 - `cacheExtent: 1800`：视口外两三张卡片提前构建并发起下载。
-- 进页面预热 6 张缩略图，每次续载再预热 4 张；滚到底自动 +10（无限滚动）。
+- 进页面预热 6 张图片（视频不预热），每次续载再预热 4 张；滚到底自动 +10（无限滚动）。
 - `ImageCache` 放宽到 160MB / 1500 张（默认 100MB / 1000），滚过去的图尽量留在内存。
 
 ### 5. 视频
@@ -189,8 +198,8 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 设置页 →「调试日志」是 Go 侧日志，代理对每条请求都会写：
 
 ```
-→ https://video-cf.twimg.com/media/xxx?format=jpg&name=medium (from 127.0.0.1:xxxxx)
-← 200 https://video-cf.twimg.com/media/xxx?format=jpg&name=medium (182042 B)
+→ https://video-cf.twimg.com/media/xxx?format=jpg&name=orig (from 127.0.0.1:xxxxx)
+← 200 https://video-cf.twimg.com/media/xxx?format=jpg&name=orig (371715 B)
 ```
 
 **想知道媒体到底有没有走 ECH**：看这两行即可 —— 上游是 `video-cf.twimg.com` 就说明走了 ECH；

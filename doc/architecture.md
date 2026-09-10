@@ -14,7 +14,7 @@
 │            │ EchUrl.rewrite(url, port)                             │
 │            │   丢掉 scheme/host，只留 path + query                  │
 │            ▼                                                       │
-│  http://127.0.0.1:<port>/media/<id>?format=jpg&name=medium         │
+│  http://127.0.0.1:<port>/media/<id>?format=jpg&name=orig           │
 └────────────┬───────────────────────────────────────────────────────┘
              │ 明文 HTTP（本机回环）
 ┌────────────▼─ Go 代理（同一进程，c-shared）─────────────────────────┐
@@ -31,7 +31,7 @@
 └────────────┬───────────────────────────────────────────────────────┘
              │ TLS 1.3 + ECH（外层 SNI = cloudflare-ech.com）
 ┌────────────▼───────────────────────────────────────────────────────┐
-│ https://video-cf.twimg.com/media/<id>?format=jpg&name=medium       │
+│ https://video-cf.twimg.com/media/<id>?format=jpg&name=orig         │
 │ （pbs.twimg.com 与 video.twimg.com 是同一 CDN 后端，改域名即可命中） │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -99,8 +99,8 @@ Dio(baseUrl: 'https://x.moonchan.xyz/api/twitter')
 代理对每条媒体请求写两行，是排查"到底走没走 ECH"的唯一权威依据：
 
 ```
-→ https://video-cf.twimg.com/media/xxx?format=jpg&name=medium (from 127.0.0.1:34567)
-← 200 https://video-cf.twimg.com/media/xxx?format=jpg&name=medium (182042 B)
+→ https://video-cf.twimg.com/media/xxx?format=jpg&name=orig (from 127.0.0.1:34567)
+← 200 https://video-cf.twimg.com/media/xxx?format=jpg&name=orig (182042 B)
 ```
 
 Dart 侧通过 `ECHGetLogCount`/`ECHGetLog` 读同一个环形缓冲（设置页「调试日志」），
@@ -127,10 +127,11 @@ Flutter 的 `NetworkImage` 会先 `consolidateHttpClientResponseBytes`（读完�
 线上数据形态（抽查 6 用户 / 2209 条）：图片 `pbs.twimg.com/media/<id>?format=jpg&name=orig`，
 视频 `video.twimg.com/.../<id>.mp4?tag=29`（238 条连 query 都没有）。
 
-- `gridFor(url, neededPixels)`：按卡片实际像素宽度取最小够用档（≤680 `small`、
-  ≤1200 `medium`、否则 `large`），`neededPixels = MediaQuery 逻辑宽 × 设备像素比`。
-- 视频（`video.twimg.com`）**一律不改写**。判定只看域名，不要求已有 `name=` 参数。
-- 缩略图若取不到，`TwitterImage` 的错误重试会回退到原图再试一次。
+- **不改写任何 URL**：一律 origin。`name=` 档位会让同一张图有 4 个 URL（缓存 key 被打散），
+  并且把"该选哪一档"变成一条必须三端对齐的规则——所以整条规则是**被删掉**，不是搬到别处。
+- 只保留 `isImage(url)`：判定只看域名（`pbs.twimg.com` 且非 `video.twimg.com`），
+  用于预取时跳过视频（动辄几 MB）。
+- `TwitterImage` 的失败重试不再有"回退到原图"这一步：加载的就是原图，重试一次即可。
 
 ### 图片/视频渲染的红线
 
