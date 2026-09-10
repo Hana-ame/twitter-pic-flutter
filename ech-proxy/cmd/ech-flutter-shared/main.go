@@ -364,6 +364,11 @@ func normalizePath(path string) string {
 
 // ─── 路由 ────────────────────────────────────────────────────────────────────
 
+// 上游媒体 host：EchUrl.rewrite 会丢弃原始域名（pbs.twimg.com /
+// video.twimg.com 等），代理统一改写为 video-cf.twimg.com 后经 ECH
+// 访问（已验证 video-cf 完整支持 media 与 profile_images 路径）。
+const defaultUpstreamHost = "video-cf.twimg.com"
+
 func router(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
@@ -374,14 +379,25 @@ func router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /api/... → x.moonchan.xyz（保留完整前缀：后端真实挂载点为 /api/twitter）
 	if strings.HasPrefix(path, "/api/") {
-		apiProxyHandler(w, r, apiHost, strings.TrimPrefix(path, "/api"))
+		apiProxyHandler(w, r, apiHost, path)
 		return
 	}
 
-	// 所有其他请求 → video-cf.twimg.com（路径保持不变）
-	// 例：/media/ABC123.png → https://video-cf.twimg.com/media/ABC123.png
-	echProxyHandler(w, r, "video-cf.twimg.com", path)
+	// 其余请求 → video-cf.twimg.com + ECH。
+	// EchUrl.rewrite 已把原始域名（pbs.twimg.com / video.twimg.com 等）丢弃，
+	// 路径原样转发（见 defaultUpstreamHost 注释）。
+	echProxyHandler(w, r, defaultUpstreamHost, path)
+}
+
+// withQuery 把原始请求的 query 附加到上游 URL。
+// 真实 media URL 形如 /media/x.jpg?format=jpg&name=large，丢 query 上游必 404。
+func withQuery(base string, r *http.Request) string {
+	if r.URL.RawQuery == "" {
+		return base
+	}
+	return base + "?" + r.URL.RawQuery
 }
 
 func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path string) {
@@ -390,7 +406,7 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 		return
 	}
 
-	targetURL := "https://" + targetHost + normalizePath(path)
+	targetURL := withQuery("https://"+targetHost+normalizePath(path), r)
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
 	req, err := http.NewRequest(r.Method, targetURL, nil)
@@ -443,15 +459,22 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 }
 
 func apiProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path string) {
-	targetURL := "https://" + targetHost + normalizePath(path)
+	targetURL := withQuery("https://"+targetHost+normalizePath(path), r)
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
-	req, err := http.NewRequest(r.Method, targetURL, nil)
+	// 透传请求体：POST /api/twitter/<username> 保存标签依赖 body。
+	req, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (TwitterPic)")
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	if cl := r.Header.Get("Content-Length"); cl != "" {
+		req.Header.Set("Content-Length", cl)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)

@@ -22,6 +22,8 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 
+import '../api/twitter_api.dart';
+
 // ─── FFI typedef（必须在顶层定义，不能在 class 内部）──────────────────────
 
 typedef _EchStrNative = Void Function(Pointer<Utf8>);
@@ -109,6 +111,8 @@ class ProxyManager {
       }
       _port = port;
       _portNotifier.value = port;
+      // 所有 API 请求统一走代理 endpoint。
+      ApiEndpoint.useProxyEndpoint(port);
       return port;
     } finally {
       _startInFlight = false;
@@ -120,6 +124,7 @@ class ProxyManager {
     _stopProxyFfi();
     _port = null;
     _portNotifier.value = null;
+    ApiEndpoint.useProxyEndpoint(null);
   }
 
   /// 重启代理：停止 → 重新启动。

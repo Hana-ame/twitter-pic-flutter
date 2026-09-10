@@ -187,12 +187,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       });
     }
 
-    // 1. API 直连：拉用户列表，检查数量
-    await step('1. API 直连 (x.moonchan.xyz)', () async {
+    // 1. API 经本机代理 endpoint（TwitterApi 实际使用的通道）
+    await step('1. API 经代理 (TwitterApi 实际通道)', () async {
       final api = TwitterApi();
       try {
         final users = await api.getUserList();
-        return 'HTTP 200 · ${users.length} 个用户';
+        return '${ApiEndpoint.base} → ${users.length} 个用户';
       } finally {
         api.dispose();
       }
@@ -212,9 +212,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
 
-    // 3. pbs.moonchan.xyz 镜像通道（头像）
-    await step('3. pbs.moonchan.xyz (头像镜像)', () {
-      return _httpProbe('https://pbs.moonchan.xyz/media/x.jpg');
+    // 3. API 直连对比（不经代理，验证 moonchan 域名可达性）
+    await step('3. API 直连对比', () {
+      return _httpProbe('https://x.moonchan.xyz/api/twitter/?list=users');
     });
 
     // 4. video-cf 经本机 ECH 代理
@@ -229,28 +229,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return _httpProbe('https://video-cf.twimg.com/favicon.ico');
     });
 
-    // 6. 真实头像 URL → host 替换 → 实际请求
-    await step('6. 头像 host 替换验证', () async {
-      final api = TwitterApi();
-      try {
-        final users = await api.getUserList();
-        if (users.isEmpty) return '失败: 用户列表为空';
-        final raw = await _fetchRawJson(users.first.username);
-        final avatar = raw?.json?['account_info']?['profile_image']?.toString();
-        if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
-        final uri = Uri.parse(avatar);
-        final replaced = uri.host == 'video-cf.twimg.com'
-            ? 'http://127.0.0.1:${widget.proxy.port}/${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}'
-            : 'https://pbs.moonchan.xyz${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}';
-        final probe = await _httpProbe(replaced);
-        return '原始: $avatar\n替换: $replaced\n→ $probe';
-      } finally {
-        api.dispose();
-      }
-    });
-
-    // 7. 真实媒体 URL → EchUrl.rewrite → 经代理请求
-    await step('7. 媒体 URL 代理替换验证', () async {
+    // 6. 真实头像 URL → EchUrl.rewrite（丢 host）→ 经代理 ECH 访问 video-cf
+    await step('6. 真实头像经代理验证', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
       final api = TwitterApi();
@@ -258,7 +238,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final users = await api.getUserList();
         if (users.isEmpty) return '失败: 用户列表为空';
         final raw = await _fetchRawJson(users.first.username);
-        final tl = raw?.json?['timeline'];
+        final err = raw.error;
+        if (err != null) return '失败: json.gz 获取失败 ($err)';
+        final avatar = raw.json?['account_info']?['profile_image']?.toString();
+        if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
+        final replaced = EchUrl.rewrite(avatar, port);
+        final probe = await _httpProbe(replaced);
+        return '原始: $avatar\n代理: $replaced\n→ $probe';
+      } finally {
+        api.dispose();
+      }
+    });
+
+    // 7. 真实媒体 URL（带 ?format=&name= query）→ 经代理验证 query 透传
+    await step('7. 真实媒体经代理验证 (query 透传)', () async {
+      final port = widget.proxy.port;
+      if (port == null) return '失败: 代理未启动 (port=null)';
+      final api = TwitterApi();
+      try {
+        final users = await api.getUserList();
+        if (users.isEmpty) return '失败: 用户列表为空';
+        final raw = await _fetchRawJson(users.first.username);
+        final err = raw.error;
+        if (err != null) return '失败: json.gz 获取失败 ($err)';
+        final tl = raw.json?['timeline'];
         if (tl is! List || tl.isEmpty) return '失败: timeline 为空';
         final first = tl.first;
         if (first is! Map) return '失败: timeline[0] 非对象';
@@ -266,7 +269,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         if (mediaUrl == null || mediaUrl.isEmpty) return '失败: timeline[0] 无 url';
         final rewritten = EchUrl.rewrite(mediaUrl, port);
         final probe = await _httpProbe(rewritten);
-        return '原始: $mediaUrl\n替换: $rewritten\n→ $probe';
+        return '原始: $mediaUrl\n代理: $rewritten\n→ $probe';
       } finally {
         api.dispose();
       }

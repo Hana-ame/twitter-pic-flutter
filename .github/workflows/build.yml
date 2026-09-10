@@ -128,6 +128,13 @@ jobs:
             sed -i '/<manifest/s|.*|&\n    <uses-permission android:name="android.permission.INTERNET"/>|' "$MANIFEST"
           fi
           sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
+          # API/图片/视频全部经 http://127.0.0.1:<port> 本机代理。Android 9+
+          # （targetSdk 28+）默认禁明文，不注入该属性时所有代理请求会被系统
+          # 静默拒绝（表现为"暂无内容"），CI 却全绿。
+          if ! grep -q 'android:usesCleartextTraffic' "$MANIFEST"; then
+            sed -i 's|<application|<application android:usesCleartextTraffic="true"|' "$MANIFEST"
+          fi
+          grep -q 'android:usesCleartextTraffic="true"' "$MANIFEST" || { echo "::error::usesCleartextTraffic injection failed"; exit 1; }
           # 后置校验：缺 INTERNET 权限的 APK 静默无法联网，CI 却全绿。
           grep -q 'android.permission.INTERNET' "$MANIFEST" || { echo "::error::INTERNET permission injection failed"; exit 1; }
 

@@ -244,6 +244,14 @@ func normalizePath(path string) string {
 	return path
 }
 
+// withQuery 把原始请求的 query 附加到上游 URL（media 缺 format/name 参数必 404）。
+func withQuery(base string, r *http.Request) string {
+	if r.URL.RawQuery == "" {
+		return base
+	}
+	return base + "?" + r.URL.RawQuery
+}
+
 func router(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
@@ -254,12 +262,13 @@ func router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /api/... → x.moonchan.xyz（保留完整前缀：后端真实挂载点 /api/twitter）
 	if strings.HasPrefix(path, "/api/") {
-		apiProxyHandler(w, r, apiHost, strings.TrimPrefix(path, "/api"))
+		apiProxyHandler(w, r, apiHost, path)
 		return
 	}
 
-	// 所有其他请求 → video-cf.twimg.com（路径保持不变）
+	// 所有其他请求 → video-cf.twimg.com（路径保持不变，host 已 rewrite 丢弃）
 	// 例：/media/ABC123.png → https://video-cf.twimg.com/media/ABC123.png
 	echProxyHandler(w, r, "video-cf.twimg.com", path)
 }
@@ -270,7 +279,7 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 		return
 	}
 
-	targetURL := "https://" + targetHost + normalizePath(path)
+	targetURL := withQuery("https://"+targetHost+normalizePath(path), r)
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
 	req, err := http.NewRequest(r.Method, targetURL, nil)
@@ -323,15 +332,22 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 }
 
 func apiProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path string) {
-	targetURL := "https://" + targetHost + normalizePath(path)
+	targetURL := withQuery("https://"+targetHost+normalizePath(path), r)
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
-	req, err := http.NewRequest(r.Method, targetURL, nil)
+	// 透传请求体：POST 保存标签依赖 body。
+	req, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (TwitterPic)")
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	if cl := r.Header.Get("Content-Length"); cl != "" {
+		req.Header.Set("Content-Length", cl)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
