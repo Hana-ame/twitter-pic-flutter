@@ -19,17 +19,22 @@ class MediaUrl {
   static const String gridName = 'medium';
 
   /// 是否是可以套 name= 变体的图片 URL。
+  ///
+  /// 判定只看域名：条目里可能已经有 `name=orig`（线上数据就是这样，orig 是最
+  /// 重的一档），也可能完全没带 `name=`，两种都要改写成缩略图。视频走的是
+  /// video.twimg.com，没有尺寸变体，不能碰。
   static bool hasSizeVariant(String url) =>
-      url.contains('pbs.twimg.com') && url.contains('name=');
+      url.contains('pbs.twimg.com') && !url.contains('video.twimg.com');
 
   /// 列表/网格缩略图。
   static String grid(String url) => withName(url, gridName);
 
-  /// 换成指定的 name 变体；不适用（视频、没有 name 参数）时原样返回。
+  /// 换成指定的 name 变体（没有 name 参数就加上）；视频等不适用时原样返回。
   static String withName(String url, String name) {
     if (!hasSizeVariant(url)) return url;
     final uri = Uri.tryParse(url);
     if (uri == null) return url;
+    // 保留 format 等其它参数与原顺序，只改 name。
     final query = Map<String, String>.from(uri.queryParameters);
     query['name'] = name;
     return uri.replace(queryParameters: query).toString();

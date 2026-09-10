@@ -23,9 +23,18 @@ void main() {
     expect(MediaUrl.hasSizeVariant(video), isFalse);
   });
 
-  test('没有 name 参数 / 非 pbs / 非法 URL 时不改动也不抛异常', () {
-    const bare = 'https://pbs.twimg.com/media/X';
-    expect(MediaUrl.grid(bare), bare);
+  test('没带 name= 的 pbs 图也补上缩略图变体（线上数据形态不一）', () {
+    expect(
+      MediaUrl.grid('https://pbs.twimg.com/media/X?format=jpg'),
+      'https://pbs.twimg.com/media/X?format=jpg&name=medium',
+    );
+    expect(MediaUrl.grid('https://pbs.twimg.com/media/X'),
+        'https://pbs.twimg.com/media/X?name=medium');
+  });
+
+  test('视频 / 非 pbs / 非法 URL 时不改动也不抛异常', () {
+    const other = 'https://example.com/a.jpg?name=orig';
+    expect(MediaUrl.grid(other), other);
     expect(MediaUrl.grid('not a url'), 'not a url');
     expect(MediaUrl.grid(''), '');
   });
