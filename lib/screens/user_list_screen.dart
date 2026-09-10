@@ -87,8 +87,8 @@ class UserListScreenState extends State<UserListScreen> {
     }
   }
 
-  void _openDetail(UserMetaData profile) {
-    Navigator.push(context, PageRouteBuilder(
+  Future<void> _openDetail(UserMetaData profile) async {
+    await Navigator.push(context, PageRouteBuilder(
       transitionDuration: const Duration(milliseconds: 300),
       reverseTransitionDuration: const Duration(milliseconds: 300),
       pageBuilder: (_, a, __) => UserDetailScreen(profile: profile, proxy: widget.proxy),
@@ -103,6 +103,9 @@ class UserListScreenState extends State<UserListScreen> {
         );
       },
     ));
+    // 详情页里可收藏/屏蔽该用户；IndexedStack 保活使本页不会自动重建，
+    // 返回后必须刷新，否则红心/屏蔽状态停留在旧值。
+    if (mounted) setState(() {});
   }
 
   @override

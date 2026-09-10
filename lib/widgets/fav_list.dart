@@ -232,24 +232,26 @@ class _FavTileState extends State<_FavTile> {
           ),
           title: Text(info?.nick ?? widget.username),
           subtitle: Text('@${widget.username}'),
-          onTap: () {
-            if (snapshot.hasData) {
-              Navigator.push(context, PageRouteBuilder(
-                transitionDuration: const Duration(milliseconds: 300),
-                reverseTransitionDuration: const Duration(milliseconds: 300),
-                pageBuilder: (_, a, __) => UserDetailScreen(profile: snapshot.data!, proxy: widget.proxy),
-                transitionsBuilder: (_, a, __, child) {
-                  final curved = CurvedAnimation(parent: a, curve: Curves.easeInOutCubic);
-                  return FadeTransition(
-                    opacity: curved,
-                    child: Transform.scale(
-                      scale: 0.95 + 0.05 * curved.value,
-                      child: child,
-                    ),
-                  );
-                },
-              ));
-            }
+          onTap: () async {
+            if (!snapshot.hasData) return;
+            await Navigator.push(context, PageRouteBuilder(
+              transitionDuration: const Duration(milliseconds: 300),
+              reverseTransitionDuration: const Duration(milliseconds: 300),
+              pageBuilder: (_, a, __) => UserDetailScreen(profile: snapshot.data!, proxy: widget.proxy),
+              transitionsBuilder: (_, a, __, child) {
+                final curved = CurvedAnimation(parent: a, curve: Curves.easeInOutCubic);
+                return FadeTransition(
+                  opacity: curved,
+                  child: Transform.scale(
+                    scale: 0.95 + 0.05 * curved.value,
+                    child: child,
+                  ),
+                );
+              },
+            ));
+            // 详情页里可能取消收藏：返回后让父列表重新读取收藏表，
+            // 否则该项会一直留在收藏夹里。
+            widget.onUnfav?.call();
           },
           onLongPress: () {
             showModalBottomSheet(
