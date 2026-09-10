@@ -4,7 +4,8 @@
 // 与旧版 (v0.2.8) 的主要差异：
 //   1. 删除了所有 per-request FFI 调用（fetchAsync / fetchToFileAsync）
 //   2. 启动时调用 proxy.start() 启动本机 HTTP 代理
-//   3. 所有网络请求通过 EchUrl.rewrite() 改写为走 127.0.0.1:port
+//   3. 网络分流：JSON/API 直连 x.moonchan.xyz；仅 twimg 媒体（图片/视频/
+//      头像）经 EchUrl.rewrite() 改写走 127.0.0.1:port 的 ECH 代理
 //   4. 新增「重启 ECH」按钮（AppBar），用于代理异常时手动恢复
 //   5. 新增 _startInFlight 守卫，防止并发启动
 //   6. 重启后端口可能变化，通过 _port 字段统一管理
