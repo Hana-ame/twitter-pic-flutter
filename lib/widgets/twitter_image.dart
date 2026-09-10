@@ -21,6 +21,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
+import 'progressive_image.dart';
 
 class TwitterImage extends StatefulWidget {
   final String url;
@@ -179,19 +180,30 @@ class _TwitterImageState extends State<TwitterImage> {
           children: [
             Hero(
               tag: 'img_${widget.url}',
-              child: Image.network(
-                url,
+              child: Image(
+                image: ProgressiveImageProvider(url),
                 key: ValueKey('$url#$_retryCount'),
                 fit: widget.fit,
                 width: widget.width,
                 height: widget.height,
+                // 已经收到的那部分照常画出来（child 就是逐块解码的中间帧），
+                // 进度条只是叠在底部的一条细线——不是拿一块空白盖住整张图。
                 loadingBuilder: (context, child, progress) {
                   if (progress == null) return child;
                   final total = progress.expectedTotalBytes;
                   final percent = (total != null && total > 0)
                       ? progress.cumulativeBytesLoaded / total
                       : null;
-                  return _StatusBox(percent: percent);
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      child,
+                      Align(
+                        alignment: Alignment.bottomCenter,
+                        child: _ProgressOverlay(percent: percent),
+                      ),
+                    ],
+                  );
                 },
                 errorBuilder: (context, error, stackTrace) {
                   // 首次失败自动重试一次（代理刚起来时容易撞上），之后交给
@@ -215,7 +227,12 @@ class _TwitterImageState extends State<TwitterImage> {
   /// 统一的定高外框：AspectRatio 给 ListView 一个确定高度，避免无界高度
   /// 把整条 item 撑成无穷大。
   Widget _frame({required Widget child}) {
-    return AspectRatio(aspectRatio: _aspect, child: child);
+    return AspectRatio(
+      aspectRatio: _aspect,
+      // 灰色底：JPEG 部分解码时，未下载到的部分本来就是中性灰，整体观感一致，
+      // 不会在白色背景上突兀地出现半张图。
+      child: ColoredBox(color: Colors.grey[200]!, child: child),
+    );
   }
 
   void _showContextMenu(BuildContext context) {
@@ -304,6 +321,48 @@ Future<File?> downloadToTempFile(Uri uri, String originalUrl) async {
     return null;
   } finally {
     client.close();
+  }
+}
+
+/// 叠在图片底部的一条细进度线 + 百分比。
+///
+/// 图片本身是"下到哪显示到哪"的，所以这不是遮罩，只是提示还剩多少没到。
+class _ProgressOverlay extends StatelessWidget {
+  final double? percent;
+  final bool onDark;
+
+  const _ProgressOverlay({this.percent, this.onDark = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: percent,
+                minHeight: 3,
+                backgroundColor: onDark ? Colors.white24 : Colors.black12,
+                color: onDark ? Colors.white : Colors.black45,
+              ),
+            ),
+          ),
+          if (percent != null) ...[
+            const SizedBox(width: 8),
+            Text(
+              '${(percent! * 100).clamp(0, 100).toStringAsFixed(0)}%',
+              style: TextStyle(
+                fontSize: 11,
+                color: onDark ? Colors.white70 : Colors.black54,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }
 
@@ -445,8 +504,8 @@ class _ImageViewerState extends State<_ImageViewer> {
       child: InteractiveViewer(
         child: Hero(
           tag: 'img_${widget.url}',
-          child: Image.network(
-            url,
+          child: Image(
+            image: ProgressiveImageProvider(url),
             key: ValueKey('$url#$_retryCount'),
             fit: BoxFit.contain,
             loadingBuilder: (context, child, progress) {
@@ -455,27 +514,16 @@ class _ImageViewerState extends State<_ImageViewer> {
               final percent = (total != null && total > 0)
                   ? progress.cumulativeBytesLoaded / total
                   : null;
-              return Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 160,
-                      child: LinearProgressIndicator(
-                        value: percent,
-                        minHeight: 3,
-                        backgroundColor: Colors.white24,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      percent == null
-                          ? '加载中…'
-                          : '${(percent! * 100).clamp(0, 100).toStringAsFixed(0)}%',
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                  ],
-                ),
+              // 全屏同样是"下到哪显示到哪"：中间帧照常铺满，进度在底部。
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  child,
+                  Align(
+                    alignment: Alignment.bottomCenter,
+                    child: _ProgressOverlay(percent: percent, onDark: true),
+                  ),
+                ],
               );
             },
             errorBuilder: (context, error, stackTrace) {

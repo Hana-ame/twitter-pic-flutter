@@ -372,6 +372,18 @@ class _TwitterVideoState extends State<TwitterVideo>
     );
   }
 
+  /// 已缓冲到的比例；缓冲完成或信息不足时返回 null（不显示这条线）。
+  double? get _bufferedFraction {
+    final v = _videoValue;
+    if (v == null || v.duration.inMilliseconds <= 0) return null;
+    if (v.buffered.isEmpty) return null;
+    final end = v.buffered.last.end.inMilliseconds;
+    if (end <= 0) return null;
+    final fraction = end / v.duration.inMilliseconds;
+    if (fraction >= 0.999) return null;
+    return fraction.clamp(0.0, 1.0);
+  }
+
   Widget _buildControls() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -385,6 +397,22 @@ class _TwitterVideoState extends State<TwitterVideo>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // 缓冲进度：视频是边下边播（Range 分段），这条线显示已经缓冲到的
+          // 位置——不必等整个文件下完才有画面，也能看出下载在推进。
+          if (_bufferedFraction != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(2),
+                child: LinearProgressIndicator(
+                  value: _bufferedFraction,
+                  minHeight: 2,
+                  backgroundColor: Colors.white24,
+                  color: Colors.white70,
+                ),
+              ),
+            ),
+
           // 进度条
           Slider(
             value: _videoValue?.position.inMilliseconds.toDouble() ?? 0,
