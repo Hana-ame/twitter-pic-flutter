@@ -43,12 +43,24 @@ class _TwitterImageState extends State<TwitterImage> {
   _UrlMode _mode = _UrlMode.proxy;
 
   String _buildUrl() {
+    final uri = Uri.parse(widget.url);
     final port = widget.proxy.port;
-    // 全部走 ECH 代理：EchUrl.rewrite 丢弃原始域名，代理统一拼
-    // https://video-cf.twimg.com/<path>。不降级 pbs.twimg.com 直连
-    // —— 墙内直连必死（实测 000），降级只是白等一次请求。
+    // pbs.twimg.com（图片 CDN）→ pbs.moonchan.xyz 镜像直连。
+    // 后端 media_url 就是 pbs.twimg.com（get_meta_data.py 过滤
+    // pbs/video.twimg.com），经 video-cf.twimg.com 代理必 404，
+    // 镜像与头像同通道（pbs.moonchan.xyz 已验证可达）。
+    if (uri.host == 'pbs.twimg.com') {
+      return 'https://pbs.moonchan.xyz${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}';
+    }
+    // video.twimg.com / video-cf.twimg.com 等 → 本机 ECH 代理
     if (port != null) return EchUrl.rewrite(widget.url, port);
     return widget.url;
+  }
+
+  /// 是否需要 ECH 代理（pbs 镜像直连不需要）。
+  bool get _needsProxy {
+    final uri = Uri.parse(widget.url);
+    return uri.host != 'pbs.twimg.com';
   }
 
   void _showPreview() {
@@ -73,7 +85,7 @@ class _TwitterImageState extends State<TwitterImage> {
   @override
   Widget build(BuildContext context) {
     final port = widget.proxy.port;
-    if (port == null) {
+    if (port == null && _needsProxy) {
       return _buildError('ECH 代理未启动，无法加载图片');
     }
 
@@ -273,10 +285,12 @@ class _ImageViewerState extends State<_ImageViewer> {
   _UrlMode _mode = _UrlMode.proxy;
 
   String _buildUrl() {
+    final uri = Uri.parse(widget.url);
     final port = widget.proxy.port;
-    // 全部走 ECH 代理：EchUrl.rewrite 丢弃原始域名，代理统一拼
-    // https://video-cf.twimg.com/<path>。不降级 pbs.twimg.com 直连
-    // —— 墙内直连必死（实测 000），降级只是白等一次请求。
+    // 与主组件同通道策略：pbs 走镜像直连，其余走 ECH 代理。
+    if (uri.host == 'pbs.twimg.com') {
+      return 'https://pbs.moonchan.xyz${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}';
+    }
     if (port != null) return EchUrl.rewrite(widget.url, port);
     return widget.url;
   }
