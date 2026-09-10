@@ -347,6 +347,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     final isBlocked = StorageService.isBlocked(_username);
     final timeline = _profile.timeline;
     final displayTimeline = _showAll ? timeline : timeline.take(_mediaLimit).toList();
+    // 图片画廊（去重保序）：全屏预览翻页用。视频不进这个列表。
+    final imageUrls = <String>[];
+    final imageIndex = <String, int>{};
+    for (final it in displayTimeline) {
+      if (it.type == 'video' || it.type == 'animated_gif') continue;
+      if (it.url.isEmpty || imageIndex.containsKey(it.url)) continue;
+      imageIndex[it.url] = imageUrls.length;
+      imageUrls.add(it.url);
+    }
     final hasMore = !_showAll && timeline.length > _mediaLimit;
     // 屏蔽规则生效：用户标签命中“标签管理→屏蔽”列表时给提示条。
     // 标签挂在用户级别（timeline 条目无 tag），故只提示、不自动藏内容。
@@ -408,7 +417,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                 }
                 if (j < displayTimeline.length) {
                   final item = displayTimeline[j];
-                  return _MediaCard(key: ValueKey(item.url), item: item, proxy: widget.proxy);
+                  return _MediaCard(
+                    key: ValueKey(item.url),
+                    item: item,
+                    proxy: widget.proxy,
+                    // 全屏预览要能左右/上下翻页：把本页所有图片按顺序带过去
+                    // （视频有自己的播放器，不参与图片翻页）。
+                    gallery: imageUrls,
+                    galleryIndex: imageIndex[item.url] ?? 0,
+                  );
                 }
                 // 滚到底自动续载下一批：不用手动点"加载更多"，一边滚一边出。
                 if (hasMore) _scheduleLoadMore();
@@ -618,8 +635,16 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 class _MediaCard extends StatelessWidget {
   final TimelineItem item;
   final ProxyManager proxy;
+  final List<String> gallery;
+  final int galleryIndex;
 
-  const _MediaCard({super.key, required this.item, required this.proxy});
+  const _MediaCard({
+    super.key,
+    required this.item,
+    required this.proxy,
+    required this.gallery,
+    required this.galleryIndex,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -636,7 +661,12 @@ class _MediaCard extends StatelessWidget {
           if (isVideo)
             TwitterVideo(url: item.url, proxy: proxy)
           else
-            TwitterImage(url: item.url, proxy: proxy),
+            TwitterImage(
+              url: item.url,
+              proxy: proxy,
+              gallery: gallery,
+              galleryIndex: galleryIndex,
+            ),
           if (item.date != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),

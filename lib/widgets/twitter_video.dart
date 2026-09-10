@@ -51,6 +51,8 @@ class _TwitterVideoState extends State<TwitterVideo>
   Timer? _hideTimer;
   bool _isDragging = false;
   bool _downloading = false;
+  /// 全屏播放中：卡片侧不再渲染 VideoPlayer（同一 controller 只能渲染一次）。
+  bool _fullscreenOpen = false;
   _UrlMode _mode = _UrlMode.proxy;
 
   Uri _buildUrl() {
@@ -170,7 +172,13 @@ class _TwitterVideoState extends State<TwitterVideo>
   }
 
   Future<void> _enterFullscreen() async {
-    setState(() => _showControls = true);
+    // 同一个 controller 只能有一个 VideoPlayer 在渲染：卡片和全屏同时挂着
+    // 会共用同一个 texture，表现为鬼影/花屏，全屏还可能是黑的。全屏期间把
+    // 卡片这侧的 VideoPlayer 换成纯黑占位。
+    setState(() {
+      _showControls = true;
+      _fullscreenOpen = true;
+    });
     await Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: true,
@@ -182,6 +190,8 @@ class _TwitterVideoState extends State<TwitterVideo>
         ),
       ),
     );
+    if (!mounted) return;
+    setState(() => _fullscreenOpen = false);
     _showControlsTemporarily();
   }
 
@@ -281,12 +291,15 @@ class _TwitterVideoState extends State<TwitterVideo>
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // 视频画面
-          GestureDetector(
-            onTap: _toggleControls,
-            onLongPress: () => _showContextMenu(context),
-            child: VideoPlayer(_controller!),
-          ),
+          // 视频画面（全屏期间换成黑块，避免同一个 texture 被渲染两次）
+          if (_fullscreenOpen)
+            const Positioned.fill(child: ColoredBox(color: Colors.black))
+          else
+            GestureDetector(
+              onTap: _toggleControls,
+              onLongPress: () => _showContextMenu(context),
+              child: VideoPlayer(_controller!),
+            ),
 
           // 中央播放按钮（暂停时显示）
           if (!_controller!.value.isPlaying)
@@ -397,30 +410,14 @@ class _TwitterVideoState extends State<TwitterVideo>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // 缓冲进度：视频是边下边播（Range 分段），这条线显示已经缓冲到的
-          // 位置——不必等整个文件下完才有画面，也能看出下载在推进。
-          if (_bufferedFraction != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(2),
-                child: LinearProgressIndicator(
-                  value: _bufferedFraction,
-                  minHeight: 2,
-                  backgroundColor: Colors.white24,
-                  color: Colors.white70,
-                ),
-              ),
-            ),
-
-          // 进度条
-          Slider(
+          // 进度条：一根条三态——已播放（白）/ 已缓冲（半透明白）/ 未缓冲
+          // （透明）。缓冲量画在滑块轨道底下，而不是另外多加一根进度条。
+          _SliderWithBuffer(
             value: _videoValue?.position.inMilliseconds.toDouble() ?? 0,
             max: _videoValue?.duration.inMilliseconds.toDouble() ?? 1,
-            onChanged: (v) => _onSeekStart(),
-            onChangeEnd: (v) => _onSeekEnd(Duration(milliseconds: v.toInt())),
-            activeColor: Colors.white,
-            inactiveColor: Colors.white24,
+            buffered: _bufferedFraction,
+            onStart: _onSeekStart,
+            onEnd: (v) => _onSeekEnd(Duration(milliseconds: v.toInt())),
           ),
 
           // 时间 + 按钮
@@ -788,14 +785,12 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Slider(
+                    _SliderWithBuffer(
                       value: _videoValue?.position.inMilliseconds.toDouble() ?? 0,
                       max: _videoValue?.duration.inMilliseconds.toDouble() ?? 1,
-                      onChanged: (v) => _onSeekStart(),
-                      onChangeEnd: (v) =>
-                          _onSeekEnd(Duration(milliseconds: v.toInt())),
-                      activeColor: Colors.white,
-                      inactiveColor: Colors.white24,
+                      buffered: _bufferedFraction,
+                      onStart: _onSeekStart,
+                      onEnd: (v) => _onSeekEnd(Duration(milliseconds: v.toInt())),
                     ),
                     Row(
                       children: [
@@ -826,6 +821,70 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
             ),
         ],
       ),
+    );
+  }
+}
+
+/// 带缓冲显示的进度条：一根条上看三种状态，避免出现"两根加载条"。
+///   * 白色实心 = 已播放；
+///   * 半透明白 = 已缓冲（边下边播的进度）；
+///   * 透明 = 还没下到。
+class _SliderWithBuffer extends StatelessWidget {
+  final double value;
+  final double max;
+  final double? buffered;
+  final VoidCallback onStart;
+  final ValueChanged<double> onEnd;
+
+  const _SliderWithBuffer({
+    required this.value,
+    required this.max,
+    required this.buffered,
+    required this.onStart,
+    required this.onEnd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final fraction = (buffered ?? 0).clamp(0.0, 1.0);
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        if (fraction > 0)
+          Padding(
+            // 对齐 Slider 轨道两端的内缩（滑块半径 + 控件内边距）。
+            padding: const EdgeInsets.symmetric(horizontal: 22),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: FractionallySizedBox(
+                widthFactor: fraction,
+                child: Container(
+                  height: 3,
+                  decoration: BoxDecoration(
+                    color: Colors.white38,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 3,
+            activeTrackColor: Colors.white,
+            // 轨道下半段留空，露出底下的缓冲条。
+            inactiveTrackColor: Colors.transparent,
+            thumbColor: Colors.white,
+            overlayColor: Colors.white24,
+          ),
+          child: Slider(
+            value: value.clamp(0, max <= 0 ? 1 : max),
+            max: max <= 0 ? 1 : max,
+            onChanged: (_) => onStart(),
+            onChangeEnd: onEnd,
+          ),
+        ),
+      ],
     );
   }
 }

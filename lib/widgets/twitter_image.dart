@@ -30,6 +30,13 @@ class TwitterImage extends StatefulWidget {
   final double? width;
   final double? height;
 
+  /// 当前页面里所有图片的原始 URL（按时间线顺序），用于全屏预览时左右/上下
+  /// 滑动翻页。为空时只预览当前这一张。
+  final List<String>? gallery;
+
+  /// 本图在 [gallery] 中的下标。
+  final int galleryIndex;
+
   const TwitterImage({
     super.key,
     required this.url,
@@ -37,6 +44,8 @@ class TwitterImage extends StatefulWidget {
     this.fit = BoxFit.cover,
     this.width,
     this.height,
+    this.gallery,
+    this.galleryIndex = 0,
   });
 
   @override
@@ -154,10 +163,19 @@ class _TwitterImageState extends State<TwitterImage> {
       return;
     }
 
+    final gallery = (widget.gallery == null || widget.gallery!.isEmpty)
+        ? <String>[widget.url]
+        : widget.gallery!;
+    final initial = widget.galleryIndex.clamp(0, gallery.length - 1);
+
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => _ImageViewer(url: widget.url, proxy: widget.proxy),
+        builder: (_) => _ImageViewer(
+          gallery: gallery,
+          initialIndex: initial,
+          proxy: widget.proxy,
+        ),
       ),
     );
   }
@@ -428,33 +446,78 @@ class _StatusBox extends StatelessWidget {
   }
 }
 
-/// 全屏图片查看器（Scaffold body 有界，可安全用 Center 自适应）。
+/// 全屏画廊：左右滑动或上下滑动翻页，双击放大/还原。
+///
+/// 刻意不用 InteractiveViewer：它的 scale 手势识别器会在手势竞技场里抢走
+/// 单指拖动，导致 PageView 永远翻不了页（Flutter 的已知冲突）。这里改成
+/// PageView 负责翻页、双击负责缩放，两者互不抢手势。
 class _ImageViewer extends StatefulWidget {
-  final String url;
+  final List<String> gallery;
+  final int initialIndex;
   final ProxyManager proxy;
 
-  const _ImageViewer({required this.url, required this.proxy});
+  const _ImageViewer({
+    required this.gallery,
+    required this.initialIndex,
+    required this.proxy,
+  });
 
   @override
   State<_ImageViewer> createState() => _ImageViewerState();
 }
 
 class _ImageViewerState extends State<_ImageViewer> {
-  int _retryCount = 0;
+  late final PageController _pageController;
+  late int _index;
 
-  String? _proxiedUrl() {
+  @override
+  void initState() {
+    super.initState();
+    _index = widget.initialIndex.clamp(0, widget.gallery.length - 1);
+    _pageController = PageController(initialPage: _index);
+    // 预取下一张：翻过去就能立刻看到（本身也是逐块解码的）。
+    // 必须等首帧之后再预取：precacheImage 会读 MediaQuery，initState 里
+    // 依赖 InheritedWidget 会直接抛断言。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _precacheNeighbour(1);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _precacheNeighbour(int delta) {
+    final i = _index + delta;
+    if (i < 0 || i >= widget.gallery.length) return;
     final port = widget.proxy.port;
-    if (port == null) return null;
-    // 与主组件同通道：全部走 ECH 代理（video-cf.twimg.com）。
-    return EchUrl.rewrite(widget.url, port);
+    if (port == null) return;
+    precacheImage(
+      ProgressiveImageProvider(EchUrl.rewrite(widget.gallery[i], port)),
+      context,
+    ).catchError((_) {});
+  }
+
+  void _go(int delta) {
+    final next = _index + delta;
+    if (next < 0 || next >= widget.gallery.length) return;
+    _pageController.animateToPage(
+      next,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+    );
   }
 
   Future<void> _downloadAndShare() async {
-    final url = _proxiedUrl();
-    if (url == null) return;
+    final port = widget.proxy.port;
+    if (port == null) return;
+    final raw = widget.gallery[_index];
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在下载...')));
-    final file = await downloadToTempFile(Uri.parse(url), widget.url);
+    final file =
+        await downloadToTempFile(Uri.parse(EchUrl.rewrite(raw, port)), raw);
     if (file == null) {
       if (context.mounted) {
         messenger.showSnackBar(const SnackBar(content: Text('下载失败')));
@@ -474,7 +537,7 @@ class _ImageViewerState extends State<_ImageViewer> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        title: const Text('图片预览'),
+        title: Text('${_index + 1} / ${widget.gallery.length}'),
         actions: [
           IconButton(
             icon: const Icon(Icons.download),
@@ -488,73 +551,119 @@ class _ImageViewerState extends State<_ImageViewer> {
           ),
         ],
       ),
-      body: _buildBody(),
+      body: PageView.builder(
+        controller: _pageController,
+        itemCount: widget.gallery.length,
+        onPageChanged: (i) {
+          setState(() => _index = i);
+          _precacheNeighbour(1);
+        },
+        itemBuilder: (context, i) => GestureDetector(
+          // PageView 只认水平拖动，竖直拖动没人抢，用它做"上下滑动翻页"。
+          onVerticalDragEnd: (details) {
+            final v = details.primaryVelocity ?? 0;
+            if (v < -250) {
+              _go(1); // 上滑 → 下一张
+            } else if (v > 250) {
+              _go(-1); // 下滑 → 上一张
+            }
+          },
+          child: _GalleryPage(
+            url: widget.gallery[i],
+            proxy: widget.proxy,
+            heroTag: i == widget.initialIndex ? 'img_${widget.gallery[i]}' : null,
+          ),
+        ),
+      ),
     );
   }
+}
 
-  Widget _buildBody() {
-    final url = _proxiedUrl();
-    if (url == null) {
+/// 画廊里的一页：逐块解码 + 双击放大。
+class _GalleryPage extends StatefulWidget {
+  final String url;
+  final ProxyManager proxy;
+  final String? heroTag;
+
+  const _GalleryPage({required this.url, required this.proxy, this.heroTag});
+
+  @override
+  State<_GalleryPage> createState() => _GalleryPageState();
+}
+
+class _GalleryPageState extends State<_GalleryPage> {
+  int _retryCount = 0;
+  bool _zoomed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final port = widget.proxy.port;
+    if (port == null) {
       return const Center(
         child: Text('ECH 代理未启动', style: TextStyle(color: Colors.white70)),
       );
     }
+    final url = EchUrl.rewrite(widget.url, port);
 
-    return Center(
-      child: InteractiveViewer(
-        child: Hero(
-          tag: 'img_${widget.url}',
-          child: Image(
-            image: ProgressiveImageProvider(url),
-            key: ValueKey('$url#$_retryCount'),
-            fit: BoxFit.contain,
-            loadingBuilder: (context, child, progress) {
-              if (progress == null) return child;
-              final total = progress.expectedTotalBytes;
-              final percent = (total != null && total > 0)
-                  ? progress.cumulativeBytesLoaded / total
-                  : null;
-              // 全屏同样是"下到哪显示到哪"：中间帧照常铺满，进度在底部。
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  child,
-                  Align(
-                    alignment: Alignment.bottomCenter,
-                    child: _ProgressOverlay(percent: percent, onDark: true),
-                  ),
-                ],
-              );
-            },
-            errorBuilder: (context, error, stackTrace) {
-              return Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.broken_image, size: 48, color: Colors.white54),
-                    const SizedBox(height: 12),
-                    const Text('加载失败',
-                        style: TextStyle(color: Colors.white70, fontSize: 14)),
-                    const SizedBox(height: 4),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: SelectableText(
-                        error.toString(),
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white54, fontSize: 11),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton.icon(
-                      onPressed: () => setState(() => _retryCount++),
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('重试'),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
+    Widget image = Image(
+      image: ProgressiveImageProvider(url),
+      key: ValueKey('$url#$_retryCount'),
+      fit: BoxFit.contain,
+      loadingBuilder: (context, child, progress) {
+        if (progress == null) return child;
+        final total = progress.expectedTotalBytes;
+        final percent = (total != null && total > 0)
+            ? progress.cumulativeBytesLoaded / total
+            : null;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            child,
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: _ProgressOverlay(percent: percent, onDark: true),
+            ),
+          ],
+        );
+      },
+      errorBuilder: (context, error, stackTrace) => Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.broken_image, size: 48, color: Colors.white54),
+            const SizedBox(height: 12),
+            const Text('加载失败',
+                style: TextStyle(color: Colors.white70, fontSize: 14)),
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: SelectableText(
+                error.toString(),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white54, fontSize: 11),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () => setState(() => _retryCount++),
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (widget.heroTag != null) {
+      image = Hero(tag: widget.heroTag!, child: image);
+    }
+
+    return GestureDetector(
+      onDoubleTap: () => setState(() => _zoomed = !_zoomed),
+      // ClipRect：放大后画面超出屏幕的部分不要盖到顶栏上。
+      child: ClipRect(
+        child: Center(
+          child: Transform.scale(scale: _zoomed ? 2.5 : 1.0, child: image),
         ),
       ),
     );
