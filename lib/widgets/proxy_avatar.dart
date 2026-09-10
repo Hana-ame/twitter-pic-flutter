@@ -1,19 +1,22 @@
 // proxy_avatar.dart
-// 通过本机 ECH 代理加载头像，代理失败自动降级直连。
+// 头像加载组件。
 //
-// 与旧版差异：
-//   - 删除了 fetchAsync → Image.memory 的手动流程
-//   - 直接使用 CircleAvatar + Image.network(EchUrl.rewrite(...))
-//   - 框架自动处理缓存、解码、错误状态
-//   - 新增：加载指示器、错误回退、代理失败自动切直连
+// 通道策略（按 URL 域名分流）：
+//   - pbs.twimg.com / abs.twimg.com（头像/CDN 图片）：
+//       → pbs.moonchan.xyz/<path>（moonchan 提供的 pbs 镜像，Cloudflare 直连可达）
+//       → 失败后降级本机 ECH 代理 → 直连 → 首字母占位
+//   - video-cf.twimg.com（视频/媒体）：
+//       → 本机 ECH 代理（EchUrl.rewrite）
+//       → 失败后直连 → 首字母占位
+//
+// 背景：video-cf.twimg.com 是视频 CDN，不含头像（profile_images 在
+// pbs.twimg.com），且直连被墙只能走 ECH；而 pbs.moonchan.xyz 是
+// moonchan 提供的 pbs 反向代理，可直连。
 
 import 'package:flutter/material.dart';
 
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
-
-/// 头像加载通道：先走 ECH 代理，失败后自动降级到直连。
-enum _UrlMode { proxy, direct }
 
 class ProxyAvatar extends StatefulWidget {
   final String? url;
@@ -34,53 +37,65 @@ class ProxyAvatar extends StatefulWidget {
 }
 
 class _ProxyAvatarState extends State<ProxyAvatar> {
-  _UrlMode _mode = _UrlMode.proxy;
-  int _retryCount = 0;
+  // 当前尝试的候选通道下标；全部失败后显示首字母占位。
+  int _attempt = 0;
 
   @override
   void didUpdateWidget(ProxyAvatar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url ||
         oldWidget.proxy.port != widget.proxy.port) {
-      _mode = _UrlMode.proxy;
-      _retryCount = 0;
+      _attempt = 0;
     }
   }
 
-  String _buildUrl() {
+  /// 按域名生成候选 URL 列表（从优到劣）。
+  List<String> _candidates() {
+    final url = widget.url;
+    if (url == null) return const [];
+    final uri = Uri.parse(url);
+    final path = '${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}';
     final port = widget.proxy.port;
-    if (_mode == _UrlMode.proxy && port != null && widget.url != null) {
-      return EchUrl.rewrite(widget.url!, port);
+
+    // video-cf：ECH 代理 → 直连
+    if (uri.host == 'video-cf.twimg.com') {
+      return [
+        if (port != null) EchUrl.rewrite(url, port),
+        url,
+      ];
     }
-    return widget.url ?? '';
+    // pbs/abs 等：pbs.moonchan.xyz 镜像 → ECH 代理 → 直连
+    return [
+      'https://pbs.moonchan.xyz$path',
+      if (port != null) EchUrl.rewrite(url, port),
+      url,
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
-    final port = widget.proxy.port;
-    if (widget.url == null || (port == null && _mode == _UrlMode.proxy)) {
-      return _buildFallback();
-    }
+    final url = widget.url;
+    if (url == null) return _buildFallback();
 
-    final echUrl = _buildUrl();
+    final candidates = _candidates();
+    if (_attempt >= candidates.length) return _buildFallback();
+
+    final target = candidates[_attempt];
 
     return ClipOval(
       child: SizedBox(
         width: widget.radius * 2,
         height: widget.radius * 2,
         child: Image.network(
-          echUrl,
-          key: ValueKey('${echUrl}_$_retryCount'),
+          target,
+          key: ValueKey('${target}_$_attempt'),
           fit: BoxFit.cover,
           width: widget.radius * 2,
           height: widget.radius * 2,
           errorBuilder: (context, error, stackTrace) {
-            // 代理失败 → 直连；直连也失败 → 首字母占位。
-            if (_mode == _UrlMode.proxy && port != null) {
-              setState(() {
-                _mode = _UrlMode.direct;
-                _retryCount++;
-              });
+            // 当前通道失败 → 试下一个候选通道。
+            if (_attempt < candidates.length - 1) {
+              setState(() => _attempt++);
               return _buildFallbackInner();
             }
             return _buildFallback();
