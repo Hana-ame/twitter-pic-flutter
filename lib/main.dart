@@ -408,6 +408,6 @@ class SettingsTab extends StatefulWidget {
 class _SettingsTabState extends State<SettingsTab> {
   @override
   Widget build(BuildContext context) {
-    return SettingsScreen(proxy: widget.proxy, buildNum: _kBuildNum);
+    return SettingsScreen(proxy: widget.proxy, buildNum: _kBuildNum, embedded: true);
   }
 }

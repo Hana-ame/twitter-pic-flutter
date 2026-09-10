@@ -18,7 +18,9 @@
 
 import 'dart:ffi';
 import 'dart:io';
+
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
 
 // ─── FFI typedef（必须在顶层定义，不能在 class 内部）──────────────────────
 
@@ -72,6 +74,10 @@ class ProxyManager {
   // ─── 状态 ────────────────────────────────────────────────────────────────
   int? _port;
   bool _startInFlight = false;
+  // 端口变化通知：UI 侧（如 ProxyAvatar）据此重新尝试经代理加载。没有它，
+  // 头像一旦降级到直连就再也不会回到 ECH 通道（IndexedStack 不重建父级，
+  // didUpdateWidget 的 port 比对永不触发）。
+  final ValueNotifier<int?> _portNotifier = ValueNotifier(null);
 
   // ─── 公共 API ────────────────────────────────────────────────────────────
 
@@ -102,6 +108,7 @@ class ProxyManager {
         throw Exception('StartProxy failed (port=0, see Go logs)');
       }
       _port = port;
+      _portNotifier.value = port;
       return port;
     } finally {
       _startInFlight = false;
@@ -112,6 +119,7 @@ class ProxyManager {
   void stop() {
     _stopProxyFfi();
     _port = null;
+    _portNotifier.value = null;
   }
 
   /// 重启代理：停止 → 重新启动。
@@ -131,6 +139,10 @@ class ProxyManager {
 
   /// 代理监听端口。未启动时为 null。
   int? get port => _port;
+
+  /// 端口变化监听（start/stop/restart 后通知）。UI 侧订阅它可以在代理
+  /// 重启后重新尝试经代理加载资源。
+  ValueListenable<int?> get portNotifier => _portNotifier;
 
   /// 代理是否正在运行。
   bool get isRunning => _port != null;
@@ -163,6 +175,7 @@ class ProxyManager {
   void dispose() {
     stop();
     _initialized = false;
+    _portNotifier.dispose();
   }
 
   // ─── 内部实现 ────────────────────────────────────────────────────────────

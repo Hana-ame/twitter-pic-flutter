@@ -41,6 +41,25 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
   int _attempt = 0;
 
   @override
+  void initState() {
+    super.initState();
+    // 代理重启后端口变化：重置候选通道下标。否则头像一旦降级到直连就再
+    // 也不会回到 ECH 通道——IndexedStack 不重建父级，didUpdateWidget 的
+    // port 比对永不触发。
+    widget.proxy.portNotifier.addListener(_onPortChanged);
+  }
+
+  void _onPortChanged(int? _) {
+    if (mounted) setState(() => _attempt = 0);
+  }
+
+  @override
+  void dispose() {
+    widget.proxy.portNotifier.removeListener(_onPortChanged);
+    super.dispose();
+  }
+
+  @override
   void didUpdateWidget(ProxyAvatar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url ||
@@ -92,6 +111,10 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
           fit: BoxFit.cover,
           width: widget.radius * 2,
           height: widget.radius * 2,
+          // 头像只需 radius*2 像素，避免为小圆形头像解码全尺寸图片浪费
+          // 内存/CPU。
+          cacheWidth: (widget.radius * 2).round(),
+          cacheHeight: (widget.radius * 2).round(),
           errorBuilder: (context, error, stackTrace) {
             // 当前通道失败 → 试下一个候选通道。
             if (_attempt < candidates.length - 1) {

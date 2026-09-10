@@ -11,7 +11,16 @@ class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
   final String buildNum;
 
-  const SettingsScreen({super.key, required this.proxy, this.buildNum = 'dev'});
+  /// 作为主界面 Tab 内嵌时由外层提供 Scaffold/AppBar，避免双层工具栏
+  /// （外层 "Twitter Pic" + 内层 "设置" 叠在一起）。
+  final bool embedded;
+
+  const SettingsScreen({
+    super.key,
+    required this.proxy,
+    this.buildNum = 'dev',
+    this.embedded = false,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -69,7 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final proxy = widget.proxy;
     return Scaffold(
-      appBar: AppBar(title: const Text('设置')),
+      appBar: widget.embedded ? null : const AppBar(title: Text('设置')),
       body: ListView(
         children: [
           const SizedBox(height: 8),
