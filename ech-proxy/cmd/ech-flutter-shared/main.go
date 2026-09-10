@@ -379,6 +379,17 @@ func router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Go 侧调试日志（Web UI 面板 / curl 排障用）。必须在媒体分支之前，
+	// 否则会被当成媒体路径转发到 video-cf.twimg.com/logs。
+	if path == "/logs" {
+		logMu.RLock()
+		logs := strings.Join(logBuffer, "\n")
+		logMu.RUnlock()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprint(w, logs)
+		return
+	}
+
 	// /api/... → x.moonchan.xyz（保留完整前缀：后端真实挂载点为 /api/twitter）
 	if strings.HasPrefix(path, "/api/") {
 		apiProxyHandler(w, r, apiHost, path)
