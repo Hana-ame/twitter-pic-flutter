@@ -255,13 +255,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   /// 连接或写入任一步失败时关闭句柄并删除半写文件——原实现 writeFrom 抛错
   /// （磁盘满/连接中断）时 RAF 不关闭，残留部分写入文件。
   Future<bool> _streamToFile(HttpClient client, Uri uri, File file) async {
-    HttpClientResponse? res;
     RandomAccessFile? raf;
     var ok = false;
     try {
       final req = await client.getUrl(uri);
       final resp = await req.close();
-      res = resp;
       if (resp.statusCode != 200) return false;
       final rafHandle = await file.open(mode: FileMode.write);
       raf = rafHandle;
@@ -280,7 +278,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           await raf.close();
         } catch (_) {}
       }
-      res?.cancel();
+      // 响应流无需单独关闭：外层 client.close() 会释放所有连接，且
+      // HttpClientResponse 既无 close() 也无 cancel() 方法。
       if (!ok) {
         try {
           await file.delete();

@@ -545,8 +545,11 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
 
   Future<void> _downloadVideo() async {
     if (_downloading) return;
-    // 与 _buildUrl() 同源：视频已回退直连时下载也走原始 URL（同内联版）。
-    final uri = _buildUrl();
+    // 全屏版无降级状态（播放通道由父级 _TwitterVideoState 决定）：有代理
+    // 走代理，否则走原始 URL。
+    final port = widget.proxy.port;
+    final uri =
+        port != null ? EchUrl.rewriteToUri(widget.url, port) : Uri.parse(widget.url);
 
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _downloading = true);
