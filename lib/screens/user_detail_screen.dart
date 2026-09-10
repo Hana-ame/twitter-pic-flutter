@@ -53,13 +53,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
   }
 
-  Future<void> _refreshProfile() async {
+  /// 拉取最新元数据。返回 null 表示成功，否则为错误信息（供下拉刷新提示）。
+  Future<String?> _refreshProfile() async {
     try {
       final refreshed = await _api.getMetaData(_username, forceRefresh: true);
-      if (!mounted) return;
+      if (!mounted) return null;
       setState(() => _profile = refreshed);
-    } catch (_) {
-      // 静默失败：列表页加载失败时这里大概率也失败，保持占位可浏览。
+      return null;
+    } catch (e) {
+      return '$e';
     }
   }
 
@@ -372,8 +374,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             color: const Color(0xFF4F6CFF),
             backgroundColor: Colors.white,
             onRefresh: () async {
+              // 媒体时间线也要刷新：此前只重载标签/表情，卡在“暂无内容”
+              // 时下拉永远救不回来。
+              final err = await _refreshProfile();
               await _loadTags();
               await _loadEmojis();
+              if (!mounted || err == null) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text('内容刷新失败: $err'),
+              ));
             },
             child: ListView.builder(
               padding: const EdgeInsets.all(12),

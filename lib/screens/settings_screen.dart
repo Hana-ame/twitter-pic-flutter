@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/twitter_api.dart';
 import '../services/proxy_manager.dart';
@@ -158,6 +159,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return buf.toString();
   }
 
+  /// 判定一次诊断结果是否“通过”。
+  ///
+  /// 之前只看是否以“失败”开头，导致 HTTP 404/502 也标成绿色✓——恰恰是
+  /// 最需要被看见的错误。现在按 HTTP 状态码与字段检查符号判定。
+  static bool _passed(String result) {
+    if (result.startsWith('失败')) return false;
+    final m = RegExp(r'HTTP (\d{3})').firstMatch(result);
+    if (m != null) {
+      final code = int.parse(m.group(1)!);
+      return code >= 200 && code < 400;
+    }
+    // 无状态码的纯文本结果（字段/编码检查）：出现 ✗ 判为不通过。
+    return !result.contains('✗');
+  }
+
   Future<void> _runDiag() async {
     if (_diagRunning) return;
     setState(() {
@@ -165,7 +181,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _diag.clear();
     });
 
-    Future<void> step(String label, Future<String> Function() fn) async {
+    Future<void> step(String label, Future<String> Function() fn,
+        {bool expectFail = false}) async {
       if (!mounted) return;
       setState(() => _diag.add(_DiagItem(label: label, running: true)));
       String result;
@@ -175,13 +192,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         result = '失败: $e';
       }
       if (!mounted) return;
+      final pass = _passed(result);
       setState(() {
         final i = _diag.indexWhere((d) => d.label == label);
         if (i >= 0) {
           _diag[i] = _DiagItem(
             label: label,
             result: result,
-            ok: !result.startsWith('失败'),
+            ok: expectFail ? !pass : pass,
           );
         }
       });
@@ -227,7 +245,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // 5. video-cf 直连（预期失败：被墙，需 ECH）
     await step('5. video-cf 直连 (预期失败)', () {
       return _httpProbe('https://video-cf.twimg.com/favicon.ico');
-    });
+    }, expectFail: true);
 
     // 6. 真实头像 URL → EchUrl.rewrite（丢 host）→ 经代理 ECH 访问 video-cf
     await step('6. 真实头像经代理验证', () async {
@@ -276,6 +294,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
 
     if (mounted) setState(() => _diagRunning = false);
+  }
+
+  /// 复制诊断报告（含版本与代理上下文），便于直接粘贴反馈。
+  Future<void> _copyDiag() async {
+    if (_diag.isEmpty) return;
+    final buf = StringBuffer();
+    buf.writeln('Twitter Pic 诊断报告 · ${widget.buildNum}');
+    buf.writeln(
+        '代理: ${widget.proxy.isRunning ? '运行中' : '已停止'} · port=${widget.proxy.port ?? '-'} · init=${widget.proxy.isInitialized}');
+    buf.writeln('API endpoint: ${ApiEndpoint.base}');
+    buf.writeln('');
+    for (final d in _diag) {
+      buf.writeln('【${d.label}】 ${d.running ? 'RUNNING' : (d.ok ? 'PASS' : 'FAIL')}');
+      if (d.result.isNotEmpty) buf.writeln(d.result.trim());
+      buf.writeln('');
+    }
+    await Clipboard.setData(ClipboardData(text: buf.toString()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Row(
+        children: [
+          Icon(Icons.check_circle, size: 18, color: Colors.white),
+          SizedBox(width: 8),
+          Text('诊断结果已复制，可直接粘贴'),
+        ],
+      ),
+    ));
   }
 
   Future<void> _clearData() async {
@@ -385,15 +430,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _SectionTitle(title: '网络诊断', icon: Icons.science, color: Colors.teal),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: FilledButton.tonalIcon(
-              onPressed: _diagRunning ? null : _runDiag,
-              icon: _diagRunning
-                  ? const SizedBox(
-                      width: 14, height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow, size: 16),
-              label: Text(_diagRunning ? '测试中...' : '运行全部通道测试'),
+            child: Row(
+              children: [
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    onPressed: _diagRunning ? null : _runDiag,
+                    icon: _diagRunning
+                        ? const SizedBox(
+                            width: 14, height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.play_arrow, size: 16),
+                    label: Text(_diagRunning ? '测试中...' : '运行全部通道测试'),
+                  ),
+                ),
+                if (_diag.isNotEmpty && !_diagRunning) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _copyDiag,
+                    icon: const Icon(Icons.copy, size: 16),
+                    label: const Text('复制'),
+                  ),
+                ],
+              ],
             ),
           ),
           const SizedBox(height: 4),
