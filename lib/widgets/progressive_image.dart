@@ -109,14 +109,11 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
   final ProgressiveDecodeThrottle throttle;
   final Duration timeout;
 
-  HttpClient? _client;
-  bool _cancelled = false;
-
   // 自增长缓冲：避免每解码一次就整体复制一遍（BytesBuilder.toBytes()）。
   Uint8List _buf = Uint8List(64 * 1024);
   int _len = 0;
 
-  void _append(Uint8List data) {
+  void _append(List<int> data) {
     if (_len + data.length > _buf.length) {
       var cap = _buf.length * 2;
       while (cap < _len + data.length) {
@@ -135,7 +132,6 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
 
   Future<void> _pump() async {
     final client = HttpClient()..connectionTimeout = timeout;
-    _client = client;
     try {
       final request = await client.getUrl(Uri.parse(url));
       final response = await request.close();
@@ -146,8 +142,8 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
       // 进度条会显示成不确定态。
       final total = response.contentLength > 0 ? response.contentLength : null;
 
-      await for (final chunk in response) {
-        if (_cancelled) return;
+      // 卡住不动 30 秒就放弃：connectionTimeout 只管建连，管不了中途断流。
+      await for (final chunk in response.timeout(const Duration(seconds: 30))) {
         _append(chunk);
         // 喂给 Image 的 loadingBuilder（进度条用它）。
         reportImageChunkEvent(ImageChunkEvent(
@@ -162,12 +158,15 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
         }
       }
 
-      if (_cancelled) return;
+      if (_len == 0) {
+        throw HttpException('响应为空', uri: Uri.parse(url));
+      }
+
       // 完整数据必须解一次：部分解码成功不代表最终一定成功（例如 PNG 只在
       // 最后才可解），失败时这里才报错给 errorBuilder。
       await _decodeAndEmit(_view, isFinal: true);
     } catch (e, s) {
-      if (!_cancelled) reportError(exception: e, stack: s);
+      reportError(exception: e, stack: s);
     } finally {
       client.close(force: true);
     }
@@ -180,10 +179,6 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
       final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
       codec = await decode(buffer);
       final frame = await codec.getNextFrame();
-      if (_cancelled) {
-        frame.image.dispose();
-        return;
-      }
       // setImage 会把上一帧交还给框架释放，这里不要自己 dispose。
       setImage(ImageInfo(image: frame.image, scale: 1.0));
     } catch (e, s) {
@@ -193,14 +188,5 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
     } finally {
       codec?.dispose();
     }
-  }
-
-  @override
-  void dispose() {
-    // 缓存淘汰/页面销毁时立刻断开下载，别把带宽浪费在没人看的图上。
-    _cancelled = true;
-    _client?.close(force: true);
-    _client = null;
-    super.dispose();
   }
 }
