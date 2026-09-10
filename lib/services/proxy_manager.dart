@@ -21,6 +21,7 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
 // ─── FFI typedef（必须在顶层定义，不能在 class 内部）──────────────────────
 
@@ -293,30 +294,5 @@ class ProxyManager {
 
   void _stopProxyFfi() {
     _stopProxy?.call();
-  }
-}
-
-// ─── 辅助：获取应用支持目录 ──────────────────────────────────────────────────
-
-Future<Directory> getApplicationSupportDirectory() async {
-  // 使用 path_provider 包
-  // 如果不想依赖 path_provider，可以用以下简化实现：
-  if (Platform.isWindows) {
-    final localAppData = Platform.environment['LOCALAPPDATA'] ??
-        Platform.environment['APPDATA'] ??
-        r'C:\Users';
-    final dir = Directory('$localAppData\\TwitterPic');
-    if (!await dir.exists()) await dir.create(recursive: true);
-    return dir;
-  } else if (Platform.isLinux) {
-    final xdgData = Platform.environment['XDG_DATA_HOME'] ??
-        '${Platform.environment['HOME']}/.local/share';
-    final dir = Directory('$xdgData/TwitterPic');
-    if (!await dir.exists()) await dir.create(recursive: true);
-    return dir;
-  } else {
-    // Android: 使用 Flutter 的 path_provider
-    throw UnsupportedError(
-        'Use path_provider package for Android directory resolution');
   }
 }

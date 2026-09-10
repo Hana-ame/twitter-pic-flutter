@@ -21,6 +21,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,13 +69,31 @@ func init() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 }
 
+// guardPanic 把 panic 转成日志。cgo 导出函数里的 panic 无法被上层捕获，
+// 会直接 abort 整个进程（启动概率闪退），必须在边界吞掉。
+func guardPanic(where string) {
+	if r := recover(); r != nil {
+		log.Printf("PANIC in %s: %v\n%s", where, r, debug.Stack())
+	}
+}
+
 //export StartProxy
-func StartProxy(bootstrapIP *C.char) uint16 {
+func StartProxy(bootstrapIP *C.char) (port uint16) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC in StartProxy: %v\n%s", r, debug.Stack())
+			port = 0
+		}
+	}()
+
 	proxyMu.Lock()
 	defer proxyMu.Unlock()
 
-	logBuffer = nil
-	logBuffer = append(logBuffer, "=== Starting proxy ===")
+	// logWriter 在 logMu 下并发追加，重置缓冲同样要持锁，否则 slice header
+	// 被撕裂读会让 ECHGetLog/GetLogs 越界 panic。
+	logMu.Lock()
+	logBuffer = []string{"=== Starting proxy ==="}
+	logMu.Unlock()
 
 	if proxyServer != nil {
 		proxyServer.Close()
@@ -171,6 +190,7 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 		}
 		tlsLn := tls.NewListener(ln, proxyServer.TLSConfig)
 		go func() {
+			defer guardPanic("Serve(tls)")
 			if err := proxyServer.Serve(tlsLn); err != nil && err != http.ErrServerClosed {
 				log.Printf("server error: %v", err)
 			}
@@ -180,6 +200,7 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 		log.Printf("Listening HTTP on 127.0.0.1:%d", proxyPort)
 		log.Printf("Access: http://127.0.0.1:%d/", proxyPort)
 		go func() {
+			defer guardPanic("Serve")
 			if err := proxyServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 				log.Printf("server error: %v", err)
 			}
@@ -192,6 +213,7 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 
 //export StopProxy
 func StopProxy() {
+	defer guardPanic("StopProxy")
 	proxyMu.Lock()
 	defer proxyMu.Unlock()
 
@@ -205,14 +227,16 @@ func StopProxy() {
 }
 
 //export GetProxyPort
-func GetProxyPort() uint16 {
+func GetProxyPort() (port uint16) {
+	defer guardPanic("GetProxyPort")
 	proxyMu.Lock()
 	defer proxyMu.Unlock()
 	return proxyPort
 }
 
 //export IsEchReady
-func IsEchReady() C.int {
+func IsEchReady() (ret C.int) {
+	defer guardPanic("IsEchReady")
 	if echReady {
 		return 1
 	}
@@ -220,7 +244,8 @@ func IsEchReady() C.int {
 }
 
 //export GetLogs
-func GetLogs() *C.char {
+func GetLogs() (out *C.char) {
+	defer guardPanic("GetLogs")
 	logMu.RLock()
 	defer logMu.RUnlock()
 

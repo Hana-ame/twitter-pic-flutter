@@ -37,6 +37,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,15 +101,26 @@ func init() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 }
 
+// guardPanic 把 panic 转成日志。所有 cgo 导出入口都必须包一层：Go panic
+// 无法被 C/Dart 侧捕获，会直接 abort 整个进程（表现为"启动时概率闪退"）。
+// 配合命名返回值使用——panic 回滚时未赋值的命名结果即为零值。
+func guardPanic(where string) {
+	if r := recover(); r != nil {
+		log.Printf("PANIC in %s: %v\n%s", where, r, debug.Stack())
+	}
+}
+
 // ─── ECH 初始化接口（Flutter proxy_manager 依赖）──────────────────────────
 
 //export ECHSetDohURL
 func ECHSetDohURL(url *C.char) {
+	defer guardPanic("ECHSetDohURL")
 	cloudflare_ech.SetDohURL(C.GoString(url))
 }
 
 //export ECHInit
 func ECHInit() {
+	defer guardPanic("ECHInit")
 	if initDone.Load() {
 		return
 	}
@@ -122,6 +134,17 @@ func ECHInit() {
 
 	log.Printf("ECHInit: starting goroutine")
 	go func() {
+		// 独立 recover：子协程里的 panic 不会被上面的 defer 捕获，
+		// 会直接终止进程。InitDefault 走网络/解析，最容易出问题。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("PANIC in ECHInit goroutine: %v\n%s", r, debug.Stack())
+				initErr.Store(fmt.Sprintf("panic: %v", r))
+				initMu.Lock()
+				initing = false
+				initMu.Unlock()
+			}
+		}()
 		if err := cloudflare_ech.InitDefault(); err != nil {
 			log.Printf("ECHInit error: %v", err)
 			initErr.Store(err.Error())
@@ -138,6 +161,7 @@ func ECHInit() {
 
 //export ECHInitWithBootstrap
 func ECHInitWithBootstrap(cHost, cIP *C.char) {
+	defer guardPanic("ECHInitWithBootstrap")
 	host := C.GoString(cHost)
 	ip := C.GoString(cIP)
 	if host != "" {
@@ -147,21 +171,25 @@ func ECHInitWithBootstrap(cHost, cIP *C.char) {
 }
 
 //export ECHInitReady
-func ECHInitReady() C.int {
+func ECHInitReady() (ret C.int) {
+	defer guardPanic("ECHInitReady")
 	if initDone.Load() {
 		return 1
 	}
-	if v := initErr.Load(); v != nil && v.(string) != "" {
-		return -1
+	if v := initErr.Load(); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return -1
+		}
 	}
 	return 0
 }
 
 //export ECHInitLastError
-func ECHInitLastError() *C.char {
+func ECHInitLastError() (out *C.char) {
+	defer guardPanic("ECHInitLastError")
 	if v := initErr.Load(); v != nil {
-		s := v.(string)
-		if s == "" {
+		s, ok := v.(string)
+		if !ok || s == "" {
 			return nil
 		}
 		return C.CString(s)
@@ -172,7 +200,8 @@ func ECHInitLastError() *C.char {
 // ─── 日志接口 ────────────────────────────────────────────────────────────────
 
 //export ECHGetLogCount
-func ECHGetLogCount() C.int {
+func ECHGetLogCount() (ret C.int) {
+	defer guardPanic("ECHGetLogCount")
 	logMu.RLock()
 	n := len(logBuffer)
 	logMu.RUnlock()
@@ -180,7 +209,8 @@ func ECHGetLogCount() C.int {
 }
 
 //export ECHGetLog
-func ECHGetLog(i C.int) *C.char {
+func ECHGetLog(i C.int) (out *C.char) {
+	defer guardPanic("ECHGetLog")
 	logMu.RLock()
 	defer logMu.RUnlock()
 	n := int(i)
@@ -192,17 +222,33 @@ func ECHGetLog(i C.int) *C.char {
 
 //export FreeCString
 func FreeCString(s *C.char) {
+	defer guardPanic("FreeCString")
+	if s == nil {
+		return
+	}
 	C.free(unsafe.Pointer(s))
 }
 
 // ─── 代理启停接口 ────────────────────────────────────────────────────────────
 
 //export StartProxy
-func StartProxy(bootstrapIP *C.char) uint16 {
+func StartProxy(bootstrapIP *C.char) (port uint16) {
+	// panic 兜底：返回 0 表示启动失败，Dart 侧显示错误页而不是闪退。
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC in StartProxy: %v\n%s", r, debug.Stack())
+			port = 0
+		}
+	}()
+
 	proxyMu.Lock()
 	defer proxyMu.Unlock()
 
+	// logWriter 在 logMu 保护下并发追加；这里清空也必须持锁，否则 slice
+	// header 被撕裂读会让 ECHGetLog 拿到越界的 len 而 panic。
+	logMu.Lock()
 	logBuffer = nil
+	logMu.Unlock()
 	log.Printf("=== Starting proxy ===")
 
 	if proxyServer != nil {
@@ -299,6 +345,7 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 		}
 		tlsLn := tls.NewListener(ln, proxyServer.TLSConfig)
 		go func() {
+			defer guardPanic("Serve(tls)")
 			if err := proxyServer.Serve(tlsLn); err != nil && err != http.ErrServerClosed {
 				log.Printf("server error: %v", err)
 			}
@@ -307,6 +354,7 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 		log.Printf("Listening HTTP on 127.0.0.1:%d", proxyPort)
 		log.Printf("Access: http://127.0.0.1:%d/", proxyPort)
 		go func() {
+			defer guardPanic("Serve")
 			if err := proxyServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 				log.Printf("server error: %v", err)
 			}
@@ -319,6 +367,7 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 
 //export StopProxy
 func StopProxy() {
+	defer guardPanic("StopProxy")
 	proxyMu.Lock()
 	defer proxyMu.Unlock()
 
@@ -332,14 +381,16 @@ func StopProxy() {
 }
 
 //export GetProxyPort
-func GetProxyPort() uint16 {
+func GetProxyPort() (port uint16) {
+	defer guardPanic("GetProxyPort")
 	proxyMu.Lock()
 	defer proxyMu.Unlock()
 	return proxyPort
 }
 
 //export IsEchReady
-func IsEchReady() C.int {
+func IsEchReady() (ret C.int) {
+	defer guardPanic("IsEchReady")
 	if echReady {
 		return 1
 	}
