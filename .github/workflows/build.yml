@@ -95,6 +95,28 @@ jobs:
           rm -rf /tmp/build_project/assets/
           cp -r assets /tmp/build_project/assets
 
+      - name: Set application package to xyz.moonchan.twitterpic
+        run: |
+          cd /tmp/build_project
+          GRADLE=$(ls android/app/build.gradle* | head -1)
+          # namespace / applicationId（兼容 groovy 与 kts 两种写法）
+          sed -i 's|namespace[ =]*"com\.example\.twitter_pic_flutter"|namespace "xyz.moonchan.twitterpic"|' "$GRADLE"
+          sed -i 's|applicationId[ =]*"com\.example\.twitter_pic_flutter"|applicationId "xyz.moonchan.twitterpic"|' "$GRADLE"
+          # MainActivity 移动到新包路径并改 package 声明
+          MAIN=$(find android/app/src/main -name "MainActivity.*" | head -1)
+          if [ -n "$MAIN" ]; then
+            REL=${MAIN#android/app/src/main/}
+            KIND=$(echo "$REL" | cut -d/ -f1)   # kotlin | java
+            NEW=android/app/src/main/$KIND/xyz/moonchan/twitterpic/MainActivity.kt
+            if [ "$KIND" = java ]; then NEW=android/app/src/main/$KIND/xyz/moonchan/twitterpic/MainActivity.java; fi
+            mkdir -p "$(dirname "$NEW")"
+            mv "$MAIN" "$NEW"
+            sed -i 's|^package .*|package xyz.moonchan.twitterpic|' "$NEW"
+          fi
+          # 校验：包名注入失败则 CI 报错，避免产出旧包名 APK
+          grep -q 'xyz.moonchan.twitterpic' "$GRADLE" || { echo "::error::package injection failed"; exit 1; }
+          grep -q 'xyz.moonchan.twitterpic' "$NEW" || { echo "::error::MainActivity package update failed"; exit 1; }
+
       - name: Ensure INTERNET permission and set app label in AndroidManifest
         run: |
           MANIFEST=/tmp/build_project/android/app/src/main/AndroidManifest.xml
