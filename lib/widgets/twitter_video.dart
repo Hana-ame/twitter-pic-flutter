@@ -50,6 +50,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   bool _showControls = true;
   Timer? _hideTimer;
   bool _isDragging = false;
+  bool _downloading = false;
   _UrlMode _mode = _UrlMode.proxy;
 
   Uri _buildUrl() {
@@ -193,17 +194,22 @@ class _TwitterVideoState extends State<TwitterVideo>
   }
 
   Future<void> _downloadVideo() async {
-    final port = widget.proxy.port;
-    if (port == null) return;
+    // 防重入：控制栏按钮 + 长按菜单可并发触发，同名临时文件被两个
+    // RandomAccessFile 同时写会损坏（全屏版已有该守卫）。
+    if (_downloading) return;
+    setState(() => _downloading = true);
 
-    final echUrl = EchUrl.rewrite(widget.url, port);
-    final uri = Uri.parse(echUrl);
+    // 与 _buildUrl() 同源：视频已回退直连时下载也走原始 URL。原实现硬编码
+    // EchUrl.rewrite(widget.url, port)，回退直连后下载仍走代理必失败；
+    // port == null 时静默 return 无任何提示。
+    final uri = _buildUrl();
 
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在下载视频...')));
 
     try {
       final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 30);
       try {
         final request = await client.getUrl(uri);
         final response = await request.close();
@@ -214,11 +220,25 @@ class _TwitterVideoState extends State<TwitterVideo>
         final tempDir = Directory.systemTemp;
         final fileName = widget.url.split('/').last.split('?').first;
         final file = File('${tempDir.path}/$fileName');
-        final raf = await file.open(mode: FileMode.write);
-        await for (final chunk in response) {
-          await raf.writeFrom(chunk);
+        RandomAccessFile? raf;
+        try {
+          final handle = await file.open(mode: FileMode.write);
+          raf = handle;
+          await for (final chunk in response) {
+            await handle.writeFrom(chunk);
+          }
+          await handle.close();
+          raf = null;
+        } catch (_) {
+          // 写入失败（磁盘满/连接中断）：关闭句柄并清理半写文件。
+          if (raf != null) {
+            try {
+              await raf.close();
+            } catch (_) {}
+          }
+          await file.delete();
+          rethrow;
         }
-        await raf.close();
 
         await Share.shareXFiles(
           [XFile(file.path)],
@@ -235,6 +255,8 @@ class _TwitterVideoState extends State<TwitterVideo>
       if (context.mounted) {
         messenger.showSnackBar(SnackBar(content: Text('下载失败: $e')));
       }
+    } finally {
+      if (mounted) setState(() => _downloading = false);
     }
   }
 
@@ -523,11 +545,8 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
 
   Future<void> _downloadVideo() async {
     if (_downloading) return;
-    final port = widget.proxy.port;
-    if (port == null) return;
-
-    final echUrl = EchUrl.rewrite(widget.url, port);
-    final uri = Uri.parse(echUrl);
+    // 与 _buildUrl() 同源：视频已回退直连时下载也走原始 URL（同内联版）。
+    final uri = _buildUrl();
 
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _downloading = true);
@@ -535,6 +554,7 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
 
     try {
       final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 30);
       try {
         final request = await client.getUrl(uri);
         final response = await request.close();
@@ -545,11 +565,24 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
         final tempDir = Directory.systemTemp;
         final fileName = widget.url.split('/').last.split('?').first;
         final file = File('${tempDir.path}/$fileName');
-        final raf = await file.open(mode: FileMode.write);
-        await for (final chunk in response) {
-          await raf.writeFrom(chunk);
+        RandomAccessFile? raf;
+        try {
+          final handle = await file.open(mode: FileMode.write);
+          raf = handle;
+          await for (final chunk in response) {
+            await handle.writeFrom(chunk);
+          }
+          await handle.close();
+          raf = null;
+        } catch (_) {
+          if (raf != null) {
+            try {
+              await raf.close();
+            } catch (_) {}
+          }
+          await file.delete();
+          rethrow;
         }
-        await raf.close();
 
         await Share.shareXFiles(
           [XFile(file.path)],

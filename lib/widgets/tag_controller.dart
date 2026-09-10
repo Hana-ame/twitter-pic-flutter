@@ -36,11 +36,13 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
     final rules = StorageService.getTagRules();
     _highlight = (rules['highlight'] as List?)?.cast<String>() ?? [];
     final storedBlock = (rules['block'] as List?)?.cast<String>() ?? [];
-    final hasIntersection = _kDefaultBlockTags.any((t) => _highlight.contains(t));
-    if (!hasIntersection) {
-      _block = {..._kDefaultBlockTags, ...storedBlock}.toList();
+    if (storedBlock.isEmpty) {
+      // 仅首次启动（storage 无 block 记录）写默认屏蔽标签；之后完全尊重
+      // 用户修改。原实现每次启动都合并 _kDefaultBlockTags，用户从屏蔽
+      // 列表删除的标签重启后会复活。
+      _block = _kDefaultBlockTags.toList();
     } else {
-      _block = storedBlock.isEmpty ? ['无关内容'] : storedBlock;
+      _block = storedBlock;
     }
     _save();
   }

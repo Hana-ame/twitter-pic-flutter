@@ -186,6 +186,7 @@ class _TwitterImageState extends State<TwitterImage> {
 
     try {
       final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 30);
       try {
         final request = await client.getUrl(uri);
         final response = await request.close();
@@ -297,6 +298,7 @@ class _ImageViewerState extends State<_ImageViewer> {
 
     try {
       final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 30);
       try {
         final request = await client.getUrl(uri);
         final response = await request.close();
