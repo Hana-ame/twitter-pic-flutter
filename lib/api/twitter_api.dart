@@ -6,6 +6,8 @@
 //   - 全局拦截器支持（认证、日志、重试）
 //   - 自动 JSON 反序列化
 
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 
 import '../models/user.dart';
@@ -80,7 +82,8 @@ class TwitterApi {
     final decoded = resp.data;
     if (decoded is! List) return [];
     return decoded
-        .map((e) => TwitterUser.fromJson(e as Map<String, dynamic>))
+        .whereType<Map>()
+        .map((e) => TwitterUser.fromJson(_asJsonMap(e, 'getUserList entry')))
         .toList();
   }
 
@@ -93,7 +96,8 @@ class TwitterApi {
     final decoded = resp.data;
     if (decoded is! List) return [];
     return decoded
-        .map((e) => TwitterUser.fromJson(e as Map<String, dynamic>))
+        .whereType<Map>()
+        .map((e) => TwitterUser.fromJson(_asJsonMap(e, 'getUserList entry')))
         .toList();
   }
 
@@ -124,6 +128,28 @@ class TwitterApi {
     }
   }
 
+  /// 把响应体解析成 `Map<String, dynamic>`。
+  ///
+  /// Dio 在不同平台把 JSON 对象解成 `Map<String, dynamic>`、
+  /// `Map<dynamic, dynamic>` 或（content-type 未识别时）未解码的 String。
+  /// Dart 的泛型判定是严格的：`Map<dynamic, dynamic> is Map<String, dynamic>`
+  /// 为 false，所以 `is! Map<String, dynamic>` 会把前两类误判成"非 JSON 响应"，
+  /// 导致 metadata 全部失败——详情页显示"暂无内容"且头像全缺，
+  /// 而 getUserList 用宽松的 `is! List` 判定不受影响。
+  static Map<String, dynamic> _asJsonMap(dynamic raw, String context) {
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    if (raw is String) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+    }
+    throw UnknownException(
+      '$context 返回非 JSON 响应（实际类型 ${raw.runtimeType}）',
+    );
+  }
+
   Future<UserMetaData> _fetchMetaData(String username, String? t) async {
     final resp = await _dio.get(
       '$username.json.gz',
@@ -131,13 +157,7 @@ class TwitterApi {
         't': t ?? DateTime.now().toIso8601String().split('T')[0],
       },
     );
-    final json = resp.data;
-    // API 返回 HTML 错误页/空响应/解压失败时 resp.data 不是 Map，直接
-    // as 转型会抛 TypeError 并绕过拦截器的异常映射。
-    if (json is! Map<String, dynamic>) {
-      throw UnknownException('getMetaData($username) 返回非 JSON 响应');
-    }
-    return UserMetaData.fromJson(json);
+    return UserMetaData.fromJson(_asJsonMap(resp.data, 'getMetaData($username)'));
   }
 
   Future<void> createMetaData(

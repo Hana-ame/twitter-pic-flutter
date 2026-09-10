@@ -44,14 +44,20 @@ class _TwitterImageState extends State<TwitterImage> {
 
   String _buildUrl() {
     final port = widget.proxy.port;
-    if (_mode == _UrlMode.proxy && port != null) {
-      return EchUrl.rewrite(widget.url, port);
-    }
+    // 全部走 ECH 代理：EchUrl.rewrite 丢弃原始域名，代理统一拼
+    // https://video-cf.twimg.com/<path>。不降级 pbs.twimg.com 直连
+    // —— 墙内直连必死（实测 000），降级只是白等一次请求。
+    if (port != null) return EchUrl.rewrite(widget.url, port);
     return widget.url;
   }
 
   void _showPreview() {
-    if (widget.proxy.port == null) return;
+    if (widget.proxy.port == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未启动，无法全屏预览')),
+      );
+      return;
+    }
 
     Navigator.push(
       context,
@@ -67,12 +73,11 @@ class _TwitterImageState extends State<TwitterImage> {
   @override
   Widget build(BuildContext context) {
     final port = widget.proxy.port;
-    if (port == null && _mode == _UrlMode.proxy) {
-      return _buildError('代理未启动');
+    if (port == null) {
+      return _buildError('ECH 代理未启动，无法加载图片');
     }
 
     final url = _buildUrl();
-    final isDirect = _mode == _UrlMode.direct;
 
     return GestureDetector(
       onTap: _showPreview,
@@ -104,12 +109,10 @@ class _TwitterImageState extends State<TwitterImage> {
                 );
               },
               errorBuilder: (context, error, stackTrace) {
-                // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
-                if (_mode == _UrlMode.proxy) {
-                  setState(() {
-                    _mode = _UrlMode.direct;
-                    _retryCount++;
-                  });
+                // 不降级 pbs.twimg.com 直连（墙内必死），首次失败经代理重试一次，
+                // 再失败显示错误。
+                if (_retryCount == 0) {
+                  setState(() => _retryCount = 1);
                   return Container(
                     width: widget.width,
                     height: widget.height,
@@ -122,22 +125,10 @@ class _TwitterImageState extends State<TwitterImage> {
                     ),
                   );
                 }
-                return _buildError(error.toString());
+                return _buildError('经 ECH 代理加载失败：$error');
               },
             ),
           ),
-          if (isDirect)
-            Positioned(
-              top: 4, right: 4,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.orange.withValues(alpha: 0.9),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: const Text('直连', style: TextStyle(color: Colors.white, fontSize: 9)),
-              ),
-            ),
         ],
       ),
     );
@@ -283,9 +274,10 @@ class _ImageViewerState extends State<_ImageViewer> {
 
   String _buildUrl() {
     final port = widget.proxy.port;
-    if (_mode == _UrlMode.proxy && port != null) {
-      return EchUrl.rewrite(widget.url, port);
-    }
+    // 全部走 ECH 代理：EchUrl.rewrite 丢弃原始域名，代理统一拼
+    // https://video-cf.twimg.com/<path>。不降级 pbs.twimg.com 直连
+    // —— 墙内直连必死（实测 000），降级只是白等一次请求。
+    if (port != null) return EchUrl.rewrite(widget.url, port);
     return widget.url;
   }
 
@@ -370,11 +362,6 @@ class _ImageViewerState extends State<_ImageViewer> {
               '加载失败',
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
-            if (_mode == _UrlMode.direct)
-              const Padding(
-                padding: EdgeInsets.only(top: 4),
-                child: Text('（已尝试直连）', style: TextStyle(color: Colors.white38, fontSize: 10)),
-              ),
             const SizedBox(height: 4),
             GestureDetector(
               onTap: () => setState(() {
@@ -424,18 +411,17 @@ class _ImageViewerState extends State<_ImageViewer> {
               );
             },
             errorBuilder: (context, error, stackTrace) {
-              // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
-              if (_mode == _UrlMode.proxy) {
+              // 不降级 pbs.twimg.com 直连（墙内必死），首次失败经代理重试一次。
+              if (_retryCount == 0) {
                 setState(() {
-                  _mode = _UrlMode.direct;
                   _loading = true;
-                  _retryCount++;
+                  _retryCount = 1;
                 });
                 return const Center(
                   child: CircularProgressIndicator(color: Colors.white),
                 );
               }
-              setState(() => _error = error.toString());
+              setState(() => _error = '经 ECH 代理加载失败：$error');
               return Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,

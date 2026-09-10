@@ -55,9 +55,8 @@ class _TwitterVideoState extends State<TwitterVideo>
 
   Uri _buildUrl() {
     final port = widget.proxy.port;
-    if (_mode == _UrlMode.proxy && port != null) {
-      return EchUrl.rewriteToUri(widget.url, port);
-    }
+    // 全部走 ECH 代理，不降级 pbs.twimg.com 直连（墙内必死，实测 000）。
+    if (port != null) return EchUrl.rewriteToUri(widget.url, port);
     return Uri.parse(widget.url);
   }
 
@@ -108,16 +107,9 @@ class _TwitterVideoState extends State<TwitterVideo>
       });
     } catch (e) {
       if (!mounted) return;
-      // 自动降级：代理失败 → 直连；直连也失败 → 显示错误+手动重试
-      if (_mode == _UrlMode.proxy) {
-        setState(() {
-          _mode = _UrlMode.direct;
-        });
-        await _initPlayer();
-        return;
-      }
+      // 不降级 pbs.twimg.com 直连（墙内必死）：代理失败直接给错误 + 手动重试。
       setState(() {
-        _error = e.toString();
+        _error = '经 ECH 代理加载失败：$e';
         _isLoading = false;
       });
     }
@@ -455,7 +447,6 @@ class _TwitterVideoState extends State<TwitterVideo>
   }
 
   Widget _buildError(String message) {
-    final isDirect = _mode == _UrlMode.direct;
     return Container(
       width: widget.width,
       height: widget.height,
@@ -470,11 +461,6 @@ class _TwitterVideoState extends State<TwitterVideo>
               '视频加载失败',
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
-            if (isDirect)
-              const Padding(
-                padding: EdgeInsets.only(top: 4),
-                child: Text('（已尝试直连）', style: TextStyle(color: Colors.white38, fontSize: 10)),
-              ),
             const SizedBox(height: 4),
             GestureDetector(
               onTap: () {

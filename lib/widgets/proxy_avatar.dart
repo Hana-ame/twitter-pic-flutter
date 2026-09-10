@@ -1,17 +1,14 @@
 // proxy_avatar.dart
 // 头像加载组件。
 //
-// 通道策略（按 URL 域名分流）：
-//   - pbs.twimg.com / abs.twimg.com（头像/CDN 图片）：
-//       → pbs.moonchan.xyz/<path>（moonchan 提供的 pbs 镜像，Cloudflare 直连可达）
-//       → 失败后降级本机 ECH 代理 → 直连 → 首字母占位
-//   - video-cf.twimg.com（视频/媒体）：
-//       → 本机 ECH 代理（EchUrl.rewrite）
-//       → 失败后直连 → 首字母占位
+// 通道策略：只有本机 ECH 代理一个通道。
+//   EchUrl.rewrite 丢弃原始域名（pbs.twimg.com / video-cf.twimg.com / abs…），
+//   代理统一拼 https://video-cf.twimg.com/<path> 再 ECH fetch。
+//   代理未启动或加载失败 → 首字母占位。
 //
-// 背景：video-cf.twimg.com 是视频 CDN，不含头像（profile_images 在
-// pbs.twimg.com），且直连被墙只能走 ECH；而 pbs.moonchan.xyz 是
-// moonchan 提供的 pbs 反向代理，可直连。
+// 背景：pbs.twimg.com 与 video-cf.twimg.com 在墙内直连都被封（实测 000），
+// 但两者是同一 CDN 后端，改域名就能命中 video-cf.twimg.com 的 ECH 路径。
+// 第三方镜像 pbs.moonchan.xyz 已弃用——不可靠，且会把请求导去未知节点。
 
 import 'package:flutter/material.dart';
 
@@ -68,27 +65,17 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
     }
   }
 
-  /// 按域名生成候选 URL 列表（从优到劣）。
+  /// 生成候选 URL 列表。
+  ///
+  /// 只有 ECH 代理一个通道：`EchUrl.rewrite` 丢弃原始域名，代理统一拼
+  /// `https://video-cf.twimg.com/<path>` 再 ECH fetch。不尝试 pbs.twimg.com
+  /// 直连（墙内必死，实测 000），也不依赖第三方镜像 pbs.moonchan.xyz。
   List<String> _candidates() {
     final url = widget.url;
     if (url == null) return const [];
-    final uri = Uri.parse(url);
-    final path = '${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}';
     final port = widget.proxy.port;
-
-    // video-cf：ECH 代理 → 直连
-    if (uri.host == 'video-cf.twimg.com') {
-      return [
-        if (port != null) EchUrl.rewrite(url, port),
-        url,
-      ];
-    }
-    // pbs/abs 等：pbs.moonchan.xyz 镜像 → ECH 代理 → 直连
-    return [
-      'https://pbs.moonchan.xyz$path',
-      if (port != null) EchUrl.rewrite(url, port),
-      url,
-    ];
+    if (port != null) return [EchUrl.rewrite(url, port)];
+    return const [];
   }
 
   @override
