@@ -164,6 +164,7 @@ class _FavTile extends StatefulWidget {
   final VoidCallback? onUnfav;
 
   const _FavTile({
+    super.key,
     required this.username,
     required this.api,
     required this.proxy,
