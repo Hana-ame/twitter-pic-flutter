@@ -78,7 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final proxy = widget.proxy;
     return Scaffold(
-      appBar: widget.embedded ? null : const AppBar(title: Text('设置')),
+      appBar: widget.embedded ? null : AppBar(title: const Text('设置')),
       body: ListView(
         children: [
           const SizedBox(height: 8),

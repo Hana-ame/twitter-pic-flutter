@@ -49,7 +49,7 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
     widget.proxy.portNotifier.addListener(_onPortChanged);
   }
 
-  void _onPortChanged(int? _) {
+  void _onPortChanged() {
     if (mounted) setState(() => _attempt = 0);
   }
 
