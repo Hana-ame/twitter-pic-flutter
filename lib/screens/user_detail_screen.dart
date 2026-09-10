@@ -267,7 +267,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           await raf.close();
         } catch (_) {}
       }
-      res?.close();
+      res?.cancel();
       if (!ok) {
         try {
           await file.delete();
