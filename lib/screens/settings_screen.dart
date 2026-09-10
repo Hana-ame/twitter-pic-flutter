@@ -59,9 +59,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// 抓取 `<username>.json.gz` 并解析为原始 Map（不解码成模型）。
-  /// 用于诊断 JSON 结构与模型是否匹配（timeline 字段名、类型等）。
-  Future<Map<String, dynamic>?> _fetchRawJson(String username) async {
+  /// 抓取 `<username>.json.gz`，返回响应头、编码方式与原始 JSON。
+  /// 不解析成模型，供诊断编码与字段结构。
+  Future<_RawJsonResult> _fetchRawJson(String username) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
     client.badCertificateCallback = (cert, host, port) => true;
     try {
@@ -71,27 +71,90 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final req = await client.getUrl(Uri.parse(url));
       req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       final res = await req.close();
+      final headers = <String, String>{
+        'content-type': res.headers.value('content-type') ?? '?',
+        'content-encoding': res.headers.value('content-encoding') ?? '无',
+        'content-length': res.headers.value('content-length') ?? '?',
+      };
       if (res.statusCode != 200) {
-        return <String, dynamic>{'__http_error__': 'HTTP ${res.statusCode}'};
+        return _RawJsonResult(
+          statusCode: res.statusCode,
+          headers: headers,
+          error: 'HTTP ${res.statusCode}',
+        );
       }
       final bytes = await res.fold<List<int>>(
         <int>[],
         (acc, chunk) => acc..addAll(chunk),
       );
-      // 可能是 gzip 压缩：先尝试 utf8，失败再解压。
+      // 编码检测：先按 utf8 解，失败则按 gzip+utf8 解，记录实际编码。
       var text = '';
+      var method = 'utf8';
       try {
         text = utf8.decode(bytes);
       } catch (_) {
         text = utf8.decode(gzip.decode(bytes));
+        method = 'gzip+utf8';
       }
       final decoded = jsonDecode(text);
-      return decoded is Map<String, dynamic> ? decoded : null;
+      return _RawJsonResult(
+        statusCode: res.statusCode,
+        headers: headers,
+        decodeMethod: method,
+        bytes: bytes.length,
+        json: decoded is Map<String, dynamic> ? decoded : null,
+      );
     } catch (e) {
-      return <String, dynamic>{'__http_error__': '$e'};
+      return _RawJsonResult(statusCode: 0, headers: const {}, error: '$e');
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// 检查 JSON 字段是否匹配模型（TimelineItem/TwitterUser 的期望 key）。
+  String _checkJsonFields(_RawJsonResult res) {
+    final buf = StringBuffer();
+    buf.writeln('HTTP ${res.statusCode}');
+    buf.writeln('content-type: ${res.headers['content-type']}');
+    buf.writeln('content-encoding: ${res.headers['content-encoding']}');
+    if (res.error != null) {
+      buf.writeln('错误: ${res.error}');
+      return buf.toString();
+    }
+    buf.writeln('解码: ${res.decodeMethod} · ${res.bytes}B');
+    final json = res.json;
+    if (json == null) {
+      buf.writeln('JSON 非对象');
+      return buf.toString();
+    }
+
+    final tl = json['timeline'];
+    buf.writeln('顶层字段: ${json.keys.join(', ')}');
+    buf.writeln('timeline: ${tl is List ? '${tl.length} 条' : '非数组!'}');
+    if (tl is List && tl.isNotEmpty && tl.first is Map) {
+      const need = ['url', 'type', 'date'];
+      final first = tl.first as Map;
+      for (final k in need) {
+        buf.writeln("timeline[0].'$k' ${first.containsKey(k) ? '✓' : '✗ 缺失'}");
+      }
+      final sample = first.entries.take(3).map((e) {
+        final v = e.value.toString();
+        return "'${e.key}': ${v.length > 50 ? '${v.substring(0, 50)}…' : v}";
+      }).join(' | ');
+      buf.writeln('样例: $sample');
+    }
+
+    final info = json['account_info'];
+    if (info is Map) {
+      const need = ['name', 'nick', 'profile_image'];
+      for (final k in need) {
+        buf.writeln("account_info.'$k' ${info.containsKey(k) ? '✓' : '✗ 缺失'}");
+      }
+      buf.writeln('头像: ${info['profile_image']}');
+    } else {
+      buf.writeln('account_info: 缺失或非对象');
+    }
+    return buf.toString();
   }
 
   Future<void> _runDiag() async {
@@ -134,31 +197,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
 
-    // 2. 第一个用户的原始 JSON：顶层 keys + timeline 结构 + 头像字段
-    await step('2. 用户 JSON 结构 (.json.gz)', () async {
+    // 2. 第一个用户的原始 JSON：编码检测 + 字段与模型匹配检查
+    await step('2. 用户 JSON 编码与字段检查', () async {
       final api = TwitterApi();
       try {
         final users = await api.getUserList();
         if (users.isEmpty) return '失败: 用户列表为空';
         final u = users.first;
         final raw = await _fetchRawJson(u.username);
-        if (raw == null) return '失败: 无法获取 ${u.username}.json.gz';
-        final topKeys = raw.keys.map((k) => "'$k'").join(', ');
-        final tl = raw['timeline'];
-        final tlLen = tl is List ? tl.length : -1;
-        var tlInfo = 'timeline: $tlLen 条';
-        if (tl is List && tl.isNotEmpty) {
-          final first = tl.first;
-          if (first is Map) {
-            final keys = first.keys.map((k) => "'$k'").join(', ');
-            tlInfo += '\ntimeline[0] 字段: $keys';
-            final sample = first.values.take(2).map((v) => v.toString().length > 60 ? '${v.toString().substring(0, 60)}…' : v.toString()).join(' | ');
-            tlInfo += '\ntimeline[0] 样例: $sample';
-          }
-        }
-        final info = raw['account_info'];
-        final avatar = info is Map ? info['profile_image'] : '(无 account_info)';
-        return '顶层字段: $topKeys\n$tlInfo\n头像: $avatar';
+        return _checkJsonFields(raw);
       } finally {
         api.dispose();
       }
@@ -422,6 +469,25 @@ class _DiagItem {
     this.result = '',
     this.ok = false,
     this.running = false,
+  });
+}
+
+/// 原始 JSON 抓取结果：响应头 + 解码方式 + 解析后的 JSON。
+class _RawJsonResult {
+  final int statusCode;
+  final Map<String, String> headers;
+  final String? decodeMethod; // 'utf8' 或 'gzip+utf8'
+  final int bytes;
+  final Map<String, dynamic>? json;
+  final String? error;
+
+  _RawJsonResult({
+    required this.statusCode,
+    required this.headers,
+    this.decodeMethod,
+    this.bytes = 0,
+    this.json,
+    this.error,
   });
 }
 
