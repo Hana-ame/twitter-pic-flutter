@@ -10,7 +10,9 @@ import '../models/user.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../utils/ech_url.dart';
+import '../utils/media_url.dart';
 import '../widgets/proxy_avatar.dart';
+import '../widgets/progressive_image.dart';
 import '../widgets/twitter_image.dart';
 import '../widgets/twitter_video.dart';
 import '../widgets/tag_display_area.dart';
@@ -51,6 +53,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     if (_profile.timeline.isEmpty) {
       _refreshProfile();
     }
+    // 首屏图片提前预热（缩略图变体，很便宜），避免刚进来就是一片白。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _precacheAhead(0, 6));
   }
 
   /// 拉取最新元数据。返回 null 表示成功，否则为错误信息（供下拉刷新提示）。
@@ -394,6 +398,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
               ));
             },
             child: ListView.builder(
+              // 预构建窗口：默认 250 逻辑像素，卡片一屏才 1~2 张，快速滑动时
+              // 还没轮到构建的就是一片空白。放宽到 1800 后，视口外两三张卡片
+              // 会提前构建并开始下载图片，滑过去基本已经有内容。
+              cacheExtent: 1800,
               padding: const EdgeInsets.all(12),
               itemCount: _detailItemCount(showBlockBanner, displayTimeline, hasMore),
               itemBuilder: (context, i) {
@@ -464,10 +472,35 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadMoreScheduled = false;
       if (!mounted) return;
+      final before = _mediaLimit;
       final total = _profile.timeline.length;
       if (_mediaLimit >= total) return;
       setState(() => _mediaLimit = (_mediaLimit + 10).clamp(0, total));
+      // 新露出来的这批也提前取一下缩略图。
+      _precacheAhead(before, 4);
     });
+  }
+
+  /// 预取 [from] 起 [count] 张列表缩略图：滑到那里时基本已经在缓存里了。
+  ///
+  /// 只取缩略图变体（name=medium，一张几十到一百多 KB），不做原图预热，
+  /// 免得为了滑动体验把流量打爆。
+  void _precacheAhead(int from, int count) {
+    if (!mounted) return;
+    final port = widget.proxy.port;
+    if (port == null) return;
+    final timeline = _profile.timeline;
+    var scheduled = 0;
+    for (var i = from; i < timeline.length && scheduled < count; i++) {
+      final url = timeline[i].url;
+      // 视频没有 name= 变体，别预热（动辄几 MB）。
+      if (!MediaUrl.hasSizeVariant(url)) continue;
+      scheduled++;
+      precacheImage(
+        ProgressiveImageProvider(EchUrl.rewrite(MediaUrl.grid(url), port)),
+        context,
+      ).catchError((_) {});
+    }
   }
 
   int _detailItemCount(
@@ -662,7 +695,9 @@ class _MediaCard extends StatelessWidget {
             TwitterVideo(url: item.url, proxy: proxy)
           else
             TwitterImage(
-              url: item.url,
+              // 列表里用缩略图变体（快、省流量），全屏/下载仍走原图。
+              url: MediaUrl.grid(item.url),
+              originalUrl: item.url,
               proxy: proxy,
               gallery: gallery,
               galleryIndex: galleryIndex,

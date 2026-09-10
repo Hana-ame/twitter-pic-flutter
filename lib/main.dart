@@ -11,6 +11,7 @@
 //   6. 重启后端口可能变化，通过 _port 字段统一管理
 
 import 'package:flutter/material.dart';
+import 'package:flutter/painting.dart';
 
 import 'api/twitter_api.dart';
 import 'services/proxy_manager.dart';
@@ -27,6 +28,13 @@ const _kBuildNum = String.fromEnvironment('BUILD_NUM', defaultValue: 'dev');
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 图片缓存放宽：默认是 100MB / 1000 张。列表里滚过去的图一旦被挤出去，
+  // 滚回来就得重新下载解码，中间那段就是空白。这里放宽到 160MB / 1500 张，
+  // 已经看过的图基本留在内存里。（解码后是位图，按屏幕宽度算一张几 MB。）
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 160 << 20;
+  PaintingBinding.instance.imageCache.maximumSize = 1500;
+
   await StorageService.ensureInitialized();
   runApp(const MyApp());
 }
