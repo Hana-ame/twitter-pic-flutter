@@ -481,18 +481,24 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	w.WriteHeader(resp.StatusCode)
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 64*1024)
+	var sent int64
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
+				// 客户端提前断开（列表滚出屏幕、播放器换源）属正常，不算错误。
+				log.Printf("← %d %s (%d B, client closed)", resp.StatusCode, targetURL, sent)
 				return
 			}
+			sent += int64(n)
 			// 及时下发：否则首包要等 Go 的写缓冲填满，视频起播明显变慢。
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
+			// 带上状态码：日志里能直接看出这条媒体到底取到没有（404/403 vs 200）。
+			log.Printf("← %d %s (%d B)", resp.StatusCode, targetURL, sent)
 			return
 		}
 	}

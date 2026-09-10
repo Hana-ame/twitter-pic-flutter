@@ -437,66 +437,86 @@ class _TwitterVideoState extends State<TwitterVideo>
     );
   }
 
+  /// 加载中占位。必须给**确定高度**：本组件挂在 ListView 的无界高度 item 里，
+  /// 只写 Container(width/height: null) 会被压成 36px 的小黑块，看起来就是
+  /// "没有 media"。这里用 16:9 先占位，视频初始化完成后换成真实比例。
   Widget _buildLoading() {
-    return Container(
-      width: widget.width,
-      height: widget.height,
-      color: Colors.black,
-      child: const Center(child: CircularProgressIndicator(color: Colors.white)),
-    );
-  }
-
-  Widget _buildError(String message) {
-    return Container(
-      width: widget.width,
-      height: widget.height,
-      color: Colors.grey[800],
-      child: Center(
-        child: Column(
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: Container(
+        width: widget.width,
+        height: widget.height,
+        color: Colors.black,
+        alignment: Alignment.center,
+        child: const Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.movie, size: 48, color: Colors.white54),
-            const SizedBox(height: 8),
-            Text(
-              '视频加载失败',
-              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            SizedBox(
+              width: 32,
+              height: 32,
+              child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
             ),
-            const SizedBox(height: 4),
-            GestureDetector(
-              onTap: () {
-                setState(() {
-                  _error = null;
-                  _isLoading = true;
-                  _mode = _UrlMode.proxy;
-                });
-                _initPlayer();
-              },
-              child: SelectableText(
-                message,
-                style: const TextStyle(color: Colors.white54, fontSize: 11),
-                textAlign: TextAlign.center,
-              ),
-            ),
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: () {
-                setState(() {
-                  _error = null;
-                  _isLoading = true;
-                  _mode = _UrlMode.proxy;
-                });
-                _initPlayer();
-              },
-              icon: const Icon(Icons.refresh, size: 16),
-              label: const Text('重试'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              ),
-            ),
+            SizedBox(height: 10),
+            Text('视频加载中…', style: TextStyle(color: Colors.white70, fontSize: 12)),
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildError(String message) {
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: Container(
+        width: widget.width,
+        height: widget.height,
+        color: Colors.grey[800],
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.movie, size: 48, color: Colors.white54),
+              const SizedBox(height: 8),
+              const Text(
+                '视频加载失败',
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: GestureDetector(
+                  onTap: _retryInit,
+                  child: SelectableText(
+                    message,
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                onPressed: _retryInit,
+                icon: const Icon(Icons.refresh, size: 16),
+                label: const Text('重试'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 视频重新初始化（错误态的"重试"与文字点击共用）。
+  void _retryInit() {
+    setState(() {
+      _error = null;
+      _isLoading = true;
+      _mode = _UrlMode.proxy;
+    });
+    _initPlayer();
   }
 }
 

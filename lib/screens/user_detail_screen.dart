@@ -410,6 +410,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                   final item = displayTimeline[j];
                   return _MediaCard(key: ValueKey(item.url), item: item, proxy: widget.proxy);
                 }
+                // 滚到底自动续载下一批：不用手动点"加载更多"，一边滚一边出。
+                if (hasMore) _scheduleLoadMore();
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   child: OutlinedButton.icon(
@@ -435,6 +437,21 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   }
 
   static const int _kHeaderCount = 10; // 头部固定条目数（头像行到标签区）
+
+  /// 惰性续载：列表滚到尾部就自动 +10（首屏不满一屏时也会自动补满）。
+  /// 用 post-frame 回调，避免在 build 里 setState。
+  bool _loadMoreScheduled = false;
+  void _scheduleLoadMore() {
+    if (_loadMoreScheduled) return;
+    _loadMoreScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadMoreScheduled = false;
+      if (!mounted) return;
+      final total = _profile.timeline.length;
+      if (_mediaLimit >= total) return;
+      setState(() => _mediaLimit = (_mediaLimit + 10).clamp(0, total));
+    });
+  }
 
   int _detailItemCount(
       bool showBlockBanner, List<TimelineItem> displayTimeline, bool hasMore) {

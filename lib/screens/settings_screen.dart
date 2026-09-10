@@ -437,6 +437,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return '原始: $video\n代理: $rewritten\n→ $r';
     });
 
+    // 10. 代理转发记录：上面 4/6/7/8/9 都往代理日志里写了记录，这里直接读
+    // 出来，确认媒体请求确实经本机 ECH 代理转发到 video-cf.twimg.com
+    // （而不是直连某个域名或在本地就被拒了）。
+    await step('10. ECH 代理转发记录 (video-cf)', () async {
+      final port = widget.proxy.port;
+      if (port == null) return '失败: 代理未启动 (port=null)';
+      final lines = widget.proxy.getLogs();
+      if (lines.isEmpty) return '失败: 代理日志为空';
+      final media = lines.where((l) => l.contains('video-cf.twimg.com')).toList();
+      int countOf(List<String> ls, String needle) =>
+          ls.where((l) => l.contains(needle)).length;
+      final done = media.where((l) => l.startsWith('← ')).toList();
+      final okDone = done.where((l) => l.startsWith('← 200') || l.startsWith('← 206')).length;
+      final shown = media.length > 6 ? media.sublist(media.length - 6) : media;
+      return '代理日志 ${lines.length} 行\n'
+          '转发 video-cf.twimg.com ${media.length} 条：'
+          '图片 /media/ ${countOf(media, '/media/')} · '
+          '头像 /profile_images/ ${countOf(media, '/profile_images/')} · '
+          '视频 .mp4 ${countOf(media, '.mp4')}\n'
+          '已完成 ${done.length} 条，其中 200/206 成功 $okDone 条\n'
+          '最近 ${shown.length} 条：\n${shown.join('\n')}';
+    });
+
     if (mounted) setState(() => _diagRunning = false);
   }
 

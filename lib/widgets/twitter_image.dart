@@ -1,22 +1,26 @@
 // twitter_image.dart
 // 图片组件：通过本机 ECH 代理加载，支持点击预览、下载、分享。
 //
-// 与旧版 (v0.2.8) 的差异：
-//   - 删除了 fetchAsync → Image.memory 的手动流程
-//   - 直接使用 Image.network(EchUrl.rewrite(url, port))
-//   - 框架自动处理缓存、解码、错误状态
-//   - 新增：点击全屏预览、下载、分享
-//   - 新增：长按菜单（全屏查看、下载分享）
+// 布局要点（重要）：本组件挂在 ListView.builder 的 item 里，父级高度是
+// **无界**的。因此绝不能把内容交给 `Stack(fit: StackFit.expand)` 去自适应
+// ——expand 会把父级约束（height = ∞）作为紧约束传给子级，Image 在首帧未
+// 解码时返回 Size(width, ∞)，整条 item 高度变成无穷，渲染直接失败、整片
+// 媒体区域空白（这就是"看得到头像、看不到 media"的原因：头像用的是固定
+// SizedBox，没这个问题）。
+//
+// 所以这里先用 AspectRatio 占一个确定的高度：
+//   1. 立刻占位，滚动时列表高度稳定，不会"什么都没有"；
+//   2. 图片解码出真实宽高比后换成真实比例（配合 BoxFit.cover，等于完整
+//      显示且不留黑边）；
+//   3. 加载中显示百分比进度——一边加载一边显示，而不是等全部就绪。
 
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
-
-/// 图片加载通道：先走 ECH 代理，失败后自动降级到直连。
-enum _UrlMode { proxy, direct }
 
 class TwitterImage extends StatefulWidget {
   final String url;
@@ -39,19 +43,107 @@ class TwitterImage extends StatefulWidget {
 }
 
 class _TwitterImageState extends State<TwitterImage> {
-  int _retryCount = 0;
-  _UrlMode _mode = _UrlMode.proxy;
+  /// 真实宽高比未知前先占的位（竖构图为主，接近常见推图比例）。
+  static const double _kFallbackAspect = 3 / 4;
 
-  String _buildUrl() {
-    final port = widget.proxy.port;
-    // 全部走 ECH 代理：EchUrl.rewrite 丢弃原始域名，代理统一拼
-    // https://video-cf.twimg.com/<path>（图片与视频同通道）。
-    if (port != null) return EchUrl.rewrite(widget.url, port);
-    return widget.url;
+  double _aspect = _kFallbackAspect;
+  int _retryCount = 0;
+  bool _autoRetried = false;
+
+  ImageStream? _sizeStream;
+  ImageStreamListener? _sizeListener;
+  String? _sizeUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    // 代理可能比本组件晚就绪（启动时要先 DoH + ECH 初始化）：端口一出现
+    // 就重新解析，否则第一帧永远停在"代理未启动"。
+    widget.proxy.portNotifier.addListener(_onPortChanged);
   }
 
-  /// 是否需要 ECH 代理（当前所有图片通道都走代理）。
-  bool get _needsProxy => true;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _watchSize();
+  }
+
+  @override
+  void didUpdateWidget(TwitterImage old) {
+    super.didUpdateWidget(old);
+    if (old.url != widget.url) {
+      _aspect = _kFallbackAspect;
+      _retryCount = 0;
+      _autoRetried = false;
+      _sizeUrl = null;
+      _watchSize();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.proxy.portNotifier.removeListener(_onPortChanged);
+    _detachSizeListener();
+    super.dispose();
+  }
+
+  void _onPortChanged() {
+    if (!mounted) return;
+    _sizeUrl = null;
+    _autoRetried = false;
+    _watchSize();
+    setState(() {});
+  }
+
+  String? _proxiedUrl() {
+    final port = widget.proxy.port;
+    if (port == null) return null;
+    // 全部走 ECH 代理：EchUrl.rewrite 丢弃原始域名，代理统一拼
+    // https://video-cf.twimg.com/<path>（图片与视频同通道）。
+    return EchUrl.rewrite(widget.url, port);
+  }
+
+  void _detachSizeListener() {
+    final stream = _sizeStream;
+    final listener = _sizeListener;
+    if (stream != null && listener != null) stream.removeListener(listener);
+    _sizeStream = null;
+  }
+
+  /// 解析真实宽高比：与下面 Image.network 用同一个 NetworkImage key，
+  /// 命中 Flutter ImageCache 的同一份缓存，不会重复下载。
+  void _watchSize() {
+    final url = _proxiedUrl();
+    if (url == null || url == _sizeUrl) return;
+    _sizeUrl = url;
+    _detachSizeListener();
+    final stream = NetworkImage(url).resolve(createLocalImageConfiguration(context));
+    final listener = ImageStreamListener(
+      (info, _) {
+        if (!mounted) return;
+        final h = info.image.height;
+        if (h == 0) return;
+        final ratio = info.image.width / h;
+        if (ratio.isFinite && ratio > 0 && (ratio - _aspect).abs() > 0.001) {
+          setState(() => _aspect = ratio);
+        }
+      },
+      // 失败由 Image.network 的 errorBuilder 负责呈现，这里静默即可。
+      onError: (_, __) {},
+    );
+    _sizeListener = listener;
+    _sizeStream = stream;
+    stream.addListener(listener);
+  }
+
+  void _retry() {
+    setState(() {
+      _retryCount++;
+      _autoRetried = true;
+      _sizeUrl = null;
+    });
+    _watchSize();
+  }
 
   void _showPreview() {
     if (widget.proxy.port == null) {
@@ -64,76 +156,66 @@ class _TwitterImageState extends State<TwitterImage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => _ImageViewer(
-          url: widget.url,
-          proxy: widget.proxy,
-        ),
+        builder: (_) => _ImageViewer(url: widget.url, proxy: widget.proxy),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final port = widget.proxy.port;
-    if (port == null && _needsProxy) {
-      return _buildError('ECH 代理未启动，无法加载图片');
+    final url = _proxiedUrl();
+    if (url == null) {
+      return _frame(
+        child: const _StatusBox(message: 'ECH 代理未启动，无法加载图片'),
+      );
     }
 
-    final url = _buildUrl();
-
-    return GestureDetector(
-      onTap: _showPreview,
-      onLongPress: () => _showContextMenu(context),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Hero(
-            tag: 'img_${widget.url}',
-            child: Image.network(
-              url,
-              key: ValueKey('${url}_$_retryCount'),
-              fit: widget.fit,
-              width: widget.width,
-              height: widget.height,
-              loadingBuilder: (context, child, progress) {
-                if (progress == null) return child;
-                return Container(
-                  width: widget.width,
-                  height: widget.height,
-                  color: Colors.grey[200],
-                  child: const Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  ),
-                );
-              },
-              errorBuilder: (context, error, stackTrace) {
-                // 不降级 pbs.twimg.com 直连（墙内必死），首次失败经代理重试一次，
-                // 再失败显示错误。
-                if (_retryCount == 0) {
-                  setState(() => _retryCount = 1);
-                  return Container(
-                    width: widget.width,
-                    height: widget.height,
-                    color: Colors.grey[200],
-                    child: const Center(
-                      child: SizedBox(
-                        width: 20, height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ),
-                  );
-                }
-                return _buildError('经 ECH 代理加载失败：$error');
-              },
+    return _frame(
+      child: GestureDetector(
+        onTap: _showPreview,
+        onLongPress: () => _showContextMenu(context),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Hero(
+              tag: 'img_${widget.url}',
+              child: Image.network(
+                url,
+                key: ValueKey('$url#$_retryCount'),
+                fit: widget.fit,
+                width: widget.width,
+                height: widget.height,
+                loadingBuilder: (context, child, progress) {
+                  if (progress == null) return child;
+                  final total = progress.expectedTotalBytes;
+                  final percent = (total != null && total > 0)
+                      ? progress.cumulativeBytesLoaded / total
+                      : null;
+                  return _StatusBox(percent: percent);
+                },
+                errorBuilder: (context, error, stackTrace) {
+                  // 首次失败自动重试一次（代理刚起来时容易撞上），之后交给
+                  // 手动重试，避免无限重启请求风暴。
+                  if (!_autoRetried) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) _retry();
+                    });
+                    return const _StatusBox();
+                  }
+                  return _StatusBox(message: '加载失败：$error', onRetry: _retry);
+                },
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
+  }
+
+  /// 统一的定高外框：AspectRatio 给 ListView 一个确定高度，避免无界高度
+  /// 把整条 item 撑成无穷大。
+  Widget _frame({required Widget child}) {
+    return AspectRatio(aspectRatio: _aspect, child: child);
   }
 
   void _showContextMenu(BuildContext context) {
@@ -171,93 +253,123 @@ class _TwitterImageState extends State<TwitterImage> {
   }
 
   Future<void> _downloadAndShare() async {
-    final url = _buildUrl();
-    final uri = Uri.parse(url);
+    final url = _proxiedUrl();
+    if (url == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未启动，无法下载')),
+      );
+      return;
+    }
 
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在下载...')));
 
-    try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 30);
-      try {
-        final request = await client.getUrl(uri);
-        final response = await request.close();
-        if (response.statusCode != 200) {
-          throw Exception('HTTP ${response.statusCode}');
-        }
-
-        final tempDir = Directory.systemTemp;
-        final fileName = widget.url.split('/').last.split('?').first;
-        final file = File('${tempDir.path}/$fileName');
-        final raf = await file.open(mode: FileMode.write);
-        await for (final chunk in response) {
-          await raf.writeFrom(chunk);
-        }
-        await raf.close();
-
-        await Share.shareXFiles(
-          [XFile(file.path)],
-          subject: 'Twitter Image',
-        );
-
-        if (context.mounted) {
-          messenger.showSnackBar(const SnackBar(content: Text('已分享')));
-        }
-      } finally {
-        client.close();
-      }
-    } catch (e) {
+    final file = await downloadToTempFile(Uri.parse(url), widget.url);
+    if (file == null) {
       if (context.mounted) {
-        messenger.showSnackBar(SnackBar(content: Text('下载失败: $e')));
+        messenger.showSnackBar(const SnackBar(content: Text('下载失败')));
       }
+      return;
+    }
+    await Share.shareXFiles([XFile(file.path)], subject: 'Twitter Image');
+    if (context.mounted) {
+      messenger.showSnackBar(const SnackBar(content: Text('已分享')));
     }
   }
+}
 
-  Widget _buildError(String message) {
+/// 经代理把 URL 落到临时文件；失败返回 null。
+///
+/// 与 widget 共用，保证"预览看到的"和"下载下来的"是同一条通道。
+Future<File?> downloadToTempFile(Uri uri, String originalUrl) async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(seconds: 30);
+  try {
+    final request = await client.getUrl(uri);
+    final response = await request.close();
+    if (response.statusCode != 200) return null;
+
+    final fileName = originalUrl.split('/').last.split('?').first;
+    final file = File('${Directory.systemTemp.path}/$fileName');
+    final raf = await file.open(mode: FileMode.write);
+    try {
+      await for (final chunk in response) {
+        await raf.writeFrom(chunk);
+      }
+    } finally {
+      await raf.close();
+    }
+    return file;
+  } catch (_) {
+    return null;
+  } finally {
+    client.close();
+  }
+}
+
+/// 占位/进度/错误三合一的定高内容块。
+class _StatusBox extends StatelessWidget {
+  final String? message;
+  final double? percent;
+  final VoidCallback? onRetry;
+
+  const _StatusBox({this.message, this.percent, this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      width: widget.width,
-      height: widget.height,
-      color: Colors.grey[300],
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.broken_image, size: 32, color: Colors.grey),
-            const SizedBox(height: 8),
-            ElevatedButton.icon(
-              onPressed: () => setState(() => _retryCount++),
-              icon: const Icon(Icons.refresh, size: 14),
-              label: const Text('重试', style: TextStyle(fontSize: 11)),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                minimumSize: const Size(0, 0),
+      color: Colors.grey[200],
+      alignment: Alignment.center,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (message == null) ...[
+            SizedBox(
+              width: 120,
+              child: LinearProgressIndicator(
+                value: percent,
+                minHeight: 3,
+                backgroundColor: Colors.grey[300],
               ),
             ),
-            const SizedBox(height: 4),
-          Tooltip(
-              message: message,
-              child: GestureDetector(
-                onTap: () => setState(() => _retryCount++),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Text(
-                    message.length > 40 ? '${message.substring(0, 40)}...' : message,
-                    style: const TextStyle(fontSize: 9, color: Colors.grey),
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                  ),
+            const SizedBox(height: 10),
+            Text(
+              percent == null
+                  ? '加载中…'
+                  : '${(percent! * 100).clamp(0, 100).toStringAsFixed(0)}%',
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ] else ...[
+            const Icon(Icons.broken_image_outlined, size: 32, color: Colors.grey),
+            const SizedBox(height: 8),
+            Text(
+              message!,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 11, color: Colors.black54),
+            ),
+            if (onRetry != null) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh, size: 16),
+                label: const Text('重试'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  minimumSize: const Size(0, 32),
                 ),
               ),
-            ),
+            ],
           ],
-        ),
+        ],
       ),
     );
   }
 }
 
-/// 全屏图片查看器
+/// 全屏图片查看器（Scaffold body 有界，可安全用 Center 自适应）。
 class _ImageViewer extends StatefulWidget {
   final String url;
   final ProxyManager proxy;
@@ -269,59 +381,30 @@ class _ImageViewer extends StatefulWidget {
 }
 
 class _ImageViewerState extends State<_ImageViewer> {
-  bool _loading = true;
-  String? _error;
   int _retryCount = 0;
-  _UrlMode _mode = _UrlMode.proxy;
 
-  String _buildUrl() {
+  String? _proxiedUrl() {
     final port = widget.proxy.port;
+    if (port == null) return null;
     // 与主组件同通道：全部走 ECH 代理（video-cf.twimg.com）。
-    if (port != null) return EchUrl.rewrite(widget.url, port);
-    return widget.url;
+    return EchUrl.rewrite(widget.url, port);
   }
 
   Future<void> _downloadAndShare() async {
-    final url = _buildUrl();
-    final uri = Uri.parse(url);
-
+    final url = _proxiedUrl();
+    if (url == null) return;
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在下载...')));
-
-    try {
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 30);
-      try {
-        final request = await client.getUrl(uri);
-        final response = await request.close();
-        if (response.statusCode != 200) {
-          throw Exception('HTTP ${response.statusCode}');
-        }
-
-        final tempDir = Directory.systemTemp;
-        final fileName = widget.url.split('/').last.split('?').first;
-        final file = File('${tempDir.path}/$fileName');
-        final raf = await file.open(mode: FileMode.write);
-        await for (final chunk in response) {
-          await raf.writeFrom(chunk);
-        }
-        await raf.close();
-
-        await Share.shareXFiles(
-          [XFile(file.path)],
-          subject: 'Twitter Image',
-        );
-
-        if (context.mounted) {
-          messenger.showSnackBar(const SnackBar(content: Text('已分享')));
-        }
-      } finally {
-        client.close();
-      }
-    } catch (e) {
+    final file = await downloadToTempFile(Uri.parse(url), widget.url);
+    if (file == null) {
       if (context.mounted) {
-        messenger.showSnackBar(SnackBar(content: Text('下载失败: $e')));
+        messenger.showSnackBar(const SnackBar(content: Text('下载失败')));
       }
+      return;
+    }
+    await Share.shareXFiles([XFile(file.path)], subject: 'Twitter Image');
+    if (context.mounted) {
+      messenger.showSnackBar(const SnackBar(content: Text('已分享')));
     }
   }
 
@@ -351,50 +434,12 @@ class _ImageViewerState extends State<_ImageViewer> {
   }
 
   Widget _buildBody() {
-    if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.broken_image, size: 48, color: Colors.white54),
-            const SizedBox(height: 12),
-            Text(
-              '加载失败',
-              style: const TextStyle(color: Colors.white70, fontSize: 14),
-            ),
-            const SizedBox(height: 4),
-            GestureDetector(
-              onTap: () => setState(() {
-                _error = null;
-                _loading = true;
-                _retryCount++;
-              }),
-              child: SelectableText(
-                _error ?? '',
-                style: const TextStyle(color: Colors.white54, fontSize: 11),
-              ),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => setState(() {
-                _error = null;
-                _loading = true;
-                _retryCount++;
-              }),
-              icon: const Icon(Icons.refresh),
-              label: const Text('重试'),
-            ),
-          ],
-        ),
-      );
-    }
-    if (_loading) {
+    final url = _proxiedUrl();
+    if (url == null) {
       return const Center(
-        child: CircularProgressIndicator(color: Colors.white),
+        child: Text('ECH 代理未启动', style: TextStyle(color: Colors.white70)),
       );
     }
-
-    final url = _buildUrl();
 
     return Center(
       child: InteractiveViewer(
@@ -402,70 +447,68 @@ class _ImageViewerState extends State<_ImageViewer> {
           tag: 'img_${widget.url}',
           child: Image.network(
             url,
-            key: ValueKey('${url}_$_retryCount'),
+            key: ValueKey('$url#$_retryCount'),
             fit: BoxFit.contain,
             loadingBuilder: (context, child, progress) {
               if (progress == null) return child;
-              return const Center(
-                child: CircularProgressIndicator(color: Colors.white),
+              final total = progress.expectedTotalBytes;
+              final percent = (total != null && total > 0)
+                  ? progress.cumulativeBytesLoaded / total
+                  : null;
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 160,
+                      child: LinearProgressIndicator(
+                        value: percent,
+                        minHeight: 3,
+                        backgroundColor: Colors.white24,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      percent == null
+                          ? '加载中…'
+                          : '${(percent! * 100).clamp(0, 100).toStringAsFixed(0)}%',
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    ),
+                  ],
+                ),
               );
             },
             errorBuilder: (context, error, stackTrace) {
-              // 不降级 pbs.twimg.com 直连（墙内必死），首次失败经代理重试一次。
-              if (_retryCount == 0) {
-                setState(() {
-                  _loading = true;
-                  _retryCount = 1;
-                });
-                return const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
-                );
-              }
-              setState(() => _error = '经 ECH 代理加载失败：$error');
               return Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Icon(Icons.broken_image, size: 48, color: Colors.white54),
                     const SizedBox(height: 12),
-                    Text(
-                      '加载失败',
-                      style: const TextStyle(color: Colors.white70, fontSize: 14),
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.only(top: 4),
-                      child: Text('（已尝试直连）', style: TextStyle(color: Colors.white38, fontSize: 10)),
-                    ),
+                    const Text('加载失败',
+                        style: TextStyle(color: Colors.white70, fontSize: 14)),
                     const SizedBox(height: 4),
-                    GestureDetector(
-                      onTap: () => setState(() {
-                        _error = null;
-                        _loading = true;
-                        _retryCount++;
-                      }),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
                       child: SelectableText(
                         error.toString(),
+                        textAlign: TextAlign.center,
                         style: const TextStyle(color: Colors.white54, fontSize: 11),
                       ),
                     ),
                     const SizedBox(height: 16),
                     ElevatedButton.icon(
-                      onPressed: () => setState(() {
-                        _error = null;
-                        _loading = true;
-                        _retryCount++;
-                      }),
+                      onPressed: () => setState(() => _retryCount++),
                       icon: const Icon(Icons.refresh),
                       label: const Text('重试'),
-                  ),
-                ],
-              ),
-            );
-          },
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
         ),
       ),
-    ),
-  );
-}
-
+    );
+  }
 }
