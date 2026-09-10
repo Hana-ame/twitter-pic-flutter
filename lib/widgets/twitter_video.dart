@@ -574,6 +574,18 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   static const List<double> _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
   int _speedIndex = 2;
 
+  /// 已缓冲比例（同卡片版）：全屏的进度条也把缓冲量画在轨道底下。
+  double? get _bufferedFraction {
+    final v = _videoValue;
+    if (v == null || v.duration.inMilliseconds <= 0) return null;
+    if (v.buffered.isEmpty) return null;
+    final end = v.buffered.last.end.inMilliseconds;
+    if (end <= 0) return null;
+    final fraction = end / v.duration.inMilliseconds;
+    if (fraction >= 0.999) return null;
+    return fraction.clamp(0.0, 1.0);
+  }
+
   Future<void> _downloadVideo() async {
     if (_downloading) return;
     // 全屏版无降级状态（播放通道由父级 _TwitterVideoState 决定）：有代理
