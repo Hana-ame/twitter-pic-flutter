@@ -355,7 +355,7 @@ class _HomeScreenState extends State<_HomeScreen> {
 
 class FavoritesTab extends StatefulWidget {
   final ProxyManager proxy;
-  const FavoritesTab({required this.proxy});
+  const FavoritesTab({super.key, required this.proxy});
 
   @override
   State<FavoritesTab> createState() => _FavoritesTabState();
@@ -399,7 +399,7 @@ class _FavoritesTabState extends State<FavoritesTab> {
 
 class SettingsTab extends StatefulWidget {
   final ProxyManager proxy;
-  const SettingsTab({required this.proxy});
+  const SettingsTab({super.key, required this.proxy});
 
   @override
   State<SettingsTab> createState() => _SettingsTabState();
