@@ -1,4 +1,5 @@
-// pbs 图片的 name= 尺寸变体改写：列表用缩略图，全屏/下载用原图。
+// pbs 图片的 name= 尺寸变体改写：列表按显示尺寸挑档位，全屏/下载用原图。
+// 用例里的 URL 形态取自线上真实数据（name=orig）。
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twitter_pic_flutter/utils/media_url.dart';
@@ -37,6 +38,31 @@ void main() {
     expect(MediaUrl.grid(other), other);
     expect(MediaUrl.grid('not a url'), 'not a url');
     expect(MediaUrl.grid(''), '');
+  });
+
+  test('按所需像素挑最小够用的档位', () {
+    const url = 'https://pbs.twimg.com/media/X?format=jpg&name=orig';
+    expect(MediaUrl.gridFor(url, neededPixels: 600),
+        'https://pbs.twimg.com/media/X?format=jpg&name=small');
+    expect(MediaUrl.gridFor(url, neededPixels: 680),
+        'https://pbs.twimg.com/media/X?format=jpg&name=small');
+    expect(MediaUrl.gridFor(url, neededPixels: 1080),
+        'https://pbs.twimg.com/media/X?format=jpg&name=medium');
+    expect(MediaUrl.gridFor(url, neededPixels: 1200),
+        'https://pbs.twimg.com/media/X?format=jpg&name=medium');
+    expect(MediaUrl.gridFor(url, neededPixels: 1600),
+        'https://pbs.twimg.com/media/X?format=jpg&name=large');
+  });
+
+  test('线上真实视频 URL（含无查询参数的那种）一律不动', () {
+    const withTag =
+        'https://video.twimg.com/amplify_video/2097617825540259841/vid/avc1/720x720/75c94t9V9JHmLuJp.mp4?tag=29';
+    const noQuery =
+        'https://video.twimg.com/amplify_video/2066068672284925952/vid/avc1/720x1280/XswFVltK9wrkjJbI.mp4';
+    for (final u in [withTag, noQuery]) {
+      expect(MediaUrl.gridFor(u, neededPixels: 1080), u);
+      expect(MediaUrl.grid(u), u);
+    }
   });
 
   test('可指定任意变体', () {

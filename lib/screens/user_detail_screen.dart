@@ -496,8 +496,12 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       // 视频没有 name= 变体，别预热（动辄几 MB）。
       if (!MediaUrl.hasSizeVariant(url)) continue;
       scheduled++;
+      final thumb = MediaUrl.gridFor(
+        url,
+        neededPixels: MediaUrl.gridPixelsFor(context),
+      );
       precacheImage(
-        ProgressiveImageProvider(EchUrl.rewrite(MediaUrl.grid(url), port)),
+        ProgressiveImageProvider(EchUrl.rewrite(thumb, port)),
         context,
       ).catchError((_) {});
     }
@@ -695,8 +699,12 @@ class _MediaCard extends StatelessWidget {
             TwitterVideo(url: item.url, proxy: proxy)
           else
             TwitterImage(
-              // 列表里用缩略图变体（快、省流量），全屏/下载仍走原图。
-              url: MediaUrl.grid(item.url),
+              // 列表里按卡片实际像素宽度挑最小够用的 name 档位（小图省流量、
+              // 大屏不模糊），全屏与下载仍走原图。
+              url: MediaUrl.gridFor(
+                item.url,
+                neededPixels: MediaUrl.gridPixelsFor(context),
+              ),
               originalUrl: item.url,
               proxy: proxy,
               gallery: gallery,
