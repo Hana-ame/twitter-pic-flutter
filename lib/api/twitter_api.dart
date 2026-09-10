@@ -12,22 +12,10 @@ import 'package:dio/dio.dart';
 
 import '../models/user.dart';
 
-const _kApiBase = 'https://x.moonchan.xyz/api/twitter';
-
-/// 所有请求统一走本机 ECH 代理 endpoint（用户要求：request 一律访问代理）。
-/// [ProxyManager] 启停时调用 [useProxyEndpoint] 注入/清除端口。
-class ApiEndpoint {
-  static int? proxyPort;
-
-  /// 当前生效的 API baseUrl：代理在线 → 127.0.0.1:port/api/twitter；
-  /// 代理未启动（开发/降级）→ 直连官方域名。
-  static String get base {
-    final p = proxyPort;
-    return p != null ? 'http://127.0.0.1:$p/api/twitter' : _kApiBase;
-  }
-
-  static void useProxyEndpoint(int? port) => proxyPort = port;
-}
+/// API 与媒体分流：JSON/API **直连** x.moonchan.xyz（自建域名，可正常访问，
+/// 无需 ECH）；只有 twimg 媒体（pbs/video(.cf).twimg.com）才经本机
+/// ProxyManager + EchUrl.rewrite 走 ECH。
+const kApiBase = 'https://x.moonchan.xyz/api/twitter';
 
 /// 结构化 API 异常，包装 Dio 错误供 UI 层使用。
 sealed class ApiException implements Exception {
@@ -64,20 +52,14 @@ class TwitterApi {
 
   TwitterApi() {
     _dio = Dio(BaseOptions(
-      baseUrl: ApiEndpoint.base,
+      baseUrl: kApiBase,
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(seconds: 15),
       headers: {'User-Agent': 'TwitterPic/1.0'},
     ));
 
-    // 全局拦截器：统一异常映射 + 动态 baseUrl（代理重启换端口后
-    // 旧实例也要走新端口）。
+    // 全局拦截器：统一异常映射
     _dio.interceptors.add(InterceptorsWrapper(
-      onRequest: (o, h) {
-        final live = ApiEndpoint.base;
-        if (o.baseUrl != live) o.baseUrl = live;
-        h.next(o);
-      },
       onError: (e, handler) {
         if (e.error is ApiException) {
           handler.reject(e);

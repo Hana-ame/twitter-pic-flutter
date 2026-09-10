@@ -21,6 +21,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -356,8 +357,12 @@ func apiProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
+	// 请求体长度要用 req.ContentLength 表达：手动设 Content-Length header
+	// 会被 http.Client 忽略，流式 body 退化成 chunked。
 	if cl := r.Header.Get("Content-Length"); cl != "" {
-		req.Header.Set("Content-Length", cl)
+		if n, err := strconv.ParseInt(cl, 10, 64); err == nil {
+			req.ContentLength = n
+		}
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}

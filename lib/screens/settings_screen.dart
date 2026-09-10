@@ -68,8 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     client.badCertificateCallback = (cert, host, port) => true;
     try {
       final date = DateTime.now().toIso8601String().split('T')[0];
-      final url =
-          'https://x.moonchan.xyz/api/twitter/$username.json.gz?t=$date';
+      final url = '$kApiBase/$username.json.gz?t=$date';
       final req = await client.getUrl(Uri.parse(url));
       req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       final res = await req.close();
@@ -205,12 +204,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       });
     }
 
-    // 1. API 经本机代理 endpoint（TwitterApi 实际使用的通道）
-    await step('1. API 经代理 (TwitterApi 实际通道)', () async {
+    // 1. API 直连（TwitterApi 实际使用的通道：JSON/API 不经代理）
+    await step('1. API 直连 (TwitterApi 实际通道)', () async {
       final api = TwitterApi();
       try {
         final users = await api.getUserList();
-        return '${ApiEndpoint.base} → ${users.length} 个用户';
+        return '$kApiBase → ${users.length} 个用户';
       } finally {
         api.dispose();
       }
@@ -230,9 +229,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
 
-    // 3. API 直连对比（不经代理，验证 moonchan 域名可达性）
-    await step('3. API 直连对比', () {
-      return _httpProbe('https://x.moonchan.xyz/api/twitter/?list=users');
+    // 3. API 原始探测（不经 Dio，用 dart:io 直接 GET，区分 Dio/网络层问题）
+    await step('3. API 原始探测 (不经 Dio)', () {
+      return _httpProbe('$kApiBase/?list=users');
     });
 
     // 4. video-cf 经本机 ECH 代理
@@ -303,7 +302,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     buf.writeln('Twitter Pic 诊断报告 · ${widget.buildNum}');
     buf.writeln(
         '代理: ${widget.proxy.isRunning ? '运行中' : '已停止'} · port=${widget.proxy.port ?? '-'} · init=${widget.proxy.isInitialized}');
-    buf.writeln('API endpoint: ${ApiEndpoint.base}');
+    buf.writeln('API endpoint: $kApiBase (直连)');
     buf.writeln('');
     for (final d in _diag) {
       buf.writeln('【${d.label}】 ${d.running ? 'RUNNING' : (d.ok ? 'PASS' : 'FAIL')}');

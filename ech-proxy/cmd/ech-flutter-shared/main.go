@@ -37,6 +37,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -469,6 +470,11 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	}
 }
 
+// apiProxyHandler 转发 JSON/API 到 x.moonchan.xyz。
+//
+// 仅供内嵌的 demo Web UI（index.html）使用：Flutter 侧的 API 请求是
+// **直连** x.moonchan.xyz 的（见 lib/api/twitter_api.dart kApiBase），
+// 经本代理转发时上游返回 400，故不要把 App 的 API 流量接到这里。
 func apiProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path string) {
 	targetURL := withQuery("https://"+targetHost+normalizePath(path), r)
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
@@ -483,8 +489,12 @@ func apiProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
+	// 请求体长度要用 req.ContentLength 表达：手动设 Content-Length header
+	// 会被 http.Client 忽略，流式 body 退化成 chunked。
 	if cl := r.Header.Get("Content-Length"); cl != "" {
-		req.Header.Set("Content-Length", cl)
+		if n, err := strconv.ParseInt(cl, 10, 64); err == nil {
+			req.ContentLength = n
+		}
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
