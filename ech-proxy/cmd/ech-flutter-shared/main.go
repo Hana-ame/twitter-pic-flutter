@@ -53,6 +53,12 @@ var indexHTML string
 const cdnHost = "video-cf.twimg.com"
 const apiHost = "x.moonchan.xyz"
 
+// DoH 服务器地址：服务的固有配置，硬编码。
+// bootstrapIP（连接 DoH 用的目标 IP）不在此处硬编码，由调用方通过
+// StartProxy(bootstrapIP) 传入，来源是运行时 DNS 解析 moonchan.xyz。
+const defaultDohHost = "moonchan.xyz"
+const defaultDohURL = "https://moonchan.xyz/doh"
+
 // ─── 状态 ────────────────────────────────────────────────────────────────────
 
 var (
@@ -203,13 +209,16 @@ func StartProxy(bootstrapIP *C.char) uint16 {
 		proxyServer = nil
 	}
 
-	// 1. DoH 配置由调用方负责：Flutter 侧在调用 StartProxy 之前已经通过
-	//    ECHSetDohURL / ECHInitWithBootstrap 设过 dohUrl 和 bootstrapIP。
-	//    这里不再硬编码域名或 IP，否则会覆盖调用方传入的配置（原实现让
-	//    Flutter 的 dohHost/dohUrl 参数形同虚设）。bootstrapIP 参数保留以
-	//    维持 ABI 兼容，仅用于日志。
+	// 1. 配置 ECH：DoH 域名硬编码（服务固有配置），bootstrapIP 由调用方
+	//    传入（运行时解析 moonchan.xyz 得到，不可硬编码）。
 	bootstrap := C.GoString(bootstrapIP)
-	log.Printf("ECH: DoH config set by caller, bootstrapIP=%q", bootstrap)
+	if bootstrap != "" {
+		log.Printf("ECH: DoH=%s/doh, bootstrapIP=%s", defaultDohHost, bootstrap)
+		cloudflare_ech.SetDoHConfig(defaultDohHost, bootstrap)
+	} else {
+		log.Printf("ECH: DoH=%s", defaultDohURL)
+		cloudflare_ech.SetDohURL(defaultDohURL)
+	}
 
 	// 2. 初始化 ECH
 	log.Printf("Initializing ECH client...")
