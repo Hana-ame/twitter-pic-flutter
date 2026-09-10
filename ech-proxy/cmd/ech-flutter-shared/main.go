@@ -6,7 +6,7 @@
 //       ECHSetDohURL / ECHInit / ECHInitWithBootstrap /
 //       ECHInitReady / ECHInitLastError /
 //       ECHGetLogCount / ECHGetLog / FreeCString
-//   - 代理启停接口（来自 cmd/ech-proxy-android）：
+//   - 代理启停接口：
 //       StartProxy / StopProxy / GetProxyPort / IsEchReady
 //
 // Flutter 侧 proxy_manager.dart 依赖以上全部符号，缺任何一个都会
@@ -14,8 +14,8 @@
 //
 // 监听形态：**只提供明文 HTTP**，绑定 127.0.0.1（回环）。Dart 侧
 // EchUrl.rewrite 生成 http://127.0.0.1:<port>，若这里改成 TLS，Go 会对
-// 明文请求回 400，表现为媒体/头像全部加载失败。需要 TLS + 浏览器访问的
-// 版本见 cmd/ech-proxy-android。
+// 明文请求回 400 "Client sent an HTTP request to an HTTPS server"，表现为
+// 媒体/头像全部加载失败。回环地址本就无需 TLS。
 //
 // 构建（Android arm64）：
 //
@@ -288,7 +288,7 @@ func StartProxy(bootstrapIP *C.char) (port uint16) {
 	// EchUrl.rewrite 永远生成 http://127.0.0.1:<port>；若这里优先包上 TLS，
 	// Go 会对明文请求直接回 400 "Client sent an HTTP request to an HTTPS
 	// server"，表现为"从来没成功访问过"。回环地址本就无需 TLS，也省掉启动
-	// 期 3 次证书网络往返。（浏览器用的 TLS 版见 cmd/ech-proxy-android。）
+	// 期 3 次证书网络往返。
 
 	// 3. 监听端口（优先 8443，失败则随机）
 	ln, err := net.Listen("tcp4", "127.0.0.1:8443")

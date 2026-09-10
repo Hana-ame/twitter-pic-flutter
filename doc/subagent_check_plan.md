@@ -21,7 +21,7 @@
    上次 `proxy_avatar`（G）报告的"头像降级后不回落 ECH"，修法在 `proxy_manager`（E），跨段导致结论失效。
 4. **单段 ≤ 800 行**：超过就拆。`twitter_video`（797 行、2 个 State 类）
    与 `twitter_image` 同段时，是本轮唯一在 CI 炸出作用域错误的段——上下文被稀释的信号。
-5. **跨语言/跨端一致性同段**：Go 双端（`ech-flutter-shared` + `ech-proxy-android`）
+5. **跨语言/跨端一致性同段**：Go 单入口（`ech-flutter-shared`）
    的任何 handler 改动必须双端同步，只有同段 agent 能看出单边修改。
 
 ## 9 段清单
@@ -31,7 +31,7 @@
 | 段 | 范围 | 文件 | 行数 | 检查重点 |
 |----|------|------|------|----------|
 | **1** | 构建/CI/Go 入口 | `.github/workflows/{build,ech-proxy-apk,native_ech_poc}.yml`、`pubspec.yaml`、`ech-proxy/go.mod`、`ech-proxy/main.go` | 682+ | 版本号生成（分支触发时 `ref_name` 非合法版本）、权限注入后置校验、Go 版本与 `go.mod` 对齐、三个 Go 入口行为一致性、release 竞态 |
-| **2** | 代理层 + 头像 | `lib/services/proxy_manager.dart`、`lib/utils/ech_url.dart`、`lib/utils/doh_resolver.dart`、`lib/widgets/proxy_avatar.dart`、`ech-proxy/cmd/ech-flutter-shared/main.go`、`ech-proxy/cmd/ech-proxy-android/main.go`、`test/ech_url_test.dart`、`test/proxy_manager_test.dart` | 1350 | FFI 符号 12 个是否齐全、`normalizePath` 双端同步、`getLogs()` 空安全、`proxyMu` 持锁跨同步调用、DoH 超时与 TLS 校验、ECH 双初始化、`_mode` 回退与 `portNotifier`、下载 URL 是否走代理/直连同源 |
+| **2** | 代理层 + 头像 | `lib/services/proxy_manager.dart`、`lib/utils/ech_url.dart`、`lib/utils/doh_resolver.dart`、`lib/widgets/proxy_avatar.dart`、`ech-proxy/cmd/ech-flutter-shared/main.go`、`test/ech_url_test.dart`、`test/proxy_manager_test.dart` | 1350 | FFI 符号 12 个是否齐全、`normalizePath` 路径规范化、`getLogs()` 空安全、`proxyMu` 持锁跨同步调用、DoH 超时与 TLS 校验、ECH 双初始化、`_mode` 回退与 `portNotifier`、下载 URL 是否走代理/直连同源 |
 | **3** | API/存储/模型 | `lib/api/twitter_api.dart`、`lib/models/user.dart`、`lib/services/storage_service.dart`、`lib/utils/stable_hash.dart`、`lib/screens/ranking_screen.dart`、`test/user_model_test.dart`、`test/storage_service_test.dart`、`test/stable_hash_test.dart` | 832 | `fromJson` 容错（禁裸 `as`）、`resp.data` 类型判定、缓存并发去重与 TTL、写后清缓存、加载失败不得静默吞、错误态与空数据态可区分 |
 | **4** | 入口/导航/主题 | `lib/main.dart` | 413 | Tab 重建策略（`IndexedStack` + `ValueKey` 权衡）、`runZonedGuarded`/`FlutterError.onError`、初始化失败白屏、`ThemeData` 是否每次 build 重建、双层 Scaffold/AppBar |
 | **5** | 列表/收藏/搜索 | `lib/screens/user_list_screen.dart`、`lib/widgets/fav_list.dart`、`lib/widgets/search_bar.dart` | 1004 | `ValueKey` 与数据去重一致性、失败态是否有重试入口、in-flight 守卫、`onRefresh` 语义、handle 正则校验、`catchError((_) => [])` 吞错误 |
@@ -90,7 +90,7 @@
 4. **Go 侧本地验证**（本地有 Go，可当场编译）：
    ```bash
    cd ech-proxy
-   gofmt -l cmd/ech-flutter-shared/main.go cmd/ech-proxy-android/main.go
+   gofmt -l cmd/ech-flutter-shared/main.go
    CGO_ENABLED=1 go build -buildmode=c-shared -o /tmp/libechproxy_test.so ./cmd/ech-flutter-shared/
    nm -D /tmp/libechproxy_test.so | grep -E " T (ECH|Free|Get|Is|Start|Stop)"
    # 期望 12 个：ECHGetLog ECHGetLogCount ECHInit ECHInitLastError ECHInitReady
@@ -148,7 +148,7 @@
 - `fromJson` 不用裸 `as`：抽 `_str` / `_int` / `_list` / `_map` 容错辅助。
 - Go 代理 handler 拼 URL 用 `normalizePath(path)` 统一前导斜杠，
   兼容调用方传 `"/media/x"` 和 `"media/x"` 两种形式（否则会拼出 `//media/x`，WAF 403）。
-  **改一处必须双端改**（`ech-flutter-shared` + `ech-proxy-android`）。
+  **只有 `ech-flutter-shared` 一个入口**（浏览器版 demo APK 已移除）。
 
 ## 剩余待修（2026-09-10 未修完的 ~35 个 M/L）
 
