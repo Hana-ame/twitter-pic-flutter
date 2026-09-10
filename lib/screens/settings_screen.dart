@@ -1,6 +1,7 @@
 // settings_screen.dart
 // 设置页面：查看代理状态、网络诊断、清除缓存、关于信息
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -72,6 +73,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// Range 分段探测。ExoPlayer（video_player 底层）播 MP4 一定要分段拉取：
+  /// 上游必须回 206 + Content-Range，否则拿不到文件尾部的 moov，视频永不开播。
+  Future<String> _rangeProbe(String url, {int timeoutSec = 20}) async {
+    final client = HttpClient()..connectionTimeout = Duration(seconds: timeoutSec);
+    client.badCertificateCallback = (cert, host, port) => true;
+    final sw = Stopwatch()..start();
+    try {
+      final req = await client
+          .getUrl(Uri.parse(url))
+          .timeout(Duration(seconds: timeoutSec));
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1023');
+      final res = await req.close().timeout(Duration(seconds: timeoutSec));
+      final cr = res.headers.value(HttpHeaders.contentRangeHeader) ?? '-';
+      final ar = res.headers.value('accept-ranges') ?? '-';
+      final cl = res.headers.value(HttpHeaders.contentLengthHeader) ?? '-';
+      var got = 0;
+      await for (final chunk in res) {
+        got += chunk.length;
+        if (got > 8 * 1024) break;
+      }
+      final detail =
+          'HTTP ${res.statusCode} · Content-Range: $cr · Accept-Ranges: $ar · Content-Length: $cl · 收到 ${got}B · ${sw.elapsedMilliseconds}ms';
+      // 只认 206：回 200 说明 Range 被吞了，播放器拿不到尾部元数据。
+      return res.statusCode == 206 ? detail : '失败: Range 未被支持 → $detail';
+    } catch (e) {
+      return '失败: ${sw.elapsedMilliseconds}ms · $e';
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// 用 widget 真正使用的那套栈（NetworkImage → 图片缓存 → 解码）验证一张图，
+  /// 而不是 raw HttpClient。两者失败原因可能完全不同（例如解码失败、
+  /// 缺 Content-Length 导致 codec 报错等）。
+  Future<String> _imageDecodeProbe(String url, {int timeoutSec = 30}) async {
+    final sw = Stopwatch()..start();
+    final completer = Completer<String>();
+    final stream = NetworkImage(url).resolve(ImageConfiguration.empty);
+    late ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) {
+        stream.removeListener(listener);
+        completer.complete(
+            '解码成功 ${info.image.width}x${info.image.height} · ${sw.elapsedMilliseconds}ms');
+      },
+      onError: (e, _) {
+        stream.removeListener(listener);
+        completer.complete('失败: ${sw.elapsedMilliseconds}ms · $e');
+      },
+    );
+    stream.addListener(listener);
+    return completer.future.timeout(
+      Duration(seconds: timeoutSec),
+      onTimeout: () => '失败: ${timeoutSec}s 超时（连上但没出图）',
+    );
   }
 
   /// 抓取 `<username>.json.gz`，返回响应头、编码方式与原始 JSON。
@@ -227,6 +285,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
       });
     }
 
+    // 取样一次供 2/6/7/8/9 复用：原先每个测试各自下一遍 100KB+ 的 json.gz，
+    // 一整轮诊断光下载就要十几秒。
+    _RawJsonResult? sample;
+    String? avatarUrl, photoUrl, videoUrl;
+    Future<void> ensureSample() async {
+      if (sample != null) return;
+      final api = TwitterApi();
+      try {
+        final users = await api.getUserList();
+        if (users.isEmpty) return;
+        final raw = await _fetchRawJson(users.first.username);
+        sample = raw;
+        if (raw.error != null) return;
+        avatarUrl = raw.json?['account_info']?['profile_image']?.toString();
+        final tl = raw.json?['timeline'];
+        if (tl is List) {
+          for (final e in tl) {
+            if (e is! Map) continue;
+            final u = e['url']?.toString() ?? '';
+            final t = e['type']?.toString() ?? '';
+            if (photoUrl == null && u.contains('pbs.twimg.com')) photoUrl = u;
+            if (videoUrl == null &&
+                (u.contains('video.twimg.com') ||
+                    t == 'video' ||
+                    t == 'animated_gif')) {
+              videoUrl = u;
+            }
+            if (photoUrl != null && videoUrl != null) break;
+          }
+        }
+      } finally {
+        api.dispose();
+      }
+    }
+
     // 1. API 直连（TwitterApi 实际使用的通道：JSON/API 不经代理）
     await step('1. API 直连 (TwitterApi 实际通道)', () async {
       final api = TwitterApi();
@@ -238,15 +331,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
 
-    // 2. 第一个用户的原始 JSON：编码检测 + 字段与模型匹配检查
+    // 2. 原始 JSON：编码检测 + 字段与模型匹配检查
     await step('2. 用户 JSON 编码与字段检查', () async {
+      await ensureSample();
+      final s = sample;
+      if (s == null) return '失败: 用户列表为空';
+      return _checkJsonFields(s);
+    });
+
+    // 2b. getMetaData 经 Dio + fromJson 解析 —— App 显示头像/媒体走的就是这条
+    // 路。测试 2 是 raw 抓取，绕过了 Dio 与模型层，两者结论可能完全不同：
+    // raw 有 644 条而这里为 0，就说明问题在解析层而不是网络。
+    await step('2b. getMetaData 经 Dio+模型解析', () async {
       final api = TwitterApi();
       try {
         final users = await api.getUserList();
         if (users.isEmpty) return '失败: 用户列表为空';
-        final u = users.first;
-        final raw = await _fetchRawJson(u.username);
-        return _checkJsonFields(raw);
+        final meta =
+            await api.getMetaData(users.first.username, forceRefresh: true);
+        final av = meta.accountInfo.avatar;
+        final line = 'timeline ${meta.timeline.length} 条 · '
+            '头像: ${av ?? '-'} · total_urls: ${meta.totalUrls} · '
+            'type[0]: ${meta.timeline.isNotEmpty ? meta.timeline.first.type : '-'}';
+        final problems = <String>[];
+        if (meta.timeline.isEmpty) problems.add('timeline 解析后为空');
+        if (av == null || av.isEmpty) problems.add('头像为空');
+        return problems.isEmpty ? line : '失败: ${problems.join('、')} → $line';
+      } catch (e) {
+        return '失败: $e';
       } finally {
         api.dispose();
       }
@@ -269,51 +381,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return _httpProbe('https://video-cf.twimg.com/favicon.ico', timeoutSec: 10);
     }, expectFail: true);
 
-    // 6. 真实头像 URL → EchUrl.rewrite（丢 host）→ 经代理 ECH 访问 video-cf
-    await step('6. 真实头像经代理验证', () async {
+    // 6. 真实头像 URL → 代理 → raw HttpClient（证明“链路通不通”）
+    await step('6. 真实头像经代理 (raw HttpClient)', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
-      final api = TwitterApi();
-      try {
-        final users = await api.getUserList();
-        if (users.isEmpty) return '失败: 用户列表为空';
-        final raw = await _fetchRawJson(users.first.username);
-        final err = raw.error;
-        if (err != null) return '失败: json.gz 获取失败 ($err)';
-        final avatar = raw.json?['account_info']?['profile_image']?.toString();
-        if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
-        final replaced = EchUrl.rewrite(avatar, port);
-        // 真实头像：冷启动时 ECH 握手 + 上游回源可能较慢，给足 30s
-        final probe = await _httpProbe(replaced, timeoutSec: 30);
-        return '原始: $avatar\n代理: $replaced\n→ $probe';
-      } finally {
-        api.dispose();
-      }
+      await ensureSample();
+      final avatar = avatarUrl;
+      if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
+      final replaced = EchUrl.rewrite(avatar, port);
+      final probe = await _httpProbe(replaced, timeoutSec: 30);
+      return '原始: $avatar\n代理: $replaced\n→ $probe';
     });
 
-    // 7. 真实媒体 URL（带 ?format=&name= query）→ 经代理验证 query 透传
-    await step('7. 真实媒体经代理验证 (query 透传)', () async {
+    // 7. 真实头像 → NetworkImage 解码（ProxyAvatar 用的就是这套栈）。
+    // 与测试 6 的区别：这里过 Flutter 的图片缓存与解码。若 6 通过而 7 失败，
+    // 说明问题在 widget 层（解码/尺寸/缓存），而不是网络。
+    await step('7. 真实头像 widget 栈解码 (NetworkImage)', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
-      final api = TwitterApi();
-      try {
-        final users = await api.getUserList();
-        if (users.isEmpty) return '失败: 用户列表为空';
-        final raw = await _fetchRawJson(users.first.username);
-        final err = raw.error;
-        if (err != null) return '失败: json.gz 获取失败 ($err)';
-        final tl = raw.json?['timeline'];
-        if (tl is! List || tl.isEmpty) return '失败: timeline 为空';
-        final first = tl.first;
-        if (first is! Map) return '失败: timeline[0] 非对象';
-        final mediaUrl = first['url']?.toString();
-        if (mediaUrl == null || mediaUrl.isEmpty) return '失败: timeline[0] 无 url';
-        final rewritten = EchUrl.rewrite(mediaUrl, port);
-        final probe = await _httpProbe(rewritten, timeoutSec: 30);
-        return '原始: $mediaUrl\n代理: $rewritten\n→ $probe';
-      } finally {
-        api.dispose();
-      }
+      await ensureSample();
+      final avatar = avatarUrl;
+      if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
+      final r = await _imageDecodeProbe(EchUrl.rewrite(avatar, port));
+      return '${EchUrl.rewrite(avatar, port)}\n→ $r';
+    });
+
+    // 8. 真实图片（pbs.twimg.com/media，带 format/name）→ widget 栈解码
+    await step('8. 真实图片 widget 栈解码', () async {
+      final port = widget.proxy.port;
+      if (port == null) return '失败: 代理未启动 (port=null)';
+      await ensureSample();
+      final photo = photoUrl;
+      if (photo == null || photo.isEmpty) return '无 pbs 图片条目（跳过）';
+      final rewritten = EchUrl.rewrite(photo, port);
+      final r = await _imageDecodeProbe(rewritten);
+      return '原始: $photo\n代理: $rewritten\n→ $r';
+    });
+
+    // 9. 真实视频 → Range 分段探测（ExoPlayer 必需，只认 206）
+    await step('9. 真实视频 Range 分段探测', () async {
+      final port = widget.proxy.port;
+      if (port == null) return '失败: 代理未启动 (port=null)';
+      await ensureSample();
+      final video = videoUrl;
+      if (video == null || video.isEmpty) return '无视频条目（跳过）';
+      final rewritten = EchUrl.rewrite(video, port);
+      final r = await _rangeProbe(rewritten);
+      return '原始: $video\n代理: $rewritten\n→ $r';
     });
 
     if (mounted) setState(() => _diagRunning = false);

@@ -438,6 +438,15 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	}
 	req.Header.Set("Referer", "https://x.com")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (TwitterPic)")
+	// 强制 identity：不显式声明时 Go 的 transport 会自己加 Accept-Encoding: gzip
+	// 并透明解压，顺手删掉上游的 Content-Length/Content-Encoding —— 视频/图片
+	// 一旦没有 Content-Length，ExoPlayer 无法估算长度与分段，直接不放。
+	req.Header.Set("Accept-Encoding", "identity")
+	// 透传 Range：MP4 的 moov 常在文件尾，ExoPlayer 必须先分段拿到它才能解析。
+	// 不透传则上游回整包 200，视频永远停在"加载中"→ 表现为看不到 Media。
+	if rng := r.Header.Get("Range"); rng != "" {
+		req.Header.Set("Range", rng)
+	}
 
 	resp, err := cloudflare_ech.Do(req)
 	if err != nil {
@@ -464,14 +473,23 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	if cl := resp.Header.Get("Content-Length"); cl != "" {
 		w.Header().Set("Content-Length", cl)
 	}
+	// 明确告知可分段，播放器才会走 seek；上游没给时补一个。
+	if w.Header().Get("Accept-Ranges") == "" {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
 
 	w.WriteHeader(resp.StatusCode)
+	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 64*1024)
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return
+			}
+			// 及时下发：否则首包要等 Go 的写缓冲填满，视频起播明显变慢。
+			if flusher != nil {
+				flusher.Flush()
 			}
 		}
 		if err != nil {
