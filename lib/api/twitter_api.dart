@@ -50,12 +50,35 @@ class TwitterApi {
 
   late final Dio _dio;
 
-  TwitterApi() {
+  /// [adapter] 仅供测试注入假适配器（不发真实请求），生产代码不传。
+  TwitterApi({HttpClientAdapter? adapter}) {
     _dio = Dio(BaseOptions(
       baseUrl: kApiBase,
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(seconds: 15),
       headers: {'User-Agent': 'TwitterPic/1.0'},
+    ));
+    if (adapter != null) _dio.httpClientAdapter = adapter;
+
+    // 全局拦截器：路径归一化。
+    //
+    // Dio 拼接 baseUrl 与 path 时**不会**自动补斜杠：
+    // baseUrl = 'https://x.moonchan.xyz/api/twitter' + path = 'x.json.gz'
+    // → 'https://x.moonchan.xyz/api/twitterx.json.gz'（少了 /）。
+    // 后端 gin 里这个路径匹配不到任何路由，落到 NoRoute，而 NoRoute 在
+    // STATIC_ROOT 未设置时直接 AbortWithStatus(403) —— 于是 metadata / tags /
+    // emojis 全部 403。之前只有 getUserList 用了 '/' 所以只有它正常，
+    // 详情页"暂无内容"、头像全空、标签空都是这一个原因。
+    // 这里统一补前导斜杠，避免以后新增调用再次踩坑。
+    _dio.interceptors.add(InterceptorsWrapper(
+      onRequest: (options, handler) {
+        final p = options.path;
+        final absolute = p.startsWith('http://') || p.startsWith('https://');
+        if (!absolute && !p.startsWith('/')) {
+          options.path = '/$p';
+        }
+        handler.next(options);
+      },
     ));
 
     // 全局拦截器：统一异常映射
@@ -155,7 +178,7 @@ class TwitterApi {
 
   Future<UserMetaData> _fetchMetaData(String username, String? t) async {
     final resp = await _dio.get(
-      '$username.json.gz',
+      '/$username.json.gz',
       queryParameters: {
         't': t ?? DateTime.now().toIso8601String().split('T')[0],
       },
@@ -170,7 +193,7 @@ class TwitterApi {
     bool doNotRenew = false,
   }) async {
     await _dio.post(
-      username,
+      '/$username',
       data: body,
       queryParameters: {
         if (doNotTag) 'do_not_tag': 'true',
@@ -183,30 +206,30 @@ class TwitterApi {
   }
 
   Future<Map<String, dynamic>> getTags(String username) async {
-    final resp = await _dio.get('tags/$username');
-    return resp.data as Map<String, dynamic>;
+    final resp = await _dio.get('/tags/$username');
+    return _asJsonMap(resp.data, 'getTags($username)');
   }
 
   Future<Map<String, dynamic>> getEmojis(String username) async {
     final resp = await _dio.get(
-      'emojis',
+      '/emojis',
       queryParameters: {'username': username},
     );
-    return resp.data as Map<String, dynamic>;
+    return _asJsonMap(resp.data, 'getEmojis($username)');
   }
 
   Future<void> voteUpEmoji(String username, String emoji) async {
     await _dio.post(
-      'emojis',
+      '/emojis',
       queryParameters: {'username': username, 'emoji': emoji},
     );
   }
 
   Future<Map<String, EmojiPeriodData>> getRanking() async {
-    final resp = await _dio.get('emojis.json.gz');
-    final raw = resp.data as Map<String, dynamic>;
-    return raw.map(
-        (k, v) => MapEntry(k, EmojiPeriodData.fromJson(v as Map<String, dynamic>)));
+    final resp = await _dio.get('/emojis.json.gz');
+    final raw = _asJsonMap(resp.data, 'getRanking');
+    return raw.map((k, v) =>
+        MapEntry(k, EmojiPeriodData.fromJson(_asJsonMap(v, 'ranking[$k]'))));
   }
 
   /// 将 DioException 映射为结构化 ApiException。

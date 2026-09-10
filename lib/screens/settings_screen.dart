@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -357,6 +358,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         if (meta.timeline.isEmpty) problems.add('timeline 解析后为空');
         if (av == null || av.isEmpty) problems.add('头像为空');
         return problems.isEmpty ? line : '失败: ${problems.join('、')} → $line';
+      } on DioException catch (e) {
+        // 把 Dio 真正请求的 URL 打出来：历史上 403 的根因就是 baseUrl 与 path
+        // 拼接少了斜杠（.../api/twitterx.json.gz），只看 "HTTP 403" 根本看不出来。
+        return '失败: ${e.error ?? e.message}\n'
+            '实际请求: ${e.requestOptions.uri}\n'
+            'API base: $kApiBase';
       } catch (e) {
         return '失败: $e';
       } finally {
