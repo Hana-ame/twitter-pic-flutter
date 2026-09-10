@@ -21,7 +21,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.5'
+          # 与 go.mod 的 `go 1.26.7` 对齐。之前 pin 1.25.5 靠 GOTOOLCHAIN
+          # 运行时自动下载 1.26.7 才没炸，一旦 toolchain 下载失败即硬失败。
+          go-version: '>=1.26.7'
           cache: true
 
       - name: Set up Java

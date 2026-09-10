@@ -69,6 +69,7 @@ jobs:
 
       - name: Build ECH shared library (arm64)
         run: |
+          NDK_VERSION="r27"
           cd ech-proxy
           CGO_ENABLED=1 \
           GOOS=android \
@@ -76,7 +77,7 @@ jobs:
           CC=aarch64-linux-android21-clang \
           go build -buildmode=c-shared -ldflags="-s -w" \
           -o /tmp/libechproxy.so ./cmd/ech-flutter-shared/
-          /tmp/android-ndk-r27/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy --strip-unneeded /tmp/libechproxy.so
+          /tmp/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy --strip-unneeded /tmp/libechproxy.so
           ls -lh /tmp/libechproxy.so
 
       - name: Setup Flutter
@@ -97,10 +98,15 @@ jobs:
       - name: Ensure INTERNET permission and set app label in AndroidManifest
         run: |
           MANIFEST=/tmp/build_project/android/app/src/main/AndroidManifest.xml
+          # 在任意 <manifest ...> 行后插入，不依赖精确的属性顺序——Flutter
+          # 生成的 manifest 若带 xmlns:tools 等额外属性，精确匹配会静默
+          # no-op 而 CI 仍显示绿。
           if ! grep -q 'android.permission.INTERNET' "$MANIFEST"; then
-            sed -i 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android">|<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET"/>|' "$MANIFEST"
+            sed -i '/<manifest/s|.*|&\n    <uses-permission android:name="android.permission.INTERNET"/>|' "$MANIFEST"
           fi
           sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
+          # 后置校验：缺 INTERNET 权限的 APK 静默无法联网，CI 却全绿。
+          grep -q 'android.permission.INTERNET' "$MANIFEST" || { echo "::error::INTERNET permission injection failed"; exit 1; }
 
       - name: Place ECH shared library
         run: |
@@ -138,11 +144,19 @@ jobs:
 
       - name: Set unique version
         run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
-          # 日期 tag（vYYYYMMDD.HHMMSS）转成合法三段版本号 YYYYMMDD.0.HHMMSS
-          if [[ "$VERSION" =~ ^([0-9]{8})\.([0-9]{6})$ ]]; then
-            VERSION="${BASH_REMATCH[1]}.0.${BASH_REMATCH[2]}"
+          # 版本号来自 tag；main 分支/workflow_dispatch 触发时 ref_name 不是
+          # 合法版本（如 "main"），回退读 pubspec 原版本，避免写出
+          # "main+230" 这类非法版本号导致 flutter build 直接失败。
+          REF="${{ github.ref }}"
+          if [[ "$REF" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+            # 日期 tag（vYYYYMMDD.HHMMSS）转成合法三段版本号 YYYYMMDD.0.HHMMSS
+            if [[ "$VERSION" =~ ^([0-9]{8})\.([0-9]{6})$ ]]; then
+              VERSION="${BASH_REMATCH[1]}.0.${BASH_REMATCH[2]}"
+            fi
+          else
+            VERSION=$(grep '^version:' /tmp/build_project/pubspec.yaml | sed 's/^version: *//' | sed 's/+.*//')
           fi
           RN=${{ github.run_number }}
           sed -i "s/^version:.*/version: ${VERSION}+${RN}/" /tmp/build_project/pubspec.yaml
@@ -197,11 +211,18 @@ jobs:
       - name: Set unique version
         shell: powershell
         run: |
+          # 版本号来自 tag；main 分支/workflow_dispatch 触发时回退读 pubspec
+          # 原版本（同 Linux 版，避免 "main+230" 非法版本号）。
           $content = Get-Content C:\tmp\build_project\pubspec.yaml -Raw
-          $version = "${{ github.ref_name }}".TrimStart('v')
-          # 日期 tag（vYYYYMMDD.HHMMSS）转成合法三段版本号 YYYYMMDD.0.HHMMSS
-          if ($version -match '^(\d{8})\.(\d{6})$') {
-            $version = "$($matches[1]).0.$($matches[2])"
+          $ref = "${{ github.ref }}"
+          if ($ref -like 'refs/tags/v*') {
+            $version = "${{ github.ref_name }}".TrimStart('v')
+            # 日期 tag（vYYYYMMDD.HHMMSS）转成合法三段版本号 YYYYMMDD.0.HHMMSS
+            if ($version -match '^(\d{8})\.(\d{6})$') {
+              $version = "$($matches[1]).0.$($matches[2])"
+            }
+          } else {
+            $version = ((Select-String '^version:' C:\tmp\build_project\pubspec.yaml).Line -replace 'version: *' -replace '\+.*')
           }
           $rn = "${{ github.run_number }}"
           $content = $content -replace '^version:.*', "version: $version+$rn"
