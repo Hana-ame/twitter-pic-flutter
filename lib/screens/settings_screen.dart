@@ -1,6 +1,7 @@
 // settings_screen.dart
 // 设置页面：查看代理状态、网络诊断、清除缓存、关于信息
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -58,6 +59,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 抓取 `<username>.json.gz` 并解析为原始 Map（不解码成模型）。
+  /// 用于诊断 JSON 结构与模型是否匹配（timeline 字段名、类型等）。
+  Future<Map<String, dynamic>?> _fetchRawJson(String username) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    client.badCertificateCallback = (cert, host, port) => true;
+    try {
+      final date = DateTime.now().toIso8601String().split('T')[0];
+      final url =
+          'https://x.moonchan.xyz/api/twitter/$username.json.gz?t=$date';
+      final req = await client.getUrl(Uri.parse(url));
+      req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+      final res = await req.close();
+      if (res.statusCode != 200) {
+        return <String, dynamic>{'__http_error__': 'HTTP ${res.statusCode}'};
+      }
+      final bytes = await res.fold<List<int>>(
+        <int>[],
+        (acc, chunk) => acc..addAll(chunk),
+      );
+      // 可能是 gzip 压缩：先尝试 utf8，失败再解压。
+      var text = '';
+      try {
+        text = utf8.decode(bytes);
+      } catch (_) {
+        text = utf8.decode(gzip.decode(bytes));
+      }
+      final decoded = jsonDecode(text);
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } catch (e) {
+      return <String, dynamic>{'__http_error__': '$e'};
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   Future<void> _runDiag() async {
     if (_diagRunning) return;
     setState(() {
@@ -98,16 +134,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
 
-    // 2. 第一个用户的 metadata：timeline 条数 + 头像 URL
-    await step('2. 用户元数据 (timeline/头像)', () async {
+    // 2. 第一个用户的原始 JSON：顶层 keys + timeline 结构 + 头像字段
+    await step('2. 用户 JSON 结构 (.json.gz)', () async {
       final api = TwitterApi();
       try {
         final users = await api.getUserList();
         if (users.isEmpty) return '失败: 用户列表为空';
         final u = users.first;
-        final meta = await api.getMetaData(u.username, forceRefresh: true);
-        final avatar = meta.accountInfo.avatar ?? '(无头像字段)';
-        return '${meta.timeline.length} 条 timeline\n头像: $avatar';
+        final raw = await _fetchRawJson(u.username);
+        if (raw == null) return '失败: 无法获取 ${u.username}.json.gz';
+        final topKeys = raw.keys.map((k) => "'$k'").join(', ');
+        final tl = raw['timeline'];
+        final tlLen = tl is List ? tl.length : -1;
+        var tlInfo = 'timeline: $tlLen 条';
+        if (tl is List && tl.isNotEmpty) {
+          final first = tl.first;
+          if (first is Map) {
+            final keys = first.keys.map((k) => "'$k'").join(', ');
+            tlInfo += '\ntimeline[0] 字段: $keys';
+            final sample = first.values.take(2).map((v) => v.toString().length > 60 ? '${v.toString().substring(0, 60)}…' : v.toString()).join(' | ');
+            tlInfo += '\ntimeline[0] 样例: $sample';
+          }
+        }
+        final info = raw['account_info'];
+        final avatar = info is Map ? info['profile_image'] : '(无 account_info)';
+        return '顶层字段: $topKeys\n$tlInfo\n头像: $avatar';
       } finally {
         api.dispose();
       }
