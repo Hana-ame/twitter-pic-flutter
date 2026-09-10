@@ -1,6 +1,16 @@
 # Native ECH PoC — BoringSSL FFI 方案设计
 
-> 分支：`feat/native-ech-poc`（不进 main；PoC 通过才谈合并）
+> ## ⚠️ 状态：未采用，已归档（2026-09-10）
+>
+> 这条路线**没有落地**，`lib/native_ech/`、`libBoringssl` 绑定等文件均不存在于当前代码库。
+> 最终采用的是「Go c-shared 本机代理 + dart:ffi」：见
+> [architecture.md](architecture.md)。本文件仅保留当时的方案对比与风险分析，
+> 供以后评估"要不要把 ECH 挪进纯 Dart"时参考，**不要照此实现**。
+>
+> 现行实现的要点差异：Dart 侧不再自己握手/解析 HTTP，而是写
+> `http://127.0.0.1:<port>` 交给 Go 代理；ExoPlayer/`Image` 也因此能直接用标准 HTTP。
+
+> 分支：`feat/native-ech-poc`（不进 main；PoC 通过才谈合并）—— 分支已于 v0.5.0 合入 main
 > 前提事实：`dart:io` 至今没有公开 ECH API（BoringSSL 在引擎里有实现，但 Dart 层零暴露）。
 > 所以"原生"只能自己带：把 BoringSSL 编译成 `.so/.dll` 随 App 分发，dart:ffi 直调。
 

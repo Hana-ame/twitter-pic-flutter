@@ -1,174 +1,228 @@
 # Twitter Pic Flutter
 
-> Flutter 项目，通过 ECH 域前置绕过 SNI 阻断，浏览 Twitter 图片与视频。
+> 浏览 Twitter（X）图片与视频的 Flutter 客户端。墙内直连 `*.twimg.com` 必死，
+> 媒体统一经**本机 Go ECH 代理**转发到 `video-cf.twimg.com`；API/JSON 直连自建后端。
 
-## 项目背景
+当前版本 **v0.5.0**（Android arm64 + Windows x64）。
 
-本地无 Flutter/Android SDK，**纯 GitHub Actions 云端构建**。
-
-SNI 阻断问题：Dart 的 `SecureSocket` 不暴露 ECH config 注入接口，无法在 Dart 层直接实现 ECH。  
-方案：**Go c-shared + dart:ffi**，将 Go ECH 客户端编译为 `.so`，Flutter 通过 `DynamicLibrary.open` 加载，直接 FFI 调用。无 HTTP 代理中间层，无端口监听。
-
-## 技术栈
-
-| 层级 | 技术 |
+| 平台 | 产物 |
 | --- | --- |
-| 框架 | Flutter 3.44.3 (stable) |
-| 语言 | Dart ^3.12.0 / Go 1.26 (ECH Proxy) |
-| 主题 | Material 3 |
-| 图标 | flutter_launcher_icons + Moonchan favicon |
-| 网络 | Go c-shared ECH Client (dart:ffi 直调) |
-| 构建 | GitHub Actions: NDK r27 + Go (stable) + Flutter 3.44.3 |
-| 发布 | GitHub Releases (APK + Windows ZIP 自动上传) |
+| Android | `app-release.apk`（包名 `xyz.moonchan.twitterpic`，仅 arm64-v8a） |
+| Windows | `twitter_pic_flutter_windows_amd64.zip` |
+
+## 网络架构：两条通道，别混
+
+```
+① 控制面（JSON / API）—— 直连，不走代理
+   Dio → https://x.moonchan.xyz/api/twitter/...
+
+② 数据面（媒体）—— 必须走 ECH
+   Image/ExoPlayer → http://127.0.0.1:<port>/<path>?<query>
+                          │  本机 Go 代理（纯 HTTP 监听）
+                          ▼
+                   cloudflare_ech.Do()
+                          │  TLS 1.3 + ECH，外层 SNI=cloudflare-ech.com
+                          ▼
+                   https://video-cf.twimg.com/<path>?<query>
+```
+
+设计要点：
+
+- **API 直连**：`x.moonchan.xyz` 是自建域名，无需 ECH。把 API 塞进代理只会多一跳、
+  还容易因为前缀处理出错（历史事故见 `doc/troubleshooting.md`）。
+- **媒体走代理**：`EchUrl.rewrite()` 丢掉原始域名，只保留 path + query，代理统一拼上
+  `https://video-cf.twimg.com`。`pbs.twimg.com`（图片/头像）与 `video.twimg.com`（视频）
+  是同一个 CDN 后端，改域名即可命中 ECH 路径（已实测，见下）。
+- **代理只监听明文 HTTP**：Dart 侧写的是 `http://127.0.0.1:<port>`。代理一旦开 TLS
+  （历史上有过一版），每个请求都会得到 `400 Client sent an HTTP request to an HTTPS server`，
+  表现为"从来没成功访问过"。
+
+### 实测数据（经 ECH 打真实 URL）
+
+用 `github.com/Hana-ame/wintools/pkg/ech` 直连 `video-cf.twimg.com`，图片 URL 取自线上 API：
+
+| `name=` 档位 | 图 1 | 图 2 |
+| --- | --- | --- |
+| `orig` | 200 · 371,715 B | 200 · 195,640 B |
+| `large` | 200 · 371,715 B | 200 · 195,640 B |
+| `medium` | 200 · **182,042 B** | 200 · **89,352 B** |
+| `small` | 200 · **74,563 B** | 200 · **34,328 B** |
+
+- 四档全部可用；`medium` ≈ `orig` 的 46~49%，`small` ≈ 18~20%。
+- 这两张图的 `large == orig`（原图未超过 2048，`large` 返回同一份字节）。
+- 视频 `Range: bytes=0-1023` → **206 + Content-Range**（ExoPlayer 起播的前提）。
+- 新进程里第一次 ECH 请求要 7~11s（先 DoH 取 ECH 配置），之后 0.4~1.5s —— 所以
+  App 启动即拉起代理，进画廊时已经在热路径上。
+
+## 功能
+
+- 用户列表 / 搜索（按用户名、昵称）
+- 用户详情：媒体时间线（图片 + 视频）、标签、emoji 投票
+- 图片全屏预览：**左右滑动或上下滑动翻页**、双击放大、逐块解码（下到哪显示到哪）
+- 视频：Range 边下边播、缓冲进度、倍速、全屏、下载分享
+- 收藏 / 屏蔽标签 / 批量下载（三个入口：流式下载、兼容下载、应急下载）
+- 设置页：代理状态、**10 项网络诊断**（可一键复制）、Go 侧调试日志、清缓存
 
 ## 目录结构
 
 ```
 lib/
-├── api/
-│   └── twitter_api.dart          # API 客户端 (search/元数据/标签/表情/排行)
-├── models/
-│   └── user.dart                 # 数据模型
+├── api/twitter_api.dart           # Dio 客户端（kApiBase、路径归一化、元数据缓存）
+├── models/user.dart               # 容错 JSON 模型（缺字段不炸）
 ├── screens/
-│   ├── user_list_screen.dart     # 用户列表/搜索/收藏
-│   ├── user_detail_screen.dart   # 用户详情 (图片/视频/表情投票/标签)
-│   └── ranking_screen.dart       # 表情排行榜 (日/周/月)
+│   ├── user_list_screen.dart      # 用户列表 / 搜索 / 收藏入口
+│   ├── user_detail_screen.dart    # 详情页：时间线、标签、emoji、批量下载
+│   ├── settings_screen.dart       # 设置 + 10 项网络诊断 + 日志
+│   └── ranking_screen.dart        # emoji 排行
 ├── services/
-│   ├── proxy_manager.dart        # FFI 加载 libechproxy.so + init/异步 fetch/流式下载
-│   └── storage_service.dart      # localStorage 封装 (收藏/屏蔽/标签规则)
+│   ├── proxy_manager.dart         # FFI 生命周期（12 个导出符号）
+│   └── storage_service.dart       # 收藏 / 屏蔽 / 标签规则持久化
+├── utils/
+│   ├── ech_url.dart               # 媒体 URL → 本机代理 URL
+│   ├── media_url.dart             # name= 缩略图档位（按显示像素选）
+│   └── doh_resolver.dart          # DoH 自举 IP 解析
 ├── widgets/
-│   ├── twitter_image.dart        # 图片组件，ECH 异步加载
-│   ├── twitter_video.dart        # 视频组件：ECH 流式下载 → 原地播放 + 封面
-│   ├── proxy_avatar.dart         # 用户头像 (ECH 异步加载)
-│   ├── tag_selector_modal.dart   # 标签选择器 (分类/自定义)
-│   ├── tag_display_area.dart     # 标签展示
-│   └── tag_controller.dart       # 高亮/屏蔽标签管理
-└── main.dart                     # 入口 & ECH 初始化
+│   ├── progressive_image.dart     # 逐块解码 ImageProvider（核心）
+│   ├── twitter_image.dart         # 图片卡片 + 全屏画廊
+│   ├── twitter_video.dart         # 视频卡片 + 全屏播放
+│   ├── proxy_avatar.dart          # 头像
+│   ├── fav_list.dart              # 收藏列表（导出/导入）
+│   └── tag_*.dart                 # 标签选择/展示/高亮
+└── main.dart                      # 入口、ImageCache 配置、底部导航
+
+ech-proxy/cmd/ech-flutter-shared/main.go   # 代理唯一实现（供 CI 编 .so/.dll）
+.github/workflows/build.yml                # 测试 → 双平台构建 → 发 Release
+test/                                      # 9 个测试文件，CI 全跑
+doc/architecture.md                        # 架构细节
+doc/troubleshooting.md                     # 症状 → 根因 → 怎么确认
 ```
 
-## 架构
+## 关键实现
 
-```
-┌───────────────────────────────────────┐
-│             APK 进程空间                │
-│                                       │
-│  Flutter App ──Isolate + FFI────── Go  │
-│  (fetchAsync)    ECHFetch(url)     ECH │
-│                    ← raw bytes    Client│
-│                     Image.memory       │
-│           或流式 ECHFetchBegin/Read     │
-│             → spool 文件 → video_player│
-└───────────────────────────┬───────────┘
-                            │ TCP :443 with ECH
-                  ┌─────────┴──────────┐
-                  │ cloudflare-ech.com  │
-                  │ TLS 1.3 + ECH      │
-                  │ SNI=video-cf...    │
-                  └─────────┬──────────┘
-                            │
-                  ┌─────────┴──────────┐
-                  │ Twitter CDN         │
-                  │ video-cf.twimg.com  │
-                  └────────────────────┘
-```
+### 1. 本机代理（Go，唯一真源）
 
-### 工作流程
+`ech-proxy/cmd/ech-flutter-shared/main.go` 导出 12 个符号给 Dart（FFI）：
 
-1. App 启动 → `ProxyManager.init()` → FFI `ECHInit()` → goroutine 拉取 ECH 配置
-2. 轮询 `ECHInitReady()`（最长 30s）：0=等待，1=就绪，-1=失败
-3. `fetchAsync(url)` → `Isolate.run` → FFI `ECHFetch()` → Go 通过 cloudflare-ech.com 发起 ECH TLS 连接，获取资源
-4. 图片：返回原始字节 → `Image.memory()`
-5. 视频：`fetchToFileAsync` → 工作 isolate 内 `ECHFetchBegin`/`ECHRead` 分块读取（64KB buffer 写盘，内存占用恒定）→ 下载完成后 `video_player` 原地播放，并抽首帧做封面（`video_thumbnail`，仅 Android/iOS）
-
-### ECH 初始化
-
-- `ECHInit` 使用 mutex 状态机（非 `sync.Once`），失败后可重试
-- 支持 `ECHInitWithBootstrap(host, ip)` 直接 IP 拨号 DoH 服务器
-- 日志通过环形缓冲区暴露给 Dart（`ECHGetLogCount` / `ECHGetLog`）
-
-### DoH 自举
-
-Go 在 Android FFI 中系统 DNS 不可靠，由 Dart 通过 `InternetAddress.lookup` 解析 DoH 服务器 IP 后传给 Go：
-
-```dart
-final addr = await InternetAddress.lookup('moonchan.xyz');
-proxy.init(dohHost: 'moonchan.xyz', dohBootstrapIP: addr.first.address);
-```
-
-DNS 回退链：System DNS → Tencent (119.29.29.29) → Alibaba (223.5.5.5)，5 次重试。
-
-### 视频播放
-
-- **流式下载**：视频通过 `ECHFetchBegin`/`ECHRead` 分块流式写盘（64KB buffer），不把整个 mp4 读进内存，大视频不再 OOM；下载在后台 isolate 进行，带 3 次重试，UI 不阻塞。
-- **原地播放**：下载完成后用 `video_player` 原地播放本地文件（Windows 由 `video_player_win`/Media Foundation 实现），播放中按视频实际宽高比自适应显示，竖屏视频不被拉伸。
-- **封面**：下载完成后用 `video_thumbnail` 抽首帧做封面（仅 Android/iOS，桌面跳过）。
-- **进度与缓存**：下载中显示已下载字节数；完成后写 `<spool>.done` 标记，同 URL 重进页面直接复用缓存。
-- **控制栏**：播放/暂停 + 可拖动进度条（拖动中实时显示目标时间，松手才 seek）+ 时间显示 + 全屏按钮；播放中 3 秒无操作自动淡出（不挡画面），点视频唤出；时间按秒实时刷新。
-- **全屏**：控制栏全屏按钮进入全屏路由（黑底、与卡片共享 controller），顶部关闭、底部控制栏含退出全屏，同样支持自动淡出与拖动进度。
-
-> 边下边播（下载中播放本地流）经真机验证不可行，已移除：内置 ExoPlayer 对 chunked 本地流不稳定，系统播放器（open_filex）方案也无法可靠打开，统一为"下载完才能看"。
-
-### 批量下载
-
-用户详情页 header 提供三个下载入口，全部流式写盘到 `Download/<用户名>/`：
-- **下载**：逐项 `fetchToFileAsync` 流式下载，单文件失败不中断，header 转圈处实时显示 `下载中 x/y` 进度
-- **兼容下载**：旧实现（整包内存 + `fetchAsync`）
-- **应急下载**：同步 FFI 直调（每项阻塞 UI）
-
-### 缓存
-
-`ProxyManager` 持有静态 `_imageCache`（`Map<String, Uint8List>`），`fetchAsync` 优先从缓存同步返回，避免重复 ECH 请求。  
-`TwitterApi._metaCache` 缓存用户元数据，防止滚动重载。  
-视频走文件缓存（spool + `.done` 标记），见上文"视频播放"。
-
-## 构建
-
-### CI/CD 流程
-
-1. 推送至 main → 触发 workflow（`build_android` + `build_windows` 并行）
-2. 安装 NDK r27 → 交叉编译 Go c-shared（wintools/ech-shared）→ `libechproxy.so` (Android) / `echproxy.dll` (Windows)
-3. `flutter create` 脚手架 + 覆写 `lib/`、`assets/`、`pubspec.yaml`
-4. 注入 `INTERNET` 权限、设置应用名"推图"
-5. 签名：`key.properties` + `gradle.properties` 注入 `android.injected.signing.*`，密码通过 GitHub Secrets 管理
-6. `flutter build apk --release --target-platform android-arm64` / `flutter build windows --release`
-7. `create_release` 汇总两平台产物上传至 GitHub Releases（版本号按日期自动生成）
-
-### API 端点
-
-所有数据来自 `https://x.moonchan.xyz/api/twitter`：
-
-| 端点 | 用途 |
+| 符号 | 用途 |
 | --- | --- |
-| `searchUserList` | 搜索用户 |
-| `getUserList` | 获取用户列表 |
-| `getMetaData` | 获取用户元数据（头像、昵称等） |
-| `getTags` | 获取标签列表 |
-| `getEmojis` | 获取表情投票数据 |
-| `getRanking` | 表情排行榜 |
+| `ECHSetDohURL` / `ECHInit` / `ECHInitWithBootstrap` / `ECHInitReady` / `ECHInitLastError` | ECH 初始化 |
+| `StartProxy` / `StopProxy` / `GetProxyPort` / `IsEchReady` | 代理生命周期 |
+| `ECHGetLogCount` / `ECHGetLog` / `FreeCString` | 日志回传 |
+
+路由：`/` 内置说明页，`/logs` Go 日志，`/api/` 转发自建后端（仅演示用），
+其余一律 `echProxyHandler` → `https://video-cf.twimg.com/<path>`。
+
+三个必须保留的细节：
+
+- **透传 `Range`** 并回 `206` + `Content-Range` + `Accept-Ranges`：ExoPlayer 靠它找 moov。
+- **强制 `Accept-Encoding: identity`**：否则 Go transport 自动 gzip 会删掉 `Content-Length`，
+  播放器估不出长度就不放。
+- **转发 query**：`?format=jpg&name=orig` 丢了就是 404。
+
+> cgo 规则：导出函数里 panic 会**直接 abort 整个进程**。所有导出都包了 `guardPanic()`
+> 并使用具名返回值，`logBuffer` 的读写都在锁内（历史上正是这里撕裂 slice 导致偶发闪退）。
+
+### 2. 图片逐块解码
+
+`Image.network`/`NetworkImage` 会**先把整个响应体读完再解码**，一张几百 KB 的图在墙内
+慢慢下的时候屏幕上只能是一大片空白。`ProgressiveImageProvider` 直接读 HTTP 流，
+每收到一块就尝试解码当前缓冲并 `setImage`：已下载的部分立刻画出来，未下载到的区域
+是 Skia 的中性灰。
+
+- 节流三条规则：增量 ≥24KB、增量 ≥ 已解码量 1/4、间隔 ≥120ms（越往后越稀疏）。
+- 按 URL 命中 `ImageCache`，滚回来不重新下载；30s 无数据才中断。
+- PNG 等不支持部分解码的格式自动退化为"下完再显示"，不报错。
+
+### 3. 缩略图档位
+
+线上 API 抽查 6 个用户、2209 条：图片全是 `pbs.twimg.com/media/<id>?format=jpg&name=orig`
+（最重的一档），视频是 `video.twimg.com/.../<id>.mp4?tag=29`（其中 238 条连查询参数都没有）。
+
+列表按**卡片实际像素宽度**挑最小够用的档（`MediaUrl.gridFor`）：`≤680 → small`、
+`≤1200 → medium`、否则 `large`；全屏预览与下载仍取原图。视频一律不改写。
+
+### 4. 列表性能
+
+- `cacheExtent: 1800`：视口外两三张卡片提前构建并发起下载。
+- 进页面预热 6 张缩略图，每次续载再预热 4 张；滚到底自动 +10（无限滚动）。
+- `ImageCache` 放宽到 160MB / 1500 张（默认 100MB / 1000），滚过去的图尽量留在内存。
+
+### 5. 视频
+
+`VideoPlayerController.networkUrl(EchUrl.rewriteToUri(...))`，靠代理的 Range 支持边下边播；
+控制栏是一根条三态（已播放/已缓冲/未缓冲），缓冲量画在滑块轨道底下。
+
+**同一个 controller 同一时刻只能有一个 `VideoPlayer` 在渲染**，否则 texture 被渲染两次
+（鬼影，全屏那侧往往是黑的）——进全屏时卡片侧换成纯黑占位。
+
+全屏用 `Center + AspectRatio + VideoPlayer`，**不能用 `FittedBox`**：`VideoPlayer` 渲染的是
+`Texture`，`TextureBox` 是 `sizedByParent`（尺寸取 `constraints.biggest`），而 `FittedBox`
+会用无界约束去量孩子 → 高度 `∞` → 整层渲染失败 → 全屏黑屏（见 `doc/troubleshooting.md`）。
+
+## 构建与发布
+
+CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
+
+1. `flutter_test`：`flutter analyze --no-fatal-infos --no-fatal-warnings` + `flutter test`
+   —— 不过不发版（`create_release` 依赖它）。
+2. `build_android`：Go 交叉编译 `libechproxy.so`（NDK r27，arm64-v8a）→ 注入包名
+   `xyz.moonchan.twitterpic`、`INTERNET`、`android:usesCleartextTraffic="true"`（本机 HTTP 代理必需）、
+   应用名"推图" → 签名 → `flutter build apk --release`。
+3. `build_windows`：Go 编 `echproxy.dll` → `flutter build windows --release` → 打 zip。
+4. `create_release`：上传 APK + zip。
+
+**版本号跟着 tag 走**：推 `v*` tag 时把 tag 名写进 `pubspec.yaml` 的 `version`
+（日期 tag `vYYYYMMDD.HHMMSS` 会转成三段式 `YYYYMMDD.0.HHMMSS`）；推 main 分支时
+回退用 pubspec 里的版本，避免写出非法版本号。
+
+发布：`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`
+
+## 自查：诊断与日志
+
+设置页 →「运行全部通道测试」共 10 项，出结果后点「复制」可直接贴出来：
+
+1. API 直连（Dio 实际通道） 2. 用户 JSON 编码与字段 2b. `getMetaData` 经 Dio+模型解析
+3. API 原始探测（不经 Dio） 4. video-cf 经 ECH 代理 5. video-cf 直连（预期失败）
+6. 真实头像经代理 7. 头像 widget 栈解码 8. 真实图片 widget 栈解码
+9. 真实视频 Range 探测 10. **ECH 代理转发记录**（各类型多少条经 video-cf、多少条 200/206）
+
+设置页 →「调试日志」是 Go 侧日志，代理对每条请求都会写：
+
+```
+→ https://video-cf.twimg.com/media/xxx?format=jpg&name=medium (from 127.0.0.1:xxxxx)
+← 200 https://video-cf.twimg.com/media/xxx?format=jpg&name=medium (182042 B)
+```
+
+**想知道媒体到底有没有走 ECH**：看这两行即可 —— 上游是 `video-cf.twimg.com` 就说明走了 ECH；
+`← 200/206` 说明取到了。媒体走没走代理不靠猜，日志里一目了然。
 
 ## 注意事项
 
-1. **版本号显示在标题栏** — 窗口/任务栏标题和 AppBar 均以 `BUILD_NUM`（例如 `v0.2.0+123`）为后缀，方便区分构建版本
-2. **源码与平台文件分离** — `android/`、`ios/` 不提交，CI 动态生成
-3. **Go 共享库** — `libechproxy.so` / `echproxy.dll` 由 CI 交叉编译，源码在 [Hana-ame/wintools](https://github.com/Hana-ame/wintools)，流式接口为 `ECHFetchBegin`/`ECHRead`/`ECHClose`
-4. **仅 arm64** — `--target-platform android-arm64`
-5. **JDK 17** — AGP 8.x 要求
-6. **Flutter 3.44.3** — 版本锁定
-7. **NDK r27**
-8. **DoH** — 仅 `https://moonchan.xyz/doh`
-9. **签名** — GitHub Secrets 跨构建一致；**7/25 起签名变更，老版本需卸载重装**
-10. **不支持 iOS**
+1. **源码与平台文件分离**：`android/`、`ios/` 不提交，CI 用 `flutter create` 现场生成再覆写。
+2. **仅 arm64**：`--target-platform android-arm64`。
+3. **包名变更**：`xyz.moonchan.twitterpic`（旧 `com.example.*` 的版本要先卸载再装）。
+4. **明文流量**：`http://127.0.0.1:<port>` 依赖 manifest 里的 `usesCleartextTraffic="true"`，
+   Android 9+ 缺它会被系统静默拒绝（表现为"暂无内容"）。
+5. **Flutter 3.44.3 / JDK 17 / NDK r27** 锁定。
+6. **DoH 固定** `https://moonchan.xyz/doh`。
+7. **不支持 iOS**。
 
 ## 更新日志
 
-- **v0.2.8**
-  - 视频改为流式下载（ECHFetchBegin/ECHRead 分块写盘），大视频不再爆内存
-  - 下载完成后 `video_player` 原地播放，按视频实际比例自适应（竖屏不被拉伸）
-  - 视频封面抽帧（video_thumbnail）；批量下载 header 显示 `下载中 x/y` 进度
-  - 播放控制栏 3 秒自动淡出 + 点击唤出，时间秒级实时刷新
-  - 全屏播放（黑底全屏路由，共享 controller）+ 可拖动进度条（松手 seek）
-  - 边下边播（系统播放器/ExoPlayer 播本地流）真机不可行，已移除
-- **v0.2.3**
-  - 修复收藏夹导出 URL 时剪贴板为空的问题。
-  - 修复手机端无法通过系统播放器打开视频的问题（引入 `open_filex`）。
-  - 配置 GitHub Actions 自动构建 APK 和 Windows EXE。
+### v0.5.0
+- 媒体（图片/头像/视频）统一经本机 ECH 代理 → `video-cf.twimg.com`；API/JSON 直连
+- 代理改为**纯 HTTP**（此前 TLS 模式导致所有请求 `400`，即"从来没成功访问过"）
+- 代理支持 `Range`/206、转发 query、`Accept-Encoding: identity`，并记录上游状态码与字节数
+- 修复 API 路径拼接缺斜杠导致 `metadata/tags/emojis` 全部 403
+  （症状：详情页"暂无内容"、头像全空、标签/emoji 空）
+- 修复媒体卡片在无界高度里没有确定高度 → 整片 media 空白
+- 图片**逐块解码**（下到哪显示到哪）；列表按显示尺寸取 `name=` 缩略图档位
+- 图片全屏支持左右/上下滑动翻页 + 双击放大
+- 修复全屏视频黑屏（`FittedBox` + `Texture`）与鬼影（同一 controller 渲染两次）
+- 诊断面板扩到 10 项，含 ECH 转发记录
+
+### v0.2.8
+- 视频流式下载 → 原地播放 + 封面抽帧；批量下载进度；播放控制栏自动淡出；全屏播放
+
+### v0.2.3
+- 修复收藏夹导出剪贴板为空；GitHub Actions 自动构建

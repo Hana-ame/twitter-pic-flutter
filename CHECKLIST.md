@@ -1,59 +1,65 @@
 # 项目总检清单
 
-## 主要目标
-- [x] 浏览 Twitter 图片/视频（通过 ECH 代理绕过封锁）
-- [x] 支持 Android 平台
-- [x] 支持 Windows 平台
-- [x] 自动 CI 构建 + Release
+> 最后核对：v0.5.0（2026-09-10）。细节见 [README](README.md)、
+> [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
-## ECH 代理（核心）
-- [x] 使用 native wintools DLL/libechproxy 实现 ECH
-- [x] 平台自适应：Windows → echproxy.dll / Linux → .so / macOS → .dylib
-- [x] 支持自定义 DoH URL / Host / Bootstrap IP
-- [x] ffi 2.2.0 兼容（`using`/`Arena`/`Utf8` 在 2.x 中仍可用）
-- [ ] 迁移到纯 Dart ECH（等待 Flutter 内置支持）
+## 目标
+- [x] 浏览 Twitter 图片/视频（媒体经本机 ECH 代理绕过 SNI 阻断）
+- [x] Android（arm64-v8a）+ Windows x64
+- [x] 全云端 CI 构建 + 打 tag 自动发 Release
+- [ ] 纯 Dart ECH（等 Flutter 内置支持；目前 Dart 层无 ECH API）
 
-## 代码结构
-- [x] `lib/services/proxy_manager.dart` — ECH 代理 + image cache + 流式下载（不可删）
-- [x] `lib/widgets/twitter_video.dart` — 视频流式下载 → 原地播放 + 封面（`video_player`/`video_thumbnail`）
-- [x] `lib/widgets/twitter_image.dart` — 图片加载
+## 网络通道
+- [x] 控制面：JSON/API **直连** `https://x.moonchan.xyz/api/twitter`（不进代理）
+- [x] 数据面：`pbs/video.twimg.com` 媒体 → `http://127.0.0.1:<port>` → ECH → `video-cf.twimg.com`
+- [x] `EchUrl.rewrite` 丢域名、保 query；`port == null` 时明确报错，不退化成直连
+- [x] 代理只监听**明文 HTTP**（TLS 模式会让所有请求变 400，已彻底移除）
+- [x] 代理透传 `Range` + 回 206/`Content-Range`/`Accept-Ranges`，强制 `Accept-Encoding: identity`
+- [x] 代理转发 query，并记录每条请求的上游 URL 与状态码（设置页可看）
 
-## 视频功能现状（2026-08-14）
-- [x] 流式下载（`ECHFetchBegin`/`ECHRead` 分块写盘，64KB buffer，不 OOM）
-- [x] 下载完成原地播放（`video_player`），按实际宽高比自适应，竖屏不拉伸
-- [x] 封面抽帧（`video_thumbnail` fork `Hana-ame/video_thumbnail` tag `v0.5.6-flutter44`，仅 Android/iOS）
-- [x] 控制栏 3 秒自动淡出、点击唤出、秒级时间刷新
-- [x] 批量下载 header 进度 `下载中 x/y`
-- [x] spool 文件缓存 + `.done` 标记复用
-- [ ] ~~边下边播~~ 真机不可行已移除（ExoPlayer chunked 不稳 / open_filex 系统播放器打不开）
+## 已修复的关键故障（回归测试覆盖）
+- [x] Dio 拼 URL 少斜杠 → `metadata/tags/emojis` 全 403（详情页"暂无内容"、头像全空）
+- [x] 媒体卡片在无界高度里没有确定高度 → 整片 media 空白
+- [x] 全屏视频黑屏：`FittedBox` 用无界约束量 `Texture`（`TextureBox` 是 `sizedByParent`）
+- [x] 视频鬼影/全屏点不动：同一 controller 被两个 `VideoPlayer` 同时渲染
+- [x] 两根加载条：缓冲条与滑块各自一条 → 合成一根条三态
+- [x] 代理 TLS 模式 → 所有请求 400（"从来没成功访问过"）
+- [x] 视频停在加载中：Range 未透传 / 未强制 identity（无 Content-Length）
+- [x] 启动偶发闪退：cgo 导出内 panic abort 进程（`guardPanic` + 锁内清缓冲）
+- [x] 滑动白屏：原图 `name=orig` + `cacheExtent` 过小 + ImageCache 过小
 
-## 构建状态（2026-08-14）
-| 平台 | CI Job | 状态 |
-|------|--------|------|
-| Android | `build_android` | ✅ 通过 |
-| Windows | `build_windows` | ✅ 通过 |
-| Release | `create_release` | ✅ 通过 |
+## 功能
+- [x] 用户列表 / 搜索（用户名、昵称）/ 收藏
+- [x] 详情页：媒体时间线、标签、emoji 投票、批量下载（流式 / 兼容 / 应急）
+- [x] 图片：逐块解码（下到哪显示到哪）+ 按显示尺寸取 `name=` 档位
+- [x] 图片全屏：左右滑动 / 上下滑动翻页、双击放大、进度叠底
+- [x] 视频：Range 边下边播、缓冲进度、倍速、全屏、下载分享
+- [x] 会话内图片缓存（ImageCache 160MB / 1500 张）、元数据缓存（10 分钟 TTL + in-flight 去重）
+- [x] 设置页：代理状态、10 项网络诊断（可复制）、Go 调试日志、清缓存
 
-## 依赖管理
-- `ffi: ^2.2.0` — `using`/`Arena`/`Utf8` 在 2.x 中仍可用，无需特殊处理
-- `path_provider: ^2.1.5` — 本地路径获取（视频下载、缓存）
-- `video_player: ^2.9.0` + `video_player_win: ^3.2.2` — 原地播放（federated 自动注册）
-- `video_thumbnail` — git 依赖 fork（gradle 现代化，Java 实现不变）
-- `open_filex` — 曾用于边下边播（系统播放器），已随功能移除
+## 测试（CI `flutter_test` job，不过不发版）
+- [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）
+- [x] `media_url_test.dart` — `name=` 档位选择；线上真实视频 URL（含无 query）不改写
+- [x] `progressive_image_test.dart` — 解码节流三规则 + provider 缓存标识
+- [x] `ech_url_test.dart` — 媒体 URL 改写（丢域名、保 query）
+- [x] `proxy_manager_test.dart`（平台库名/加载路径）
+- [x] `user_model_test.dart` — 容错 JSON 解析
+- [x] `storage_service_test.dart` — 落盘重读、并发写不损坏、规则持久化
+- [x] `stable_hash_test.dart` — FNV-1a 已知向量与确定性
+- [x] `tag_display_area_test.dart` — widget 测试
 
-## 工作流注意事项
-- `.github/workflows/build.yml` 不可删除，已适配 Windows x64 输出路径
-- Go 版本: `stable`（CI 上取最新），用于编译 wintools/ech-shared
-- Windows 构建需要 VS 环境（CI 自带）
-- Android NDK r27 用于交叉编译 arm64 native 库
-- manifest 注入已精简：仅 `INTERNET` 权限 + 应用名"推图"（cleartext/queries 注入随边下边播移除）
+## 构建 / 发布
+- [x] `.github/workflows/build.yml`（不可删除）：`flutter_test` → `build_android` → `build_windows` → `create_release`
+- [x] Go 共享库由 `ech-proxy/cmd/ech-flutter-shared` 编译（不再依赖 wintools 的 ech-shared）
+- [x] 包名 `xyz.moonchan.twitterpic`；注入 `INTERNET` + `usesCleartextTraffic="true"` + 应用名"推图"，注入失败 CI 直接红
+- [x] 版本号跟着 tag 走（日期 tag `vYYYYMMDD.HHMMSS` → `YYYYMMDD.0.HHMMSS`）
+- [x] 签名走 GitHub Secrets；Flutter 3.44.3 / JDK 17 / NDK r27 锁定
 
-## 单元测试（2026-08-26）
-- [x] `test/stable_hash_test.dart` — FNV-1a 已知向量 / 确定性 / 千级无冲突（防缓存文件名算法漂移）
-- [x] `test/lru_image_cache_test.dart` — 淘汰顺序 / 触碰刷新 / 字节计数 / 更新去重 / 超大条目语义
-- [x] `test/user_model_test.dart` — fromJson 解析与缺省回退
-- [x] `test/storage_service_test.dart` — 落盘重读 / 并发写不损坏 / 无 .tmp 残留 / 规则与自定义标签持久化
-- [x] `test/tag_display_area_test.dart` — 高亮星标渲染（widget test）
-- [x] CI：`flutter_test` job（ubuntu），`create_release` 依赖它 —— 测试不过不发版
-- 说明：可测逻辑已抽为纯 Dart 模块（`lib/utils/stable_hash.dart`、`lib/services/lru_image_cache.dart`），
-  本地无 SDK，统一由 CI 执行
+## 依赖
+- `dio ^5.7.0` — API 客户端（路径归一化拦截器 + 结构化异常）
+- `ffi ^2.2.0` — Go c-shared 绑定（12 个导出符号）
+- `path_provider ^2.1.5` — 应用目录（原生库释放、下载目录）
+- `video_player ^2.9.0` + `video_player_win ^3.2.2` — Range 边下边播（federated 自动注册）
+- `share_plus ^10.0.0` — 分享图片/视频
+- `video_thumbnail`（fork `Hana-ame/video_thumbnail` tag `v0.5.6-flutter44`，仅为 Gradle 9/AGP 9 兼容）
+- `cached_network_image ^3.4.1` — 保留依赖（图片主通道已换成自研逐块解码）
