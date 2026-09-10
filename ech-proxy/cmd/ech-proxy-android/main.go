@@ -227,6 +227,23 @@ func GetLogs() *C.char {
 	return C.CString(logs)
 }
 
+// normalizePath 统一 path 的前导斜杠，兼容调用方传入的两种形式：
+//   - "/media/a.png" → "/media/a.png"（已有前导斜杠，保持，不会变 //media）
+//   - "media/a.png"  → "/media/a.png"（缺前导斜杠，补上）
+//   - ""             → "/"
+//
+// 拼接 targetURL 时用 host + normalizePath(path)，避免调用方写法差异产生
+// "https://host//media" 双斜杠（Cloudflare WAF 可能返回 403）。
+func normalizePath(path string) string {
+	if path == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return path
+}
+
 func router(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
@@ -306,7 +323,7 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 }
 
 func apiProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path string) {
-	targetURL := "https://" + targetHost + path
+	targetURL := "https://" + targetHost + normalizePath(path)
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
 	req, err := http.NewRequest(r.Method, targetURL, nil)
