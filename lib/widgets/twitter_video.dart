@@ -586,6 +586,24 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
     return fraction.clamp(0.0, 1.0);
   }
 
+  /// 画面比例：未初始化/取不到时退回 16:9，避免 AspectRatio 拿到 NaN/0。
+  double get _displayAspect {
+    final ar = widget.controller.value.aspectRatio;
+    if (!ar.isFinite || ar <= 0) return 16 / 9;
+    return ar;
+  }
+
+  /// 排查用的一行状态：全屏若还是黑的，看这行就能判断是 texture 没拿到、
+  /// 还是尺寸为 0、还是根本没在播。
+  String get _playerStateLine {
+    final v = widget.controller.value;
+    return 'tex=${widget.controller.textureId} '
+        '${v.size.width.toInt()}x${v.size.height.toInt()} '
+        '${v.isInitialized ? "init" : "uninit"}'
+        '${v.isPlaying ? " play" : " pause"}'
+        '${v.isBuffering ? " buf" : ""}';
+  }
+
   Future<void> _downloadVideo() async {
     if (_downloading) return;
     // 全屏版无降级状态（播放通道由父级 _TwitterVideoState 决定）：有代理
@@ -733,13 +751,21 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // 视频
+          // 视频画面。
+          //
+          // 这里**不能**用 FittedBox 包 VideoPlayer：VideoPlayer 渲染的是一个
+          // Texture，而 Flutter 的 Texture 是 sizedByParent（尺寸直接取
+          // constraints.biggest）。FittedBox 会用无界约束去量孩子 → Texture
+          // 拿到 height=∞，整层渲染失败，全屏就是一片黑。必须自己给一个有界
+          // 尺寸：Center 先松约束，AspectRatio 按视频比例定尺寸。
           Positioned.fill(
             child: GestureDetector(
               onTap: _toggleControls,
-              child: FittedBox(
-                fit: BoxFit.contain,
-                child: VideoPlayer(widget.controller),
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: _displayAspect,
+                  child: VideoPlayer(widget.controller),
+                ),
               ),
             ),
           ),
@@ -824,6 +850,15 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
                         Text(
                           _formatDuration(widget.controller.value.duration),
                           style: const TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            _playerStateLine,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 9),
+                          ),
                         ),
                       ],
                     ),
