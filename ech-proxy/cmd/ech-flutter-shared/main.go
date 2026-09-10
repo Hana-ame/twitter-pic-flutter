@@ -10,7 +10,14 @@
 //       StartProxy / StopProxy / GetProxyPort / IsEchReady
 //
 // Flutter 侧 proxy_manager.dart 依赖以上全部符号，缺任何一个都会
-// 导致加载或启动失败。构建（Android arm64）：
+// 导致加载或启动失败。
+//
+// 监听形态：**只提供明文 HTTP**，绑定 127.0.0.1（回环）。Dart 侧
+// EchUrl.rewrite 生成 http://127.0.0.1:<port>，若这里改成 TLS，Go 会对
+// 明文请求回 400，表现为媒体/头像全部加载失败。需要 TLS + 浏览器访问的
+// 版本见 cmd/ech-proxy-android。
+//
+// 构建（Android arm64）：
 //
 //	CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
 //	  CC=aarch64-linux-android21-clang \
@@ -31,7 +38,6 @@ package main
 import "C"
 
 import (
-	"crypto/tls"
 	_ "embed"
 	"fmt"
 	"log"
@@ -46,7 +52,6 @@ import (
 	"unsafe"
 
 	cloudflare_ech "github.com/Hana-ame/wintools/pkg/ech"
-	echproxy "github.com/Hana-ame/wintools/pkg/echproxy"
 )
 
 //go:embed web/index.html
@@ -279,41 +284,13 @@ func StartProxy(bootstrapIP *C.char) (port uint16) {
 	echReady = true
 	log.Printf("ECH ready")
 
-	// 3. 获取 TLS 证书（失败则回退 HTTP 模式）
-	proxyBase := "https://proxy.moonchan.xyz/Hana-ame/wintools/refs/heads/main/%s?proxy_host=raw.githubusercontent.com"
-	upstreamConfigURL := fmt.Sprintf(proxyBase, "certs/l.moonchan.xyz/upstream.json")
+	// 注意：本库只提供**明文 HTTP**监听，不提供 TLS。Dart 侧
+	// EchUrl.rewrite 永远生成 http://127.0.0.1:<port>；若这里优先包上 TLS，
+	// Go 会对明文请求直接回 400 "Client sent an HTTP request to an HTTPS
+	// server"，表现为"从来没成功访问过"。回环地址本就无需 TLS，也省掉启动
+	// 期 3 次证书网络往返。（浏览器用的 TLS 版见 cmd/ech-proxy-android。）
 
-	log.Printf("Loading upstream config: %s", upstreamConfigURL)
-	cfg, err := echproxy.LoadConfig(upstreamConfigURL)
-	if err != nil {
-		log.Printf("Failed to load config (fallback to HTTP): %v", err)
-		cfg = nil
-	}
-
-	var tlsCert *tls.Certificate
-	if cfg != nil && cfg.CertPath != "" && cfg.KeyPath != "" {
-		log.Printf("Fetching certificate: %s", cfg.CertPath)
-		certPEM, err := echproxy.FetchBytes(cfg.CertPath)
-		if err != nil {
-			log.Printf("Failed to fetch cert (fallback to HTTP): %v", err)
-		} else {
-			log.Printf("Fetching key: %s", cfg.KeyPath)
-			keyPEM, err := echproxy.FetchBytes(cfg.KeyPath)
-			if err != nil {
-				log.Printf("Failed to fetch key (fallback to HTTP): %v", err)
-			} else {
-				cert, err := tls.X509KeyPair(certPEM, keyPEM)
-				if err != nil {
-					log.Printf("Failed to parse cert (fallback to HTTP): %v", err)
-				} else {
-					tlsCert = &cert
-					log.Printf("Certificate loaded (*.l.moonchan.xyz)")
-				}
-			}
-		}
-	}
-
-	// 4. 监听端口（优先 8443，失败则随机）
+	// 3. 监听端口（优先 8443，失败则随机）
 	ln, err := net.Listen("tcp4", "127.0.0.1:8443")
 	if err != nil {
 		log.Printf("Port 8443 in use, trying random port...")
@@ -325,7 +302,7 @@ func StartProxy(bootstrapIP *C.char) (port uint16) {
 	}
 	proxyPort = uint16(ln.Addr().(*net.TCPAddr).Port)
 
-	// 5. 配置 HTTP 服务器
+	// 4. 配置 HTTP 服务器
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", router)
 
@@ -335,31 +312,13 @@ func StartProxy(bootstrapIP *C.char) (port uint16) {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	// 6. 启动 HTTPS 或 HTTP
-	if tlsCert != nil {
-		log.Printf("Listening HTTPS on 127.0.0.1:%d", proxyPort)
-		log.Printf("Access: https://twimg.l.moonchan.xyz:%d/", proxyPort)
-		proxyServer.TLSConfig = &tls.Config{
-			Certificates: []tls.Certificate{*tlsCert},
-			MinVersion:   tls.VersionTLS12,
+	// 5. 明文 HTTP 监听
+	go func() {
+		defer guardPanic("Serve")
+		if err := proxyServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("server error: %v", err)
 		}
-		tlsLn := tls.NewListener(ln, proxyServer.TLSConfig)
-		go func() {
-			defer guardPanic("Serve(tls)")
-			if err := proxyServer.Serve(tlsLn); err != nil && err != http.ErrServerClosed {
-				log.Printf("server error: %v", err)
-			}
-		}()
-	} else {
-		log.Printf("Listening HTTP on 127.0.0.1:%d", proxyPort)
-		log.Printf("Access: http://127.0.0.1:%d/", proxyPort)
-		go func() {
-			defer guardPanic("Serve")
-			if err := proxyServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-				log.Printf("server error: %v", err)
-			}
-		}()
-	}
+	}()
 
 	log.Printf("Proxy started on port %d", proxyPort)
 	return proxyPort
