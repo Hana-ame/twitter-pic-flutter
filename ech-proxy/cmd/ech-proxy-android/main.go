@@ -253,7 +253,7 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 		return
 	}
 
-	targetURL := "https://" + targetHost + "/" + strings.TrimPrefix(path, "/")
+	targetURL := "https://" + targetHost + normalizePath(path)
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
 	req, err := http.NewRequest(r.Method, targetURL, nil)
