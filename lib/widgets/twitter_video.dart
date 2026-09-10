@@ -597,8 +597,7 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   /// 还是尺寸为 0、还是根本没在播。
   String get _playerStateLine {
     final v = widget.controller.value;
-    return 'tex=${widget.controller.textureId} '
-        '${v.size.width.toInt()}x${v.size.height.toInt()} '
+    return '${v.size.width.toInt()}x${v.size.height.toInt()} '
         '${v.isInitialized ? "init" : "uninit"}'
         '${v.isPlaying ? " play" : " pause"}'
         '${v.isBuffering ? " buf" : ""}';
