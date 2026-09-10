@@ -345,7 +345,13 @@ class _UserTileState extends State<_UserTile> {
           ? const Icon(Icons.favorite, color: Colors.red, size: 18)
           : null,
       onTap: () {
-        if (_meta != null) widget.onTap(_meta!);
+        // _meta 可能加载失败（null）：仍用占位数据进详情页，详情页会自行刷新。
+        widget.onTap(_meta ??
+            UserMetaData(
+              accountInfo: TwitterUser(username: widget.username),
+              timeline: const [],
+              totalUrls: 0,
+            ));
       },
       onLongPress: () {
         showModalBottomSheet(

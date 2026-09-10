@@ -47,6 +47,20 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     _username = _profile.accountInfo.username;
     _loadTags();
     _loadEmojis();
+    // 占位数据（元数据加载失败时点进来的）：自动拉取完整数据。
+    if (_profile.timeline.isEmpty) {
+      _refreshProfile();
+    }
+  }
+
+  Future<void> _refreshProfile() async {
+    try {
+      final refreshed = await _api.getMetaData(_username, forceRefresh: true);
+      if (!mounted) return;
+      setState(() => _profile = refreshed);
+    } catch (_) {
+      // 静默失败：列表页加载失败时这里大概率也失败，保持占位可浏览。
+    }
   }
 
   @override

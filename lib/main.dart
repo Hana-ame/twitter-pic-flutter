@@ -360,6 +360,8 @@ class _HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<_HomeScreen> {
   int _tabIndex = 0;
+  // 每次切到收藏 Tab 时 +1，强制重建 FavoritesTab 以重新读取收藏列表。
+  int _favTick = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -368,13 +370,16 @@ class _HomeScreenState extends State<_HomeScreen> {
         index: _tabIndex,
         children: [
           UserListScreen(proxy: widget.proxy),
-          FavoritesTab(proxy: widget.proxy),
+          FavoritesTab(key: ValueKey('fav$_favTick'), proxy: widget.proxy),
           SettingsTab(proxy: widget.proxy),
         ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,
-       onDestinationSelected: (i) => setState(() => _tabIndex = i),
+        onDestinationSelected: (i) => setState(() {
+          _tabIndex = i;
+          if (i == 1) _favTick++;
+        }),
         destinations: [
           NavigationDestination(
             icon: Icon(Icons.people_outlined),
