@@ -40,7 +40,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final List<_DiagItem> _diag = [];
 
   /// 发起一次 HTTP 探测，返回简短结果文本。
-  Future<String> _httpProbe(String url, {int timeoutSec = 8}) async {
+  ///
+  /// body 只读前 [maxReadBytes]（足够判断通道通不通）：原先用 `drain()`
+  /// 会把整张图下完，媒体经 ECH 拉全图轻松超过默认超时，于是“探测超时”
+  /// 其实是探针自己造成的。读够即 break，剩余字节由 `close(force: true)`
+  /// 丢弃。超时同时计入首包与后续静默（Stream.timeout）。
+  Future<String> _httpProbe(String url,
+      {int timeoutSec = 20, int maxReadBytes = 64 * 1024}) async {
     final client = HttpClient()
       ..connectionTimeout = Duration(seconds: timeoutSec);
     client.badCertificateCallback = (cert, host, port) => true;
@@ -51,11 +57,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           .timeout(Duration(seconds: timeoutSec));
       final res = await req.close().timeout(Duration(seconds: timeoutSec));
       final len = res.contentLength;
-      // 只读少量 body 确认通道，不整包下载。
-      await res.drain<void>().timeout(Duration(seconds: timeoutSec));
-      return 'HTTP ${res.statusCode} · ${sw.elapsedMilliseconds}ms · ${len >= 0 ? len : '?'}B';
+      var got = 0;
+      await for (final chunk
+          in res.timeout(Duration(seconds: timeoutSec), onTimeout: (s) {
+        s.addError(TimeoutException('body 读取超时', Duration(seconds: timeoutSec)));
+      })) {
+        got += chunk.length;
+        if (got >= maxReadBytes) break;
+      }
+      return 'HTTP ${res.statusCode} · ${sw.elapsedMilliseconds}ms · ${len >= 0 ? len : '?'}B (读 ${got}B)';
     } catch (e) {
-      return '失败: $e';
+      // 带上耗时：区分“秒断（连不上）”与“撑到超时（链路慢/上游挂）”
+      return '失败: ${sw.elapsedMilliseconds}ms · $e';
     } finally {
       client.close(force: true);
     }
@@ -63,15 +76,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// 抓取 `<username>.json.gz`，返回响应头、编码方式与原始 JSON。
   /// 不解析成模型，供诊断编码与字段结构。
+  ///
+  /// 这里必须整包下载（要解析 JSON 校验字段），因此逐级显式设超时：
+  /// 大账号的 json.gz 若无超时会把整个诊断永久卡在步骤 2。
   Future<_RawJsonResult> _fetchRawJson(String username) async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
     client.badCertificateCallback = (cert, host, port) => true;
     try {
       final date = DateTime.now().toIso8601String().split('T')[0];
       final url = '$kApiBase/$username.json.gz?t=$date';
-      final req = await client.getUrl(Uri.parse(url));
+      final req = await client
+          .getUrl(Uri.parse(url))
+          .timeout(const Duration(seconds: 15));
       req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-      final res = await req.close();
+      final res = await req.close().timeout(const Duration(seconds: 20));
       final headers = <String, String>{
         'content-type': res.headers.value('content-type') ?? '?',
         'content-encoding': res.headers.value('content-encoding') ?? '无',
@@ -84,10 +102,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           error: 'HTTP ${res.statusCode}',
         );
       }
-      final bytes = await res.fold<List<int>>(
-        <int>[],
-        (acc, chunk) => acc..addAll(chunk),
-      );
+      final bytes = await res
+          .timeout(const Duration(seconds: 45), onTimeout: (s) {
+            s.addError(TimeoutException(
+                'body 读取超时', const Duration(seconds: 45)));
+          })
+          .fold<List<int>>(
+            <int>[],
+            (acc, chunk) => acc..addAll(chunk),
+          );
       // 编码检测：先按 utf8 解，失败则按 gzip+utf8 解，记录实际编码。
       var text = '';
       var method = 'utf8';
@@ -243,7 +266,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     // 5. video-cf 直连（预期失败：被墙，需 ECH）
     await step('5. video-cf 直连 (预期失败)', () {
-      return _httpProbe('https://video-cf.twimg.com/favicon.ico');
+      return _httpProbe('https://video-cf.twimg.com/favicon.ico', timeoutSec: 10);
     }, expectFail: true);
 
     // 6. 真实头像 URL → EchUrl.rewrite（丢 host）→ 经代理 ECH 访问 video-cf
@@ -260,7 +283,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final avatar = raw.json?['account_info']?['profile_image']?.toString();
         if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
         final replaced = EchUrl.rewrite(avatar, port);
-        final probe = await _httpProbe(replaced);
+        // 真实头像：冷启动时 ECH 握手 + 上游回源可能较慢，给足 30s
+        final probe = await _httpProbe(replaced, timeoutSec: 30);
         return '原始: $avatar\n代理: $replaced\n→ $probe';
       } finally {
         api.dispose();
@@ -285,7 +309,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final mediaUrl = first['url']?.toString();
         if (mediaUrl == null || mediaUrl.isEmpty) return '失败: timeline[0] 无 url';
         final rewritten = EchUrl.rewrite(mediaUrl, port);
-        final probe = await _httpProbe(rewritten);
+        final probe = await _httpProbe(rewritten, timeoutSec: 30);
         return '原始: $mediaUrl\n代理: $rewritten\n→ $probe';
       } finally {
         api.dispose();
