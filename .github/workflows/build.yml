@@ -99,9 +99,10 @@ jobs:
         run: |
           cd /tmp/build_project
           GRADLE=$(ls android/app/build.gradle* | head -1)
-          # namespace / applicationId（兼容 groovy 与 kts 两种写法）
-          sed -i 's|namespace[ =]*"com\.example\.twitter_pic_flutter"|namespace "xyz.moonchan.twitterpic"|' "$GRADLE"
-          sed -i 's|applicationId[ =]*"com\.example\.twitter_pic_flutter"|applicationId "xyz.moonchan.twitterpic"|' "$GRADLE"
+          # namespace / applicationId（兼容 groovy 与 kts 两种写法；
+          # 捕获前置符保留原分隔符，避免 kts 的 = 被吞掉）
+          sed -Ei 's|(namespace[ =]*)("com\.example\.twitter_pic_flutter")|\1"xyz.moonchan.twitterpic"|' "$GRADLE"
+          sed -Ei 's|(applicationId[ =]*)("com\.example\.twitter_pic_flutter")|\1"xyz.moonchan.twitterpic"|' "$GRADLE"
           # MainActivity 移动到新包路径并改 package 声明
           MAIN=$(find android/app/src/main -name "MainActivity.*" | head -1)
           if [ -n "$MAIN" ]; then
