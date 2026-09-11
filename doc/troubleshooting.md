@@ -284,9 +284,10 @@ avc1.640020, 1891376, und, [1280, 720, 60.0, ...]), format_supported=YES, null, 
 - `_initSeq` 序号 + `_scheduleInit()` 合并，防止"端口变化时 `portNotifier` 与
   `didUpdateWidget` 各触发一次初始化"同时留下两个解码器。
 
-**确认**：错误卡片点「详情」，里面直接显示 `同时存活播放器: N/2`。N 一直是 2 而仍
-报 MediaCodec，说明是**该视频编码本机不支持**（不是不够用），此时重试无用，只能换
-视频或在别的机器上试。日志里对应 `video.init` 开头的 `Dart 错误`（含完整 Format）。
+**确认**：错误卡片上**原样**显示这条报错（重试按钮在它上面），长按可选中复制；
+日志里对应 `video.init` 开头的 `Dart 错误`（含完整 Format 与 `分类:` 一行）。
+若 `format_supported=YES` 却反复报同一个错、且换视频也一样，说明是**该编码在本机
+不可用**（不是不够用），此时重试无用，只能换视频或在别的机器上试。
 
 **注意**：`video_player` 插件用 `new ExoPlayer.Builder(context)` 建播放器，**没有**
 `setEnableDecoderFallback(true)`，而 media3 默认 `enableDecoderFallback = false` ——

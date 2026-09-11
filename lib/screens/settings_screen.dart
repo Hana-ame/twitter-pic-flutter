@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 
 import '../api/twitter_api.dart';
 import '../services/log_service.dart';
+import '../services/poster_service.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../utils/doh_resolver.dart';
@@ -497,7 +498,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('清除数据'),
-        content: const Text('将清除所有收藏、屏蔽列表、标签规则、搜索历史。\n\n此操作不可撤销。'),
+        content: const Text('将清除所有收藏、屏蔽列表、标签规则、搜索历史，'
+            '以及视频封面缓存。\n\n此操作不可撤销。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('清除')),
@@ -506,6 +508,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (confirmed != true || !mounted) return;
     await StorageService.clearAll();
+    // 封面缓存也一起清：它在磁盘上（应用支持目录的 posters/），不清会越攒越多。
+    await PosterService.clearAll();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('数据已清除')));
     }

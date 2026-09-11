@@ -12,21 +12,32 @@
 
 import 'dart:async';
 import 'dart:io';
+// 前缀导入：dart:ui 与 material 有同名导出（TextStyle / Image 等）。
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+// RenderRepaintBoundary 显式引入：抓封面要用它做类型判断。
+// （material 是否转出它随版本而变，显式写出来最稳；多了最多是个 info。）
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/log_service.dart';
+import '../services/poster_service.dart';
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
 import '../utils/video_failure.dart';
 
-/// 首次加载多久算超时。
+/// 加载多久之后，在 loading 卡片上多给一个「重试」按钮。
 ///
-/// 取值依据：新进程里第一次 ECH 请求要 7~11s（先通过 DoH 取 ECH 配置），
-/// 15s 是"放冷启动过去、又不让用户对着转圈干等"的位置。
-const Duration _kLoadTimeout = Duration(seconds: 15);
+/// **这不是超时、更不是错误**：墙内第一次 ECH 请求要 7~11s（先 DoH 取 ECH 配置），
+/// 之后还要取视频 moov、播放器自己还会重试。慢就该继续转圈等 ——
+/// 0.5.3 拿 15s 当失败判据，比 0.5.2 一直等到成功还差。
+///
+/// 20s → **30 分钟**：这个值只影响"什么时候多出一个重试按钮"，
+/// 不打断任何加载，所以设得足够长就等于"别来烦我，一直等"。
+const Duration _kSlowHintAfter = Duration(minutes: 30);
 
 /// 自动重试前的等待：给抖动的连接一点恢复时间。
 const Duration _kAutoRetryDelay = Duration(milliseconds: 1200);
@@ -62,12 +73,12 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 全屏播放中：卡片侧不再渲染 VideoPlayer（同一 controller 只能渲染一次）。
   bool _fullscreenOpen = false;
 
-  /// 待机：被播放器池收回了槽位，或代理还没就绪。点一下才去加载。
-  bool _idle = false;
-
-  /// 加载看门狗：`initialize()` 自己没有超时，代理卡住时就是无限转圈 ——
-  /// 既没有提示也没有出口，用户只能退出重进。
-  Timer? _loadWatchdog;
+  /// 拿到槽位已经很久还没成功 —— 只在 loading 卡片上多给一个「重试」按钮。
+  ///
+  /// **绝不当成错误**：墙内这一趟本来就慢（冷启动 7~11s + moov + 播放器自身重试），
+  /// 曾经把它当错误直接弹"加载失败"，结果 0.5.2 会一直转圈直到成功、0.5.3 却报错。
+  Timer? _slowHintTimer;
+  bool _slow = false;
 
   /// 首次失败后自动重试一次（ECH 冷启动 7~11s、连接抖动多半是一次性的）。
   bool _autoRetried = false;
@@ -75,11 +86,12 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 正在自动重试：loading 文案里体现，避免"卡住不动"的观感。
   bool _retrying = false;
 
-  /// 上次失败是不是解码器类（决定重试前要不要先释放其它播放器）。
-  bool _lastErrorWasCodec = false;
+  /// 封面（静帧）字节。**这是卡片显示画面的主要方式**：有封面就显示封面，
+  /// 不占解码器；解码器只用来给"还没有封面"的卡片抓一张封面，抓完立刻让位。
+  Uint8List? _poster;
 
-  /// 技术细节。卡片上只显示人话，细节留给「详情」按钮与日志。
-  String? _errorDetail;
+  /// 抓封面用的边界（只包视频画面，不包控制栏）。
+  final GlobalKey _posterKey = GlobalKey();
 
   /// 初始化序号：只有最新一次 init 的回调才允许改状态。
   ///
@@ -91,6 +103,10 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 同一轮里多次请求初始化时合并成一次（见 [_scheduleInit]）。
   bool _initScheduled = false;
 
+  /// 滚动监听：只用来在滚动时提醒池子"重新按可见性排一下队"。
+  ScrollPosition? _scrollPosition;
+  Timer? _nudgeThrottle;
+
   Uri _buildUrl() {
     final port = widget.proxy.port;
     // 不降级直连：墙内直连 twimg 必死（实测 000）。那样只会把一个失败换成
@@ -99,13 +115,61 @@ class _TwitterVideoState extends State<TwitterVideo>
     return EchUrl.rewriteToUri(widget.url, port);
   }
 
+  /// 现在是否在视口内（池子分槽位时按这个排序：先给看得见的卡片抓封面）。
+  bool get _visibleNow {
+    if (!mounted) return false;
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return false;
+    final viewportH = MediaQuery.maybeOf(context)?.size.height ?? 0;
+    if (viewportH <= 0) return true;
+    final dy = box.localToGlobal(Offset.zero).dy;
+    return dy < viewportH && dy + box.size.height > 0;
+  }
+
   @override
   void initState() {
     super.initState();
     // 代理重启后端口会变（也可能从 null 变成有值）。没有这个监听，视频会一直
     // 停在错误态不动 —— 因为 IndexedStack/列表不会因为端口变化而重建。
     widget.proxy.portNotifier.addListener(_onPortChanged);
-    _scheduleInit();
+    // 先看有没有缓存封面：有的话卡片立刻有画面，且**一个解码器都不用占**。
+    unawaited(_loadPoster());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final pos = Scrollable.maybeOf(context)?.position;
+    if (!identical(pos, _scrollPosition)) {
+      _scrollPosition?.removeListener(_onScroll);
+      _scrollPosition = pos;
+      _scrollPosition?.addListener(_onScroll);
+    }
+  }
+
+  /// 滚动时节流地提醒池子重排：卡片滚进视野后应当优先拿到槽位去抓封面。
+  void _onScroll() {
+    if (_nudgeThrottle != null) return;
+    _nudgeThrottle = Timer(const Duration(milliseconds: 150), () {
+      _nudgeThrottle = null;
+      _PlayerPool.nudge();
+    });
+  }
+
+  Future<void> _loadPoster() async {
+    if (_poster != null) return;
+    final bytes = await PosterService.load(widget.url);
+    if (!mounted) return;
+    if (bytes != null) {
+      // 有缓存封面：立刻有画面，**一个解码器都不用占**（回看时是秒出的）。
+      setState(() {
+        _poster = bytes;
+        _isLoading = false;
+      });
+      return;
+    }
+    // 没缓存：申请一个槽位去抓一张。排队期间显示 loading 转圈。
+    _requestSlot();
   }
 
   @override
@@ -116,17 +180,22 @@ class _TwitterVideoState extends State<TwitterVideo>
       widget.proxy.portNotifier.addListener(_onPortChanged);
     }
     if (old.url != widget.url || old.proxy.port != widget.proxy.port) {
+      _PlayerPool.release(this);
       _disposeController();
       _videoValue = null;
       _error = null;
-      _errorDetail = null;
       _isLoading = true;
-      _idle = false;
       _showControls = true;
       _hideTimer?.cancel();
       _isDragging = false;
       _autoRetried = false;
-      _scheduleInit();
+      // 只有换了视频才丢封面：封面按视频 URL 缓存，代理换端口不影响内容。
+      if (old.url != widget.url) {
+        _poster = null;
+        unawaited(_loadPoster());
+      } else {
+        _requestSlot();
+      }
     }
   }
 
@@ -135,32 +204,56 @@ class _TwitterVideoState extends State<TwitterVideo>
   void _onPortChanged() {
     if (!mounted) return;
     if (widget.proxy.port == null) return;
-    if (_error == null && !_idle) return;
+    if (_error == null && !_needsSlot) return;
     _autoRetried = false;
     _retryInit();
   }
 
-  /// 合并同一轮内的多次初始化请求。
+  /// 还没有封面 = 需要用解码器去抓一张。
+  bool get _needsSlot => _poster == null;
+
+  /// 申请一个解码器槽位。
   ///
-  /// 触发源可能叠加：初始构建、父级重建（`didUpdateWidget`）、代理端口变化
-  /// （`portNotifier`）、自动重试、手动重试。都直接调 `_initPlayer()` 的话，
-  /// 同一帧里会起两个播放器、两个解码器。
+  /// [userInitiated]：用户明确要播这张（点了封面上的播放键）。
+  /// 自动路径只服务"还没有封面"的卡片 —— 有封面的卡片不该白占解码器；
+  /// 但用户点播时必须给，否则点了没反应。
+  void _requestSlot({bool userInitiated = false}) {
+    if (!mounted) return;
+    if (!userInitiated && !_needsSlot) return;
+    // 有封面时保持封面显示（初始化完成后无缝换成画面），不要闪一下转圈。
+    if (_needsSlot && !_isLoading) {
+      setState(() => _isLoading = true);
+    }
+    _PlayerPool.request(this);
+  }
+
+  /// 池子把槽位给了我们：真正开始初始化（并发上限由池子保证）。
+  void _onSlotGranted() {
+    if (!mounted || _controller != null) return;
+    unawaited(_initPlayer());
+  }
+
+  /// 合并同一轮内的多次请求（初始构建、端口变化、重试可能叠在一起）。
   void _scheduleInit() {
     if (_initScheduled) return;
     _initScheduled = true;
     scheduleMicrotask(() {
       _initScheduled = false;
       if (!mounted) return;
-      _initPlayer();
+      _requestSlot();
     });
   }
 
   Future<void> _initPlayer() async {
     final seq = ++_initSeq;
-    _loadWatchdog?.cancel();
-    _loadWatchdog = Timer(_kLoadTimeout, () {
-      // 只有当前这次尝试才有资格报超时。
-      if (seq == _initSeq) _onLoadTimeout();
+    _slowHintTimer?.cancel();
+    _slow = false;
+    // 慢 ≠ 错：只是过一会儿多给一个「重试」出口，**绝不切错误态**。
+    // （0.5.3 把 15s 无响应直接判成"加载失败"，墙内冷启动本来就 7~11s，
+    //   结果比 0.5.2 一直转圈等到成功还差。）
+    _slowHintTimer = Timer(_kSlowHintAfter, () {
+      if (!mounted || seq != _initSeq || !_isLoading) return;
+      setState(() => _slow = true);
     });
 
     try {
@@ -178,28 +271,27 @@ class _TwitterVideoState extends State<TwitterVideo>
         return;
       }
 
-      _loadWatchdog?.cancel();
+      _slowHintTimer?.cancel();
       controller.addListener(_onVideoUpdate);
       controller.setLooping(false);
 
       setState(() {
         _isLoading = false;
         _retrying = false;
-        _idle = false;
-        // 看门狗先报了超时、底层后来才成功：把错误态收回来，换成播放器。
+        _slow = false;
         _error = null;
-        _errorDetail = null;
-        _videoValue = controller.value;
+          _videoValue = controller.value;
       });
-      // 登记进池子：超过上限会回收最久未用的那个（见 _PlayerPool 的注释）。
-      _PlayerPool.touch(this);
+      // 抓一张封面：抓到就交还槽位（见 _capturePoster），所以解码器占用是暂时的。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_capturePoster());
+      });
     } catch (e, st) {
       if (!mounted || seq != _initSeq) return;
-      _loadWatchdog?.cancel();
+      _slowHintTimer?.cancel();
       _logFailure(e, st);
 
-      // 自动重试一次：冷启动（新进程首次 ECH 要 7~11s）与连接抖动多为一次性，
-      // 直接甩错误态会显得"经常加载失败"。
+      // 自动重试一次：冷启动（新进程首次 ECH 要 7~11s）与连接抖动多为一次性。
       if (!_autoRetried) {
         _autoRetried = true;
         setState(() => _retrying = true);
@@ -210,44 +302,23 @@ class _TwitterVideoState extends State<TwitterVideo>
         return;
       }
 
-      _lastErrorWasCodec = _looksLikeCodecError(e);
-      _fail(_humanize(e), '$e');
+      // 失败就把槽位还回去，别占着解码器不放。
+      _PlayerPool.release(this);
+      _fail('$e');
     }
   }
 
-  /// 看门狗：只切状态，**不打断**底层 initialize。
-  ///
-  /// 真慢但最终能成的话，成功回调会把错误态清掉、自动切回播放器（见上面成功分支）。
-  void _onLoadTimeout() {
-    if (!mounted || !_isLoading) return;
-    final port = widget.proxy.port;
-    _fail(
-      port == null
-          ? 'ECH 代理未就绪（还没启动或刚重启）。等代理就绪后点重试。'
-          : '加载超时（${_kLoadTimeout.inSeconds} 秒没有响应）。点重试，'
-              '或在设置页看代理状态与通道测试。',
-      'initialize() timeout, proxyPort=${port ?? '-'}',
-    );
-  }
-
-  /// 统一的失败落点（保证看门狗停掉、loading 关掉）。
-  void _fail(String message, String? detail) {
-    _loadWatchdog?.cancel();
+  /// 统一的失败落点。message 就是**具体错误原文**（不加工）。
+  void _fail(String message) {
+    _slowHintTimer?.cancel();
     if (!mounted) return;
     setState(() {
       _error = message;
-      _errorDetail = detail;
       _isLoading = false;
       _retrying = false;
-      _idle = false;
+      _slow = false;
     });
   }
-
-  /// MediaCodec 类失败（分类逻辑与文案见 utils/video_failure.dart，那边有测试）。
-  static bool _looksLikeCodecError(Object e) => VideoFailure.isCodecError(e);
-
-  /// 把技术错误翻成一句能行动的话。原始细节进「详情」与日志。
-  String _humanize(Object e) => VideoFailure.humanize(e);
 
   /// 原始错误里带着 ExoPlayer 的 Format（编码/分辨率/帧率）与
   /// `format_supported`，是区分"解码器不够"和"网络失败"的唯一线索，
@@ -255,7 +326,10 @@ class _TwitterVideoState extends State<TwitterVideo>
   void _logFailure(Object e, StackTrace st) {
     LogService.recordError(
       'video.init',
-      'url=${widget.url}\nproxyPort=${widget.proxy.port ?? '-'}\n$e',
+      'url=${widget.url}\n'
+      'proxyPort=${widget.proxy.port ?? '-'}\n'
+      '分类: ${VideoFailure.humanize(e)}\n'
+      '$e',
       st,
     );
   }
@@ -270,18 +344,20 @@ class _TwitterVideoState extends State<TwitterVideo>
       // 画面就那么黑着/卡着，用户只能说"拖完进度条就废了"，日志里也没有痕迹。
       if (v.hasError && _error == null) {
         final desc = '${v.errorDescription}';
-        _lastErrorWasCodec = _looksLikeCodecError(desc);
-        _error = _humanize(desc);
-        _errorDetail = desc;
-        LogService.recordError('player', desc);
+        // 卡片上显示原文；分类只写进日志（反馈包需要一眼看出是解码器还是网络）。
+        _error = desc;
+        LogService.recordError(
+          'player',
+          '分类: ${VideoFailure.humanize(desc)}\n$desc',
+        );
       }
     });
   }
 
   void _togglePlay() {
     if (_controller == null) return;
-    // 用户在用的这个不该被池子回收。
-    _PlayerPool.touch(this);
+    // 用户在用的这个不许被池子收走。
+    _PlayerPool.markPlaying(this);
     if (_controller!.value.isPlaying) {
       _controller!.pause();
     } else {
@@ -289,38 +365,140 @@ class _TwitterVideoState extends State<TwitterVideo>
     }
   }
 
-  /// 释放当前 controller（重试 / 重建 / 被池子回收都走这里）。
+  /// 只释放 controller，**不碰池子**（池子的登记/交还由调用方显式做，
+  /// 免得"释放 controller"和"交还槽位"两件事被混在一起导致槽位泄漏）。
   void _disposeController() {
     // 作废在飞的初始化：它的回调即使回来也不许再改状态。
     _initSeq++;
-    _loadWatchdog?.cancel();
+    _slowHintTimer?.cancel();
     final old = _controller;
     _controller = null;
+    // 快照一起清掉：build 用 `_videoValue != null` 判断"可以渲染真画面"，
+    // 留着旧值会去渲染一个已经释放的 controller。
+    _videoValue = null;
     if (old != null) {
       old.removeListener(_onVideoUpdate);
       unawaited(old.dispose());
     }
-    _PlayerPool.remove(this);
   }
 
-  /// 被池子回收：释放解码器，回到待机态。
+  /// 池子把槽位收走时调用（抢位给更该拿的卡片）：交还解码器。
   ///
-  /// **不落到错误态**：这是主动让位而不是失败，否则用户会看到满屏"加载失败"，
-  /// 而实际上点一下就能播。
+  /// 有封面就显示封面；没有就继续排队等下一次（loading），**不落错误态** ——
+  /// 主动让位不是失败。
   void _releaseForPool() {
+    _disposeController();
     if (!mounted) return;
+    setState(() {
+      _videoValue = null;
+      _retrying = false;
+      _error = null;
+      _isLoading = _needsSlot;
+      _slow = false;
+    });
+    _PlayerPool.request(this);
+  }
+
+  bool get _isPlayingNow => _controller?.value.isPlaying ?? false;
+
+  bool get _hasPoster => _poster != null;
+
+  /// 抓到封面且没在播：交还槽位，改用封面显示（不占解码器）。
+  ///
+  /// 这是整套设计的核心 —— 槽位因此会被"用一下就让出去"，一张一张地把封面铺满
+  /// 整个列表，而同时占用的解码器始终不超过 _PlayerPool.max。
+  void _becomePosterOnly() {
+    if (!mounted || _isPlayingNow || _fullscreenOpen) return;
+    // 抓帧不可用时槽位没有意义（没有"换出来"的东西），留着播放器显示画面更有用。
+    if (_PlayerPool.captureUnavailable) return;
+    _PlayerPool.release(this);
     _disposeController();
     setState(() {
       _videoValue = null;
       _isLoading = false;
-      _retrying = false;
-      _error = null;
-      _errorDetail = null;
-      _idle = true;
+      _slow = false;
+      _showControls = false;
     });
   }
 
-  bool get _isPlayingNow => _controller?.value.isPlaying ?? false;
+  /// 抓当前帧当封面。
+  ///
+  /// 用抓屏（`RepaintBoundary.toImage`）而**不是** video_thumbnail：后者走
+  /// MediaMetadataRetriever，自己也要占一个解码器，会在播放器池已经占满时把
+  /// 并发解码数顶到 3 —— 正是要避免的事。抓屏不占解码器。
+  ///
+  /// 代价：`Texture` 能不能被抓进离屏图像跟平台/时序有关，抓不到会是**整片黑**。
+  /// 黑封面比「点按加载」占位更糟（用户会以为视频本身是黑的），所以这里做黑帧
+  /// 检查：黑就等一会儿重试，最多 3 次，最后仍失败就干脆不写缓存。
+  Future<void> _capturePoster({int attempt = 1}) async {
+    if (!mounted || _controller == null || _poster != null) return;
+    if (PosterService.memory(widget.url) != null) return;
+    final boundary = _posterKey.currentContext?.findRenderObject();
+    if (boundary is! RenderRepaintBoundary) return;
+    // 尺寸太小说明布局还没稳定（或卡片已被回收）。
+    if (boundary.size.width < 16 || boundary.size.height < 16) return;
+
+    Uint8List? png;
+    try {
+      final image = await boundary.toImage(pixelRatio: 1.0);
+      try {
+        final raw = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+        if (raw == null ||
+            _mostlyBlack(
+                raw.buffer.asUint8List(raw.offsetInBytes, raw.lengthInBytes))) {
+          if (attempt < 3) {
+            await Future.delayed(const Duration(milliseconds: 700));
+            if (mounted) await _capturePoster(attempt: attempt + 1);
+          } else {
+            // 三次都抓不到（多半是 Texture 没被合成进离屏图像）：兜底。
+            _giveUpCapture();
+          }
+          return;
+        }
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        png = data?.buffer.asUint8List();
+      } finally {
+        image.dispose();
+      }
+    } catch (e) {
+      debugPrint('capture poster failed: $e');
+      _giveUpCapture();
+      return;
+    }
+    if (png == null || png.isEmpty || !mounted) {
+      _giveUpCapture();
+      return;
+    }
+    setState(() => _poster = png);
+    await PosterService.put(widget.url, png);
+    // 封面到手，交还解码器（除非用户正在这一张上播放）。
+    _becomePosterOnly();
+  }
+
+  /// 抓不到封面（Texture 没进离屏图像 / 编码失败）。
+  ///
+  /// **必须兜底**：整套设计的前提是"封面能把解码器换出来"，一旦抓不到，
+  /// 压着并发就等于让后面所有卡片永远排队转圈 —— 比 0.5.2（每张都开播放器）
+  /// 还惨。所以这里直接标记"抓帧不可用"，池子从此不再限制并发，
+  /// 退化成 0.5.2 的行为：每张卡片都有自己的播放器、都有自己的画面。
+  void _giveUpCapture() {
+    _PlayerPool.noteCaptureUnavailable();
+  }
+
+  /// 抽样判断整帧是否接近全黑（亮像素占比 < 2%）。
+  /// 抽样用质数步长，避免和行宽共振后永远只采到同一列。
+  static bool _mostlyBlack(Uint8List bytes) {
+    const step = 53;
+    var sampled = 0;
+    var lit = 0;
+    for (var i = 0; i + 3 < bytes.length; i += 4 * step) {
+      sampled++;
+      final luma =
+          (bytes[i] * 299 + bytes[i + 1] * 587 + bytes[i + 2] * 114) ~/ 1000;
+      if (luma > 12) lit++;
+    }
+    return sampled == 0 || lit * 50 < sampled;
+  }
 
   /// seek 失败必须留痕。
   ///
@@ -482,31 +660,44 @@ class _TwitterVideoState extends State<TwitterVideo>
   @override
   void dispose() {
     _hideTimer?.cancel();
-    _loadWatchdog?.cancel();
+    _slowHintTimer?.cancel();
+    _nudgeThrottle?.cancel();
+    _scrollPosition?.removeListener(_onScroll);
     widget.proxy.portNotifier.removeListener(_onPortChanged);
     _controller?.removeListener(_onVideoUpdate);
     _controller?.dispose();
-    _PlayerPool.remove(this);
+    // 槽位必须还回去，否则池子会以为它还被占着，后面所有卡片都排不上队。
+    _PlayerPool.release(this);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return _buildLoading();
-    }
-
     if (_error != null) {
       return _buildError(_error!);
     }
 
-    // 待机（被池子回收 / 代理未就绪）：给个明确的"点按加载"，而不是空白或转圈。
-    if (_idle || _controller == null) {
-      return _buildIdle();
+    // 播放器就绪（initialize 完成）→ 真画面。
+    // 注意判据是 `_videoValue != null` 而**不是** `_controller != null`：
+    // 初始化途中 controller 已经建好但还不能渲染，拿它去建 VideoPlayer 会渲染
+    // 一个未初始化的 texture。
+    final value = _videoValue;
+    if (_controller != null && value != null) {
+      return _buildPlayer(value);
     }
 
+    // 还没就绪：有封面就先显示封面（秒出、不占解码器），否则转圈等。
+    final poster = _poster;
+    if (poster != null) {
+      return _buildPoster(poster);
+    }
+    return _buildLoading();
+  }
+
+  Widget _buildPlayer(VideoPlayerValue value) {
+
     return AspectRatio(
-      aspectRatio: _videoValue?.aspectRatio ?? 16 / 9,
+      aspectRatio: value.aspectRatio,
       child: Stack(
         alignment: Alignment.center,
         children: [
@@ -517,7 +708,11 @@ class _TwitterVideoState extends State<TwitterVideo>
             GestureDetector(
               onTap: _toggleControls,
               onLongPress: () => _showContextMenu(context),
-              child: VideoPlayer(_controller!),
+              // RepaintBoundary：抓封面时只抓视频画面（不含控制栏）。
+              child: RepaintBoundary(
+                key: _posterKey,
+                child: VideoPlayer(_controller!),
+              ),
             ),
 
           // 中央播放按钮（暂停时显示）
@@ -695,6 +890,19 @@ class _TwitterVideoState extends State<TwitterVideo>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 慢才出现的重试入口同样放最前（与错误卡片一致）。
+            if (_slow) ...[
+              TextButton(
+                onPressed: () => _retryInit(),
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(0, 30),
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text('重试', style: TextStyle(fontSize: 12, color: Colors.white70)),
+              ),
+              const SizedBox(height: 6),
+            ],
             const SizedBox(
               width: 32,
               height: 32,
@@ -711,32 +919,46 @@ class _TwitterVideoState extends State<TwitterVideo>
     );
   }
 
-  /// 待机：被池子回收、或代理未就绪。
+  /// 封面态：显示已缓存的静帧，点一下才去占解码器播放。
   ///
   /// 必须给**确定高度**（同 loading）：本组件挂在 ListView 的无界高度 item 里。
-  Widget _buildIdle() {
+  Widget _buildPoster(Uint8List poster) {
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: GestureDetector(
         onTap: () => _retryInit(),
-        child: Container(
-          width: widget.width,
-          height: widget.height,
-          color: Colors.black,
-          alignment: Alignment.center,
-          child: const Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.play_circle_outline, size: 40, color: Colors.white70),
-              SizedBox(height: 6),
-              Text('点按加载视频', style: TextStyle(color: Colors.white70, fontSize: 12)),
-            ],
-          ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.memory(
+              poster,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              // 封面坏了不该让整张卡片炸掉。
+              errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black),
+            ),
+            const Center(
+              child: Icon(Icons.play_circle_outline, size: 44, color: Colors.white70),
+            ),
+          ],
         ),
       ),
     );
   }
 
+  /// 错误卡片（0.5.2 的形态）：**重试按钮放最前**，下面原样显示具体错误。
+  ///
+  /// 为什么不显示概括文案：概括会丢掉唯一能定位问题的东西。用户实测报错是
+  /// ```
+  /// PlatformException(VideoError, ... MediaCodecVideoRenderer error, index=0,
+  /// format=Format(..., video/avc, avc1.640020, 1891376, und, [1280, 720, 60.0, ...]),
+  /// format_supported=YES, null, null)
+  /// ```
+  /// —— 这串字里带着编码/分辨率/帧率/`format_supported`，"解码器不够用"还是
+  /// "网络失败"一眼就能分开。换成一句"视频加载失败"就全丢了。
+  ///
+  /// 按钮在前还有个实际原因：具体错误动辄 5~10 行，卡片只有 16:9 高，
+  /// 按钮放下面会被挤出可视区。
   Widget _buildError(String message) {
     return AspectRatio(
       aspectRatio: 16 / 9,
@@ -744,54 +966,36 @@ class _TwitterVideoState extends State<TwitterVideo>
         width: widget.width,
         height: widget.height,
         color: Colors.grey[800],
-        // SingleChildScrollView 兜底：卡片高度固定，文案长短不一（解码器那条
-        // 有两行），不加这个在某些字体缩放下会溢出报错。
+        // 兜底滚动：错误文本很长时不能溢出（卡片高度是固定的 16:9）。
         child: Center(
           child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.movie, size: 40, color: Colors.white54),
-                const SizedBox(height: 6),
-                const Text(
-                  '视频加载失败',
-                  style: TextStyle(color: Colors.white70, fontSize: 14),
-                ),
-                const SizedBox(height: 4),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    message,
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
-                    textAlign: TextAlign.center,
+                ElevatedButton.icon(
+                  // 重试会还掉自己的槽位再重新排队；池子按"可见优先"重新分配，
+                  // 看得见的那张能挤掉看不见的占位者。
+                  onPressed: () => _retryInit(),
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('重试'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    minimumSize: const Size(0, 32),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
                 ),
-                const SizedBox(height: 10),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    ElevatedButton.icon(
-                      // 解码器不够用时先腾位再重试，否则重试必然同样失败。
-                      onPressed: () => _retryInit(freeOthers: _lastErrorWasCodec),
-                      icon: const Icon(Icons.refresh, size: 16),
-                      label: const Text('重试'),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        minimumSize: const Size(0, 34),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton(
-                      onPressed: () => _showErrorDetail(context),
-                      style: TextButton.styleFrom(
-                        minimumSize: const Size(0, 34),
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: const Text('详情', style: TextStyle(fontSize: 12)),
-                    ),
-                  ],
+                const SizedBox(height: 8),
+                // SelectableText：长按可选中复制（0.5.2 就是这个行为），
+                // 反馈时比截图有用。
+                SelectableText(
+                  message,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 10,
+                    fontFamily: 'monospace',
+                  ),
+                  textAlign: TextAlign.center,
                 ),
               ],
             ),
@@ -801,122 +1005,159 @@ class _TwitterVideoState extends State<TwitterVideo>
     );
   }
 
-  /// 技术细节弹窗：卡片上只显示"人话"，这里给全（含代理端口与原始异常），
-  /// 并且可一键复制 —— 反馈时这一条比截图有用得多。
-  void _showErrorDetail(BuildContext context) {
-    final detail = _errorDetail ?? _error ?? '(无)';
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('加载失败详情'),
-        content: SizedBox(
-          // 不用 double.maxFinite：Windows 端会撑成整屏宽（已知问题）。
-          width: 320,
-          height: 320,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              '视频: ${widget.url}\n'
-              '代理端口: ${widget.proxy.port ?? '-'}\n'
-              '同时存活播放器: ${_PlayerPool.liveCount}/${_PlayerPool.max}\n\n'
-              '$detail',
-              style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              final messenger = ScaffoldMessenger.of(ctx);
-              await Clipboard.setData(ClipboardData(text: detail));
-              messenger.showSnackBar(const SnackBar(
-                content: Text('错误信息已复制，可粘贴到群里反馈'),
-              ));
-            },
-            child: const Text('复制'),
-          ),
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
-        ],
-      ),
-    );
-  }
-
-  /// 视频重新初始化（错误态的「重试」、待机态的「点按加载」共用）。
-  ///
-  /// [freeOthers]：解码器类失败时的重试要先释放其它播放器腾出解码器，
-  /// 否则重试必然以同样的错误失败 —— 用户只会得出"重试没用"。
-  void _retryInit({bool freeOthers = false}) {
-    if (freeOthers) _PlayerPool.freeAllExcept(this);
-    // 先释放旧 controller：_initPlayer 会直接给 _controller 赋值，不先
-    // dispose 就泄漏一个还在解码、还占着 texture 的播放器。
+  /// 重新申请一次解码器（错误态的「重试」、封面态/loading 的「点按/重试」共用）。
+  void _retryInit() {
+    // 先把自己占的槽位还掉再重新申请：池子重新分槽时会考虑可见性，这样"用户正在
+    // 看/刚点的那张"能排到前面去（可见的卡片可以挤掉看不见的占位者）。
+    _PlayerPool.release(this);
     _disposeController();
     _autoRetried = false;
     setState(() {
       _error = null;
-      _errorDetail = null;
-      _isLoading = true;
+      _isLoading = _needsSlot;
       _retrying = false;
-      _idle = false;
+      _slow = false;
     });
-    _scheduleInit();
+    _requestSlot(userInitiated: true);
   }
 }
 
-/// 播放器池：限制**同时活着**的 ExoPlayer 数量。
+/// 解码器池：同时占用**解码器**的卡片数上限。
 ///
-/// 为什么必须有：Android 的硬件 AVC 解码器实例是稀缺资源（实测常见只有 2~4 个，
-/// 720p60 High profile 往往只吃得下 2 个）。而详情页 `cacheExtent` 是 1800px、
-/// 卡片高约 200px，一次能构建十几张卡片；**每张 `TwitterVideo` 在 initState 里
-/// 就 `initialize()`**（哪怕在屏幕外、也没人按播放，只是为了显示一张静帧）。
-/// 十几路 initialize 必然撞上解码器上限，报出来的正是：
+/// 为什么需要：Android 的硬件 AVC 解码器实例是稀缺资源（常见只有 2~4 个，
+/// 720p60 High profile 往往只吃得下 2 个），而详情页 `cacheExtent` 是 1800px、
+/// 卡片高约 200px，一次能构建十几张卡片。十几路 `initialize()` 必然撞上限，
+/// 报出来的就是 `MediaCodecVideoRenderer error ... format_supported=YES`。
 ///
-///     MediaCodecVideoRenderer error ... format_supported=YES
+/// 但**不能因此让卡片没有画面**（0.5.3 的教训：把槽位压到 2 之后，其余卡片变成
+/// 「点按加载」占位，比 0.5.2 还难用）。所以这里的策略是"用一下就还"：
 ///
-/// —— 格式本身是支持的，只是没有空闲解码器。所以这里给存活数量设上限：
-/// 超了就回收最久未用的那个，被回收的卡片回到「点按加载」待机态（不是错误态）。
+///   1. 槽位只用来给**还没有封面**的卡片抓一张封面（`RepaintBoundary.toImage`）；
+///   2. 抓到封面立刻交还，改由封面显示（`_becomePosterOnly`），不占解码器；
+///   3. 于是槽位会一张一张地把封面铺满整个列表，同时占用的解码器始终 ≤ max；
+///   4. 分槽按**可见性优先**：排队者里看得见的先拿，槽位被看不见的卡片占着时
+///      可以把那个占位者收回来（`_pickVictim`）—— 用户正在看的那张不用等。
+///
+/// 排队期间卡片显示 loading 转圈（和 0.5.2 一样），**没有**「点按加载」占位。
 class _PlayerPool {
   _PlayerPool._();
 
   /// 上限。AVC 硬解实例常为 2~4、720p60 High 往往只吃得下 2 个，所以留 2。
-  /// 想让更多卡片保留静帧可以调大，代价是更容易撞上解码器上限。
   static const int max = 2;
 
-  /// 队首 = 最近使用。
+  /// 已占槽的（含正在 initialize 的 —— 解码器是在 prepare 阶段就申请的，
+  /// 所以必须把 in-flight 也算进来，否则并发数会失控）。
   static final List<_TwitterVideoState> _live = <_TwitterVideoState>[];
 
-  static int get liveCount => _live.length;
+  /// 排队的。
+  static final List<_TwitterVideoState> _waiting = <_TwitterVideoState>[];
 
-  /// 标记为最近使用，并回收超出的。
-  static void touch(_TwitterVideoState s) {
+  /// 抓帧不可用（真机上 `RepaintBoundary.toImage` 抓不到 Texture）。
+  ///
+  /// 一旦确认不可用就**不再限制并发**：封面只能来自活着的播放器，
+  /// 压着并发等于让卡片没有画面 —— 那比 0.5.2 还差。
+  static bool captureUnavailable = false;
+
+  static void noteCaptureUnavailable() {
+    if (captureUnavailable) return;
+    captureUnavailable = true;
+    // 已经在排队的全部放行，让每张卡片都能拿到自己的播放器。
+    pump();
+  }
+
+  /// pump 期间只允许入队，不许直接发槽位。
+  ///
+  /// 否则：抢位时把占位者 evict → 它 `_releaseForPool()` 里立刻重新 request →
+  /// 此时槽位正好空着 → 它又把自己要回去了，抢位等于白做（死循环）。
+  static bool _pumping = false;
+
+  static int get liveCount => _live.length;
+  static int get waitingCount => _waiting.length;
+
+  /// 申请槽位：有空位立刻给，否则排队。
+  static bool request(_TwitterVideoState s) {
+    if (_live.contains(s)) return true;
+    if (_waiting.contains(s)) {
+      if (!_pumping) pump();
+      return false;
+    }
+    if (!_pumping && (captureUnavailable || _live.length < max)) {
+      _live.add(s);
+      s._onSlotGranted();
+      return true;
+    }
+    _waiting.add(s);
+    if (!_pumping) pump();
+    return false;
+  }
+
+  /// 交还槽位（抓到封面、失败、被回收、dispose 都走这里）。
+  static void release(_TwitterVideoState s) {
+    _live.remove(s);
+    _waiting.remove(s);
+    if (!_pumping) pump();
+  }
+
+  /// 标记为"正在使用"：正在播的卡片短期内在队首（但不影响能否被抢位，
+  /// 抢位不碰正在播的，见 _pickVictim）。
+  static void markPlaying(_TwitterVideoState s) {
     _live.remove(s);
     _live.insert(0, s);
-    _evict();
   }
 
-  static void remove(_TwitterVideoState s) {
-    _live.remove(s);
-  }
+  /// 滚动时提醒池子重排（可见性变了）。
+  static void nudge() => pump();
 
-  /// 手动重试前腾位：把**其它**全放掉，确保这次重试真的有空闲解码器可用。
-  static void freeAllExcept(_TwitterVideoState keep) {
-    final others = _live.where((e) => !identical(e, keep)).toList();
-    _live
-      ..clear()
-      ..add(keep);
-    for (final o in others) {
-      o._releaseForPool();
+  /// 分槽位：可见优先；槽位被看不见的卡片占着时，收回给看得见的排队者。
+  static void pump() {
+    if (_pumping) return;
+    _pumping = true;
+    try {
+      while (_waiting.isNotEmpty) {
+        final waiter = _pickWaiter();
+        if (waiter == null) return;
+        if (captureUnavailable || _live.length < max) {
+          _waiting.remove(waiter);
+          _live.add(waiter);
+          waiter._onSlotGranted();
+          continue;
+        }
+        // 满了：只有"排队者可见 + 找得到看不见且没在播的占位者"才抢位。
+        if (!waiter._visibleNow) return;
+        final victim = _pickVictim();
+        if (victim == null) return;
+        _live.remove(victim);
+        _waiting.remove(waiter);
+        _live.add(waiter);
+        victim._releaseForPool();
+        waiter._onSlotGranted();
+        // 一次只处理一个抢位，剩下的等下一轮（避免同时把好几张卡打回排队）。
+        return;
+      }
+    } finally {
+      _pumping = false;
     }
   }
 
-  static void _evict() {
-    while (_live.length > max) {
-      // 优先回收没在播的；全在播就回收最久未用的（队尾）。
-      final victim = _live.lastWhere(
-        (e) => !e._isPlayingNow,
-        orElse: () => _live.last,
-      );
-      _live.remove(victim);
-      victim._releaseForPool();
+  /// 挑一个排队者：先找看得见的；都没有就给最早排队的。
+  static _TwitterVideoState? _pickWaiter() {
+    if (_waiting.isEmpty) return null;
+    for (final w in _waiting) {
+      if (w._visibleNow) return w;
     }
+    return _waiting.first;
+  }
+
+  /// 抢位时的牺牲者：看不见 + 没在播；其中**已经有封面**的优先
+  /// （收回去之后它照样有画面，观感无损）。
+  static _TwitterVideoState? _pickVictim() {
+    for (final e in _live) {
+      if (!e._visibleNow && !e._isPlayingNow && e._hasPoster) return e;
+    }
+    for (final e in _live) {
+      if (!e._visibleNow && !e._isPlayingNow) return e;
+    }
+    return null;
   }
 }
 

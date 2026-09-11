@@ -20,6 +20,7 @@ import 'package:flutter/painting.dart';
 
 import 'api/twitter_api.dart';
 import 'services/log_service.dart';
+import 'services/poster_service.dart';
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
 import 'screens/settings_screen.dart';
@@ -59,6 +60,8 @@ void main() {
 
     await StorageService.ensureInitialized();
     await LogService.ensureInitialized(buildNum: _kBuildNum);
+    // 视频封面缓存目录：卡片抓到的静帧存这儿，之后不占解码器也能显示。
+    await PosterService.ensureInitialized();
 
     // 顺序要紧：先读上一次的会话文件判断是否正常结束，再写本次会话 ——
     // 反过来的话 startSession() 会先把旧记录覆盖掉，永远检测不到异常退出。
