@@ -13,13 +13,15 @@
 ///   `*.alidns.com` 匹配 `dns.alidns.com`，
 ///   但不匹配 `sub.dns.alidns.com`（那需要 `*.dns.alidns.com`）。
 ///
+/// 注意判定通配要用 [String.startsWith]，**不能**用 `indexOf('.')` 切前缀：
+/// `*.alidns.com` 的第一个点位置是 0，`substring(0, 0)` 是空串，
+/// 会把这个分支永远判成不匹配。
+///
 /// [cn] 是证书里的 CN 值，[host] 是调用方期望的服务域名。
 bool cnMatchesHost(String cn, String host) {
   if (cn == host) return true;
-  final dot = cn.indexOf('.');
-  if (dot < 0) return false;
-  if (cn.substring(0, dot) != '*') return false;
-  final suffix = cn.substring(dot); // 形如 ".alidns.com"
+  if (!cn.startsWith('*.')) return false;
+  final suffix = cn.substring(1); // 形如 ".alidns.com"
   if (!host.endsWith(suffix)) return false;
   final label = host.substring(0, host.length - suffix.length);
   return label.isNotEmpty && !label.contains('.');

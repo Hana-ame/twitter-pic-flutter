@@ -22,7 +22,8 @@
 //      于是把整个 JSON 当 IP 返回，Go 侧拿垃圾去拨号必然失败。统一按 JSON 解析。
 //   4. 通配 CN 匹配写死成 `*.$expected` —— 实测阿里证书 CN 是 `*.alidns.com`
 //      （覆盖 dns.alidns.com），我们却要求 `*.dns.alidns.com`，于是阿里那条
-//      兜底**永远失败**。改成按"恰好一层子域"的通配语义匹配，见 _wildcardMatches。
+//      兜底**永远失败**。改成按"恰好一层子域"的通配语义匹配，逻辑抽到
+//      host_match.dart（cnMatchesHost）以便单独测，见那里的注释。
 //      顺带发现阿里证书的 SAN 里直接含 `IP Address:223.5.5.5`，Dart 默认校验
 //      就能过，回调是多余的，已删。
 
