@@ -417,18 +417,20 @@ jobs:
         run: |
           REF="${{ github.ref_name }}"
           SHA="${{ github.sha }}"
-          # 上一个版本 = 当前提交的父提交上最近的 **semver** tag。
+          # 上一个版本 = 版本号排序上紧挨在当前版本之前的 semver tag。
           #
-          # --match 必须带：tag 里混着大量日期 tag（vYYYYMMDD.HHMMSS），不滤掉
-          # 的话 describe 会返回最近的日期 tag 而不是上一个 release，
-          # 产出的 notes 范围完全不对。
+          # 两点必须注意：
+          #   1) 不能用 gh release list（按发布时间排，且 tag 可能不在当前分支
+          #      祖先链上，git log 会 ambiguous 然后静默 fallback 到最近 10 条）。
+          #   2) 不能用 git describe --abbrev=0 HEAD^：它会被**移动过的 tag**骗
+          #      到——tag 若被 force-move 到 HEAD，HEAD^ 的 describe 结果就是
+          #      这个 tag 自己，release notes 的区间就错了。所以直接枚举
+          #      semver tag 再按版本号倒序取第一个，与 tag 位置无关。
           #
-          # 也不用 gh release list：它按发布时间排序，且拿到的 tag 可能不在
-          # 当前分支的祖先链上（日期 tag 就常常不在），git log 会 ambiguous
-          # argument 然后静默 fallback 到最近 10 条 —— 产出一份和实际发布范围
-          # 对不上的 notes。
-          PREV_TAG=$(git describe --tags --abbrev=0 \
-            --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD^ 2>/dev/null || echo "")
+          # -version:refname 按版本号（不是字符串）排序，v0.5.9 才排在 v0.5.10
+          # 后面；默认 refname 排序会把 v0.5.10 排在 v0.5.2 前面。
+          PREV_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname \
+            | grep -vxF "$REF" | head -1)
           {
             echo "## Release ${REF}"
             echo ""
