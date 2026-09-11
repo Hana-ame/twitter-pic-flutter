@@ -40,7 +40,10 @@ void main() {
     for (final msg in <String>[
       'PlatformException(VideoError, Video player had error '
           'androidx.media3.exoplayer.ExoPlaybackException: Source error, null, null)',
-      'HttpDataSource$HttpDataSourceException: Unable to connect',
+      // 原始类名里就带 $（Java 内部类），必须用 raw string：
+      // 普通单引号串里 `$HttpDataSourceException` 会被当成插值 → 编译期报
+      // undefined_identifier（这条是 CI 抓出来的）。
+      r'HttpDataSource$HttpDataSourceException: Unable to connect',
       'SocketException: Connection reset by peer',
     ]) {
       expect(VideoFailure.isNetworkError(msg), isTrue, reason: msg);

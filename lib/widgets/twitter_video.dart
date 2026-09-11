@@ -22,12 +22,6 @@ import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
 import '../utils/video_failure.dart';
 
-/// 视频加载通道。
-///
-/// 注意：`direct` **已不再使用** —— 直连 `*.twimg.com` 在墙内必死（实测 000），
-/// 所谓"降级到直连"只会把一次失败换成另一次失败，还掩盖了真实原因。
-enum _UrlMode { proxy, direct }
-
 /// 首次加载多久算超时。
 ///
 /// 取值依据：新进程里第一次 ECH 请求要 7~11s（先通过 DoH 取 ECH 配置），
@@ -67,7 +61,6 @@ class _TwitterVideoState extends State<TwitterVideo>
   bool _downloading = false;
   /// 全屏播放中：卡片侧不再渲染 VideoPlayer（同一 controller 只能渲染一次）。
   bool _fullscreenOpen = false;
-  _UrlMode _mode = _UrlMode.proxy;
 
   /// 待机：被播放器池收回了槽位，或代理还没就绪。点一下才去加载。
   bool _idle = false;
@@ -133,7 +126,6 @@ class _TwitterVideoState extends State<TwitterVideo>
       _hideTimer?.cancel();
       _isDragging = false;
       _autoRetried = false;
-      _mode = _UrlMode.proxy;
       _scheduleInit();
     }
   }
@@ -864,7 +856,6 @@ class _TwitterVideoState extends State<TwitterVideo>
       _isLoading = true;
       _retrying = false;
       _idle = false;
-      _mode = _UrlMode.proxy;
     });
     _scheduleInit();
   }
