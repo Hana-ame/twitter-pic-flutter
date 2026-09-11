@@ -90,6 +90,9 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 不占解码器；解码器只用来给"还没有封面"的卡片抓一张封面，抓完立刻让位。
   Uint8List? _poster;
 
+  /// 用户点了封面/重试：拿到播放器后直接开始播（点一下就能看，不用再点播放键）。
+  bool _autoPlayOnReady = false;
+
   /// 抓封面用的边界（只包视频画面，不包控制栏）。
   final GlobalKey _posterKey = GlobalKey();
 
@@ -227,7 +230,7 @@ class _TwitterVideoState extends State<TwitterVideo>
     if (_needsSlot && !_isLoading) {
       setState(() => _isLoading = true);
     }
-    _PlayerPool.request(this);
+    _PlayerPool.request(this, urgent: userInitiated);
   }
 
   /// 池子把槽位给了我们：真正开始初始化（并发上限由池子保证）。
@@ -285,6 +288,16 @@ class _TwitterVideoState extends State<TwitterVideo>
         _error = null;
           _videoValue = controller.value;
       });
+      if (_autoPlayOnReady) {
+        _autoPlayOnReady = false;
+        // 正在播的不许被抢走槽位。
+        _PlayerPool.markPlaying(this);
+        unawaited(controller.play().catchError((Object e, StackTrace st) {
+          LogService.recordError('play', e, st);
+        }));
+        setState(() => _showControls = true);
+        _scheduleHideControls();
+      }
       // 抓一张封面：抓到就交还槽位（见 _capturePoster），所以解码器占用是暂时的。
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_capturePoster());
@@ -906,7 +919,7 @@ class _TwitterVideoState extends State<TwitterVideo>
             // 慢才出现的重试入口同样放最前（与错误卡片一致）。
             if (_slow) ...[
               TextButton(
-                onPressed: () => _retryInit(),
+                onPressed: () => _retryInit(autoPlay: true),
                 style: TextButton.styleFrom(
                   minimumSize: const Size(0, 30),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -939,7 +952,8 @@ class _TwitterVideoState extends State<TwitterVideo>
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: GestureDetector(
-        onTap: () => _retryInit(),
+        // 点封面 = 我要看这个视频：加载 + 自动播放。
+        onTap: () => _retryInit(autoPlay: true),
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -950,9 +964,20 @@ class _TwitterVideoState extends State<TwitterVideo>
               // 封面坏了不该让整张卡片炸掉。
               errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black),
             ),
-            const Center(
-              child: Icon(Icons.play_circle_outline, size: 44, color: Colors.white70),
-            ),
+            // 点了封面之后正在初始化：给个转圈反馈，否则用户以为"点了没反应"。
+            if (_controller != null && _videoValue == null)
+              const Center(
+                child: SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2.5, color: Colors.white),
+                ),
+              )
+            else
+              const Center(
+                child: Icon(Icons.play_circle_outline, size: 44, color: Colors.white70),
+              ),
           ],
         ),
       ),
@@ -987,9 +1012,8 @@ class _TwitterVideoState extends State<TwitterVideo>
               mainAxisSize: MainAxisSize.min,
               children: [
                 ElevatedButton.icon(
-                  // 重试会还掉自己的槽位再重新排队；池子按"可见优先"重新分配，
-                  // 看得见的那张能挤掉看不见的占位者。
-                  onPressed: () => _retryInit(),
+                  // 重试 = 用户就是要看这个视频：抢到槽位后直接播。
+                  onPressed: () => _retryInit(autoPlay: true),
                   icon: const Icon(Icons.refresh, size: 16),
                   label: const Text('重试'),
                   style: ElevatedButton.styleFrom(
@@ -1019,9 +1043,10 @@ class _TwitterVideoState extends State<TwitterVideo>
   }
 
   /// 重新申请一次解码器（错误态的「重试」、封面态/loading 的「点按/重试」共用）。
-  void _retryInit() {
-    // 先把自己占的槽位还掉再重新申请：池子重新分槽时会考虑可见性，这样"用户正在
-    // 看/刚点的那张"能排到前面去（可见的卡片可以挤掉看不见的占位者）。
+  void _retryInit({bool autoPlay = false}) {
+    _autoPlayOnReady = autoPlay;
+    // 先把自己占的槽位还掉再重新申请：池子按"用户点播 > 可见 > 排队顺序"分槽，
+    // 所以刚点的那张必定拿得到。
     _PlayerPool.release(this);
     _disposeController();
     _autoRetried = false;
@@ -1065,6 +1090,9 @@ class _PlayerPool {
   /// 排队的。
   static final List<_TwitterVideoState> _waiting = <_TwitterVideoState>[];
 
+  /// 其中"用户点了要播"的那些：排队时排最前，抢位时不挑牺牲者。
+  static final Set<_TwitterVideoState> _urgent = <_TwitterVideoState>{};
+
   /// 抓帧不可用（真机上 `RepaintBoundary.toImage` 抓不到 Texture）。
   ///
   /// 一旦确认不可用就**不再限制并发**：封面只能来自活着的播放器，
@@ -1088,26 +1116,23 @@ class _PlayerPool {
   static int get waitingCount => _waiting.length;
 
   /// 申请槽位：有空位立刻给，否则排队。
-  static bool request(_TwitterVideoState s) {
+  ///
+  /// [urgent]：**用户明确点了这张要播**。它必须抢到槽位 —— 详见 [_pickUrgentVictim]。
+  /// （这是修 bug：以前所有请求一视同仁，抢位只允许挤掉"看不见"的卡片，
+  ///   而用户正看着屏幕时，占着槽位的恰好就是屏幕上那两张，于是点封面毫无反应。）
+  static bool request(_TwitterVideoState s, {bool urgent = false}) {
+    if (urgent) _urgent.add(s);
     if (_live.contains(s)) return true;
-    if (_waiting.contains(s)) {
-      if (!_pumping) pump();
-      return false;
-    }
-    if (!_pumping && (captureUnavailable || _live.length < max)) {
-      _live.add(s);
-      s._onSlotGranted();
-      return true;
-    }
-    _waiting.add(s);
-    if (!_pumping) pump();
-    return false;
+    if (!_waiting.contains(s)) _waiting.add(s);
+    pump();
+    return _live.contains(s);
   }
 
   /// 交还槽位（抓到封面、失败、被回收、dispose 都走这里）。
   static void release(_TwitterVideoState s) {
     _live.remove(s);
     _waiting.remove(s);
+    _urgent.remove(s);
     if (!_pumping) pump();
   }
 
@@ -1130,21 +1155,19 @@ class _PlayerPool {
         final waiter = _pickWaiter();
         if (waiter == null) return;
         if (captureUnavailable || _live.length < max) {
-          _waiting.remove(waiter);
-          _live.add(waiter);
-          waiter._onSlotGranted();
+          _grant(waiter);
           continue;
         }
-        // 满了：只有"排队者可见 + 找得到看不见且没在播的占位者"才抢位。
-        if (!waiter._visibleNow) return;
-        final victim = _pickVictim();
+        final urgent = _urgent.contains(waiter);
+        // 自动排队者只在"能挤掉看不见且没在播的卡片"时才抢（避免来回抖动）；
+        // 用户点的那张则必须抢到，牺牲者放宽到任何非播放卡片。
+        final victim = urgent ? _pickUrgentVictim() : _pickVictim();
         if (victim == null) return;
         _live.remove(victim);
-        _waiting.remove(waiter);
-        _live.add(waiter);
+        _grant(waiter);
         victim._releaseForPool();
-        waiter._onSlotGranted();
-        // 一次只处理一个抢位，剩下的等下一轮（避免同时把好几张卡打回排队）。
+        // 一次只处理一个抢位，剩下的等下一轮
+        // （否则刚被打回的卡片会立刻又参与抢，来回抖动）。
         return;
       }
     } finally {
@@ -1152,13 +1175,44 @@ class _PlayerPool {
     }
   }
 
-  /// 挑一个排队者：先找看得见的；都没有就给最早排队的。
+  static void _grant(_TwitterVideoState s) {
+    _waiting.remove(s);
+    _urgent.remove(s);
+    if (!_live.contains(s)) _live.add(s);
+    s._onSlotGranted();
+  }
+
+  /// 挑一个排队者：**用户点的最优先**，其次看得见的，最后按排队顺序。
   static _TwitterVideoState? _pickWaiter() {
     if (_waiting.isEmpty) return null;
+    for (final w in _waiting) {
+      if (_urgent.contains(w) && w._visibleNow) return w;
+    }
+    for (final w in _waiting) {
+      if (_urgent.contains(w)) return w;
+    }
     for (final w in _waiting) {
       if (w._visibleNow) return w;
     }
     return _waiting.first;
+  }
+
+  /// 用户点播时的牺牲者，按"损失最小"排序：
+  ///   ① 看不见 + 没在播 + 有封面（收回去照样有画面，观感无损）
+  ///   ② 没在播 + 有封面（看得见，但至少还有画面）
+  ///   ③ 没在播
+  ///   ④ 正在播的（用户已经在看新的一张了，停掉旧的是可接受的）
+  static _TwitterVideoState? _pickUrgentVictim() {
+    for (final e in _live) {
+      if (!e._visibleNow && !e._isPlayingNow && e._hasPoster) return e;
+    }
+    for (final e in _live) {
+      if (!e._isPlayingNow && e._hasPoster) return e;
+    }
+    for (final e in _live) {
+      if (!e._isPlayingNow) return e;
+    }
+    return _live.isEmpty ? null : _live.last;
   }
 
   /// 抢位时的牺牲者：看不见 + 没在播；其中**已经有封面**的优先
