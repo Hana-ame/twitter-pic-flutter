@@ -101,6 +101,9 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 解码器类失败的重排次数（每次都会把并发上限降一档）。
   int _codecRetries = 0;
 
+  /// 拿到槽位的时刻：用来量"槽位被占多久"（见 _capturePoster）。
+  Stopwatch? _slotHeldSince;
+
   /// 用户点了封面/重试：拿到播放器后直接开始播（点一下就能看，不用再点播放键）。
   bool _autoPlayOnReady = false;
 
@@ -270,6 +273,7 @@ class _TwitterVideoState extends State<TwitterVideo>
 
   Future<void> _initPlayer() async {
     final seq = ++_initSeq;
+    _slotHeldSince = Stopwatch()..start();
     _slowHintTimer?.cancel();
     _slow = false;
     // 慢 ≠ 错：只是过一会儿多给一个「重试」出口，**绝不切错误态**。
@@ -483,6 +487,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 检查：黑就等一会儿重试，最多 3 次，最后仍失败就干脆不写缓存。
   Future<void> _capturePoster({int attempt = 1}) async {
     if (!mounted || _controller == null || _poster != null) return;
+    final captureWatch = Stopwatch()..start();
     if (PosterService.memory(widget.url) != null) return;
     final boundary = _posterKey.currentContext?.findRenderObject();
     if (boundary is! RenderRepaintBoundary) return;
@@ -520,10 +525,19 @@ class _TwitterVideoState extends State<TwitterVideo>
       _giveUpCapture();
       return;
     }
+    captureWatch.stop();
     setState(() => _poster = png);
-    await PosterService.put(widget.url, png);
     // 上报一次成功：连续成功说明本机还有解码器余量，可以谨慎上调并发。
     _PlayerPool.noteSuccess();
+    // 量一下槽位到底被占了多久、其中抓帧占多少 —— "抓封面是不是白占着解码器"
+    // 这个问题只能靠数据回答（init 是网络耗时，抓帧是渲染操作，两者差一个量级）。
+    _PlayerPool.noteSlotHold(
+      initMs: _slotHeldSince?.elapsedMilliseconds,
+      captureMs: captureWatch.elapsedMilliseconds,
+    );
+    // 槽位立刻还掉：帧已经在手上了，后面的写盘不需要解码器。
+    _becomePosterOnly();
+    await PosterService.put(widget.url, png);
     if (!_captureLogged) {
       _captureLogged = true;
       LogService.recordNote('poster', '封面抓帧成功（走缓存路径，解码器用完即还）');
@@ -1131,8 +1145,13 @@ class _PlayerPool {
   /// **不是写死 2**：硬解实例数因设备而异（常见 2~4，但不少机型能开更多），
   /// 且系统没有 API 可查。起点取上次会话学到的值，之后靠"连续成功就 +1、
   /// 撞 MediaCodec 失败就 -1"自己找位置（1~4）。
+  /// 上限区间 1~6：区间是"试探范围"而不是"设备能力"。连续成功会让它往上走，
+  /// 撞 MediaCodec 上限会立刻往回退 —— 而撞上限的那一次失败是可自愈的
+  /// （降档 + 重新排队，不弹错误卡片），所以放宽上限的代价很小、收益是
+  /// 有能力的设备能更快把封面铺满。
   static final DecodeBudget _budget = DecodeBudget(
     initial: StorageService.getDecodeBudget() ?? 2,
+    ceiling: 6,
   );
 
   static int get max => _budget.value;
@@ -1147,6 +1166,19 @@ class _PlayerPool {
   static void noteCodecFailure() {
     if (!_budget.onCodecFailure()) return;
     _afterBudgetChange('撞解码器上限');
+  }
+
+  /// 记录一次"槽位持有时间"。init 是网络耗时（取 moov + 首帧），capture 是渲染
+  /// 操作（几十毫秒）—— 两者差一个量级，这条日志就是为了证明/推翻这个判断。
+  static void noteSlotHold({int? initMs, int? captureMs}) {
+    if (initMs == null) return;
+    LogService.recordNote(
+      'decode',
+      '槽位占用 ${(initMs / 1000).toStringAsFixed(1)}s'
+      '（init ${(initMs / 1000).toStringAsFixed(1)}s'
+      ' + 抓帧 ${captureMs ?? 0}ms）'
+      ' 上限=$max 存活=${_live.length} 排队=${_waiting.length}',
+    );
   }
 
   static void _afterBudgetChange(String why) {
