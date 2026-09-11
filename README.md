@@ -65,6 +65,8 @@
 - 视频：Range 边下边播、缓冲进度、倍速、全屏、下载分享
 - 收藏 / 屏蔽标签 / 批量下载（三个入口：流式下载、兼容下载、应急下载）
 - 设置页：代理状态、**10 项网络诊断**（可一键复制）、Go 侧调试日志、清缓存
+- **日志落盘 + 异常退出提示**：Dart 错误与 Go 日志持续写到 `logs/`；上次没正常
+  结束（闪退/被强行结束）时，下次启动直接提示**加群反馈**并一键复制日志包
 
 ## 目录结构
 
@@ -79,6 +81,7 @@ lib/
 │   └── ranking_screen.dart        # emoji 排行
 ├── services/
 │   ├── proxy_manager.dart         # FFI 生命周期（12 个导出符号）
+│   ├── log_service.dart           # 日志落盘 / 异常退出判定 / 反馈包
 │   └── storage_service.dart       # 收藏 / 屏蔽 / 标签规则持久化
 ├── utils/
 │   ├── ech_url.dart               # 媒体 URL → 本机代理 URL
@@ -90,12 +93,13 @@ lib/
 │   ├── twitter_video.dart         # 视频卡片 + 全屏播放
 │   ├── proxy_avatar.dart          # 头像
 │   ├── fav_list.dart              # 收藏列表（导出/导入）
+│   ├── report_help.dart           # 反馈弹窗（加群 / 复制日志包）
 │   └── tag_*.dart                 # 标签选择/展示/高亮
-└── main.dart                      # 入口、ImageCache 配置、底部导航
+└── main.dart                      # 入口、全局错误捕获、ImageCache、底部导航
 
 ech-proxy/cmd/ech-flutter-shared/main.go   # 代理唯一实现（供 CI 编 .so/.dll）
 .github/workflows/build.yml                # 测试 → 双平台构建 → 发 Release
-test/                                      # 10 个测试文件，CI 全跑
+test/                                      # 11 个测试文件，CI 全跑
 doc/architecture.md                        # 架构细节
 doc/troubleshooting.md                     # 症状 → 根因 → 怎么确认
 ```
@@ -206,6 +210,32 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 **想知道媒体到底有没有走 ECH**：看这两行即可 —— 上游是 `video-cf.twimg.com` 就说明走了 ECH；
 `← 200/206` 说明取到了。媒体走没走代理不靠猜，日志里一目了然。
 
+### 闪退了怎么查：日志落盘 + 异常退出提示
+
+`Go 日志` 那个面板是**内存态环形缓冲**（500 行），进程一旦 abort 就跟着消失 ——
+这正是「有人报闪退、但手里什么都没有」的原因。现在补了三层：
+
+| 层 | 位置 | 作用 |
+| --- | --- | --- |
+| Dart 全局错误捕获 | `main.dart` 的 `runZonedGuarded` + `FlutterError.onError` + `PlatformDispatcher.onError` | 未捕获错误进内存缓冲**并立刻落盘** |
+| Go 日志落盘 | `lib/services/log_service.dart` 每 2s 轮询 `ECHGetLog*`，增量追加 | 环形缓冲被裁剪/清空都能对齐（按上一行 tail 定位） |
+| Go 侧 stderr tee | `main.go` 的 `logWriter.Write` | 进程被 abort 时，最后几行至少还留在 stderr（桌面端控制台/CI 可见） |
+
+文件都在应用支持目录的 `logs/` 下：`app.log`（超 512KB 轮转成 `app.log.1`）、
+`session.json`（会话标记）、`incidents.json`（异常结束历史）。
+
+**异常退出判定**：启动时写 `session.json`（`cleanExit=false`），生命周期走到
+`detached` 才打上 `cleanExit=true`。下次启动读不到这个标记 → 判定「上次没有正常结束」，
+弹窗提示**加群反馈**并给一键「复制日志」。判定刻意写成「没有正常结束」而不是「闪退」：
+从任务管理器强杀、系统回收后台进程也会落到同一类。
+
+**用户侧的反馈路径**：设置页 →「复制日志反馈包」→ 粘贴到群里。
+反馈包 = 版本 + 平台 + 代理状态 + 最近 400 行日志 + 加群方式，所以用户即使只发了
+这段文字，也自带版本与渠道信息。
+
+> 已知取舍：不新增 FFI 导出符号（那要同步改 README / CHECKLIST / CI 的 12 个符号清单），
+> 所以 Go 日志靠**轮询**落盘 —— 硬 abort 时最后约 2s 的行可能来不及写。
+
 ## 注意事项
 
 1. **源码与平台文件分离**：`android/`、`ios/` 不提交，CI 用 `flutter create` 现场生成再覆写。
@@ -222,6 +252,14 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 ### 未发布（`v0.5.1` 之后）
 - **媒体 URL 一律 origin**，删除 `name=` 尺寸档位：`MediaUrl` 只剩"能不能预取"的判定，
   同一张图只对应一个 canonical URL（见上文「媒体 URL 一律 origin」）
+- **日志落盘 + 异常退出提示**：Dart 全局错误捕获（`runZonedGuarded` /
+  `FlutterError.onError` / `PlatformDispatcher.onError`）、Go 日志 2s 轮询增量落盘、
+  Go 侧 stderr tee；上次没正常结束时下次启动提示加群反馈并一键复制日志包
+- 设置页新增「日志与反馈」区（复制日志包 / 加群 / 异常结束记录），日志弹窗可复制
+- 视频：**seek 失败与播放器报错不再静默** —— `_seekTo` 接住 `PlatformException`
+  并写日志，卡片侧转成可见错误态 + 重试，`_retryInit` 补上旧 controller 的 dispose
+- 代理：客户端要了 `Range` 却收到 `200` 全量时**显式记一条日志**（拖动进度条后
+  长时间卡住的那条路径，以前日志里只有一条正常的 200，查不出来）
 
 ### v0.5.1
 - 修复收藏夹里看不到收藏的内容（纵向 `ListView` 嵌套纵向 `ListView`，内层拿到无界高度）

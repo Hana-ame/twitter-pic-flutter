@@ -17,6 +17,7 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../services/log_service.dart';
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
 
@@ -118,9 +119,19 @@ class _TwitterVideoState extends State<TwitterVideo>
   }
 
   void _onVideoUpdate() {
-    if (mounted && _controller != null) {
-      setState(() => _videoValue = _controller!.value);
-    }
+    final c = _controller;
+    if (!mounted || c == null) return;
+    final v = c.value;
+    setState(() {
+      _videoValue = v;
+      // 播放器自己报错（seek 拉不到数据、解码失败）时以前**什么都不显示**：
+      // 画面就那么黑着/卡着，用户只能说"拖完进度条就废了"，而日志里也没有任何
+      // 痕迹。这里把播放器的错误变成可见状态并留痕，重试入口是现成的。
+      if (v.hasError && _error == null) {
+        _error = '播放失败：${v.errorDescription ?? '未知错误'}';
+        LogService.recordError('player', '${v.errorDescription}');
+      }
+    });
   }
 
   void _togglePlay() {
@@ -132,8 +143,20 @@ class _TwitterVideoState extends State<TwitterVideo>
     }
   }
 
-  void _seekTo(Duration duration) {
-    _controller?.seekTo(duration);
+  /// seek 失败必须留痕。
+  ///
+  /// 之前是 `_controller?.seekTo(duration);` —— 返回的 Future 既不 await 也不
+  /// catch。Android 上 seek 失败会变成 PlatformException（pigeon 把
+  /// Throwable 包成错误回给 Dart），于是被无声吞掉：「拖了没反应」且无从查起。
+  /// 不弹窗：一次性拉不到目标位置很常见，弹窗只会变成噪音。
+  Future<void> _seekTo(Duration duration) async {
+    final c = _controller;
+    if (c == null) return;
+    try {
+      await c.seekTo(duration);
+    } catch (e, st) {
+      LogService.recordError('seekTo', e, st);
+    }
   }
 
   void _scheduleHideControls() {
@@ -167,7 +190,8 @@ class _TwitterVideoState extends State<TwitterVideo>
 
   void _onSeekEnd(Duration value) {
     _isDragging = false;
-    _seekTo(value);
+    // _seekTo 内部自己 catch，不会变成未处理的异步错误。
+    unawaited(_seekTo(value));
     _scheduleHideControls();
   }
 
@@ -536,6 +560,15 @@ class _TwitterVideoState extends State<TwitterVideo>
 
   /// 视频重新初始化（错误态的"重试"与文字点击共用）。
   void _retryInit() {
+    // 先释放旧 controller：_initPlayer 会直接给 _controller 赋值，不先
+    // dispose 就泄漏一个还在解码、还占着 texture 的播放器。
+    // （这条以前只在 initialize 失败时走到，现在播放器报错也会走到重试。）
+    final old = _controller;
+    _controller = null;
+    if (old != null) {
+      old.removeListener(_onVideoUpdate);
+      unawaited(old.dispose());
+    }
     setState(() {
       _error = null;
       _isLoading = true;
@@ -573,6 +606,9 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   double _playbackSpeed = 1.0;
   static const List<double> _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
   int _speedIndex = 2;
+
+  /// 播放器错误只记一次（通知是每帧来的）。
+  bool _loggedError = false;
 
   /// 已缓冲比例（同卡片版）：全屏的进度条也把缓冲量画在轨道底下。
   double? get _bufferedFraction {
@@ -677,7 +713,15 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   }
 
   void _onVideoUpdate() {
-    if (mounted) setState(() => _videoValue = widget.controller.value);
+    if (!mounted) return;
+    final v = widget.controller.value;
+    // 全屏页不换画面（错误态由卡片侧负责），但错误必须留痕：否则"全屏拖进度条
+    // 就黑屏"在日志里同样查不到。只记一次，避免每帧刷屏。
+    if (v.hasError && !_loggedError) {
+      _loggedError = true;
+      LogService.recordError('player(fullscreen)', '${v.errorDescription}');
+    }
+    setState(() => _videoValue = v);
   }
 
   void _scheduleHideControls() {
@@ -709,8 +753,17 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
   }
 
   void _onSeekEnd(Duration value) {
-    widget.controller.seekTo(value);
+    unawaited(_seek(value));
     _scheduleHideControls();
+  }
+
+  /// 同卡片版：seek 失败会以 PlatformException 回来，不接住就永远查不到。
+  Future<void> _seek(Duration value) async {
+    try {
+      await widget.controller.seekTo(value);
+    } catch (e, st) {
+      LogService.recordError('seekTo(fullscreen)', e, st);
+    }
   }
 
   String _formatDuration(Duration d) {

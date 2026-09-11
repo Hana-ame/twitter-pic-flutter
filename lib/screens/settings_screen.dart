@@ -10,10 +10,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/twitter_api.dart';
+import '../services/log_service.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../utils/doh_resolver.dart';
 import '../utils/ech_url.dart';
+import '../widgets/report_help.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
@@ -627,6 +629,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 8),
           const Divider(),
 
+          // ─── 日志与反馈 ─────────────────────────────────────────────────────
+          _SectionTitle(title: '日志与反馈', icon: Icons.bug_report, color: Colors.purple),
+          ListTile(
+            leading: const Icon(Icons.copy_all, color: Colors.purple),
+            title: const Text('复制日志反馈包'),
+            subtitle: const Text('日志 + 版本 + 代理状态，直接粘贴到群里'),
+            onTap: _copyLogDump,
+          ),
+          ListTile(
+            leading: const Icon(Icons.groups, color: Colors.purple),
+            title: const Text('加群反馈'),
+            subtitle: const Text('chatto 聊天群「ECH Proxy」'),
+            onTap: () => showGroupHelpDialog(context),
+          ),
+          if (LogService.incidents.isNotEmpty)
+            ListTile(
+              leading: const Icon(Icons.history, color: Colors.orange),
+              title: const Text('异常结束记录'),
+              subtitle: Text(
+                LogService.incidents.first.describe,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: _showIncidents,
+            ),
+          const SizedBox(height: 8),
+          const Divider(),
+
           // ─── 关于 ───────────────────────────────────────────────────────────
           _SectionTitle(title: '关于', icon: Icons.info_outline, color: Colors.blueGrey),
           _StatusCard(icon: Icons.info_outline, label: '版本', value: widget.buildNum),
@@ -642,6 +672,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
               textAlign: TextAlign.center,
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// 复制反馈包：先补一次 Go 日志（最后两秒的行可能还没进磁盘），再组装。
+  Future<void> _copyLogDump() async {
+    await LogService.pollGoLogs(widget.proxy.getLogs());
+    if (!mounted) return;
+    await copyLogDump(context, extra: {
+      '代理': widget.proxy.isRunning ? '运行中' : '已停止',
+      '端口': '${widget.proxy.port ?? '-'}',
+      'ECH 初始化': '${widget.proxy.isInitialized}',
+      'API endpoint': '$kApiBase (直连)',
+    });
+  }
+
+  /// 异常结束记录（最多 10 条）。判定依据见 LogService.takeUncleanExit——
+  /// 强杀与系统回收也会落到这里，所以文案只说「没有正常结束」。
+  void _showIncidents() {
+    final items = LogService.incidents;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('异常结束记录'),
+        content: SizedBox(
+          // 不用 double.maxFinite：Windows 端会撑成整屏宽（已知问题）。
+          width: 320,
+          height: 300,
+          child: items.isEmpty
+              ? const Center(child: Text('暂无记录'))
+              : ListView.builder(
+                  itemCount: items.length,
+                  itemBuilder: (_, i) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Text(
+                      items[i].describe,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ),
+        ),
+        actions: [
+          if (items.isNotEmpty)
+            TextButton(
+              onPressed: () async {
+                final messenger = ScaffoldMessenger.of(ctx);
+                await Clipboard.setData(ClipboardData(
+                  text: items.map((e) => e.describe).join('\n'),
+                ));
+                messenger.showSnackBar(const SnackBar(content: Text('已复制')));
+              },
+              child: const Text('复制'),
+            ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
         ],
       ),
     );
@@ -667,6 +752,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
         ),
         actions: [
+          if (logs.isNotEmpty)
+            TextButton(
+              onPressed: () async {
+                final messenger = ScaffoldMessenger.of(ctx);
+                await Clipboard.setData(ClipboardData(text: logs.join('\n')));
+                messenger.showSnackBar(const SnackBar(content: Text('Go 日志已复制')));
+              },
+              child: const Text('复制'),
+            ),
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
         ],
       ),

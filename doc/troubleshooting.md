@@ -7,6 +7,9 @@
 
 ## 通用确认顺序
 
+0. **闪退 / 进程直接消失**：先取日志，再谈推理。设置页 →「复制日志反馈包」；
+   或者看应用支持目录的 `logs/`（`app.log`、`session.json`、`incidents.json`）。
+   上次没正常结束的话，App 下次启动会自己弹提示。详见文末「闪退的证据链」。
 1. 设置页 →「运行全部通道测试」→「复制」。看哪几项 FAIL：
    - `1` FAIL → 连不上后端（API 直连通道）
    - `2b` FAIL 但 `2` PASS → **Dio/解析层**问题，不是网络
@@ -178,6 +181,78 @@ comma-ok；每个 goroutine 各自 recover。
 **修法**：`_passed()` 解析 `HTTP <code>` 判 2xx/3xx；"预期失败"的用例（第 5 项）
 用 `expectFail` 反转。**结论：诊断项必须能被判假**，否则它只是在制造安心感。
 
+## 案例 12：拖进度条后长时间卡住 / 黑屏（不是闪退）
+
+**症状**：视频能正常播，一拖进度条就卡住或变黑，久等不回，只能退出重进。
+（注意区分：进程**真的没了**是另一类问题，见文末「闪退的证据链」。）
+
+**根因（两种，日志里能分辨）**：
+
+1. **上游没吃下 `Range`，回了 200 全量**。ExoPlayer 的 `DefaultHttpDataSource`
+   在"要了分段却收到 200"时会从头读、把目标位置之前的字节**全部丢弃** ——
+   墙内这条链路慢，等于白下几 MB 到几十 MB，表现就是原地卡住、像是死了。
+   诊断第 9 项必须 `206`（`200` 不算过）；日志里现在会显式出现：
+   `! Range 未生效：请求 "bytes=1234567-" ，上游回 200 全量`
+2. **seek 本身失败**。Android 上 seek 失败会变成 `PlatformException`（插件的
+   pigeon handler 把 `Throwable` 包成错误回给 Dart）。以前 `_seekTo` 既不 await
+   也不 catch —— **失败被静默吞掉**，界面上什么都不显示，日志里也没有。
+
+**修法**：`_seekTo`（卡片）与 `_seek`（全屏）都接住异常并写日志；播放器自身的错误
+（`VideoPlayerValue.hasError`）不再只躺在 value 里 —— 卡片侧转成可见错误态 + 现成的
+重试入口，全屏侧记一条日志；`_retryInit` 补上旧 controller 的 `dispose`
+（否则每重试一次就泄漏一个还在解码、还占着 texture 的播放器）。
+
+**确认**：拖动出问题后，「复制日志反馈包」里应当能看到 `seekTo` / `player` 开头的
+`Dart 错误`，或者上面那条 `! Range 未生效`。**两条都没有**才说明问题在原生层
+（解码器 / 纹理 / OOM），那就要 logcat 与 tombstone，App 内拿不到。
+
+**还没修的（已知）**：`_isDragging` 只在 `onChangeEnd` 清除，手势被取消（拖动中列表
+开始滚动、widget 被回收）时会一直停在"拖动中"，时间标签就不再更新；拖动期间显示的
+时间也不是手指位置，而是 `position + duration/2`。纯显示问题，不影响播放。
+
+---
+
+## 案例 13（Windows，疑似 · 未在真机确认）：拖进度条后闪退
+
+> 状态：**静态分析结论，没有真机复现**。之所以先记下来，是因为它只在 Windows
+> 产物上成立，而 Windows 那条通道平时没人测（Android 报告无法验证它）。
+
+**触发链**（源码：`video_player_win` 3.2.2，pub.dev 上的最新版，未修复）：
+
+1. `MyPlayer::Seek()`（`my_grabber_player.cpp:395`）在**暂停态**才置
+   `m_seekingToPts = ms * 10000` 并 `SetEvent(m_playingEvent)` —— 也就是把视频线程
+   从 `WaitForSingleObject` 里叫醒，并让它保持热路径。
+2. 该标记只在"找到与目标 PTS 相差 <100ms 的帧"时才清回 -1（`:350-360`）。没找到就
+   **一直 ≥ 0**：视频线程再也不休眠，`THREAD_PRIORITY_HIGHEST` 以 VBlank 频率空转
+   （`waitForVBlank` 60Hz）。顺带：那里的 `continue` 位于 `do{...}while(false)` 里，
+   等于直接跳出，"loop until next frame found" 其实没循环。
+3. `Shutdown()`（`:439`，dispose 的唯一入口）里 `SetEvent` 之后直接
+   `m_pEngine.reset()` / `m_pTexture.reset()`；而线程侧 `updateFrame()`（`:313`）
+   **既不拿 `m_mutex`**（全文件只有 `Shutdown` 用锁）**也不判空**，直接
+   `m_pEngine->OnVideoStreamTick(...)`。线程里那两处 `if (m_isShutdown) break;`
+   非原子、也不在锁内 —— 检查通过之后另一线程就能把 engine 释放掉 →
+   **空指针调用 / use-after-free → 访问违例 → 进程当场消失**。
+
+**为什么和"拖进度条"绑在一起**：`Seek()` 是唯一会把暂停态线程唤成热路径的用户操作。
+静止时线程阻塞着，`Shutdown` 的 `SetEvent` 之后它醒来会立刻看到 `m_isShutdown` 而退出，
+基本安全；scrubbing 期间这个窗口是打开的。**而我们 App 的 dispose 很积极**
+（`twitter_video.dart` 的 `dispose` 与 `didUpdateWidget`，加上 `cacheExtent: 1800`，
+卡片滚出一屏就回收），所以"拖完立刻滚动/返回"就能撞上。
+
+**可验证的判别性预测**（不需要调试器）：
+
+- **播放中**拖不应该触发（`Seek()` 只在 `!m_isPlaying` 时置 scrubbing 标记）；
+- 拖完之后 **CPU 占用不回落**（线程再也没睡），任务管理器可见；
+- 复现脚本：暂停 → 拖进度条 → 1~2 秒内让卡片滚出屏幕或返回上一页。
+
+**顺带**：`my_http_bytestream.cpp:70` 把 `QWORD startPosition` 强转成 `int` 拼
+`Range: bytes=%d-`，超过 2 GiB 的偏移会截断成错值（每次 Windows seek 都走这里）。
+
+**修法方向**：上游无修复版 → 需要 fork（本仓已有 fork `video_thumbnail` 的先例）：
+`updateFrame()` 首行加 `if (!m_pEngine || m_isShutdown) return E_FAIL;`；
+给 `m_seekingToPts` 加超时兜底；`Shutdown()` 在 `m_pEngine.reset()` **之前**等线程退出，
+而不是只 `SetEvent`。
+
 ---
 
 ## 排查"媒体到底走没走 ECH"
@@ -196,3 +271,33 @@ comma-ok；每个 goroutine 各自 recover。
 
 **冷启动注意**：新进程里第一次 ECH 请求要 7~11s（先 DoH 取 ECH 配置），之后
 0.4~1.5s。所以 App 启动即拉起代理；若在代理未就绪时进画廊，第一批图会慢。
+
+---
+
+## 闪退的证据链（进程级崩溃怎么留痕）
+
+「闪退」= 进程没了，不是 Dart 异常。Dart 层在 release 下抛错只会打日志/灰屏，
+**能杀进程的只有四类**：Go 侧 abort（cgo）、播放器/解码器原生崩溃、OOM 被系统杀、
+以及 Windows 上第三方插件的访问违例。四类的共同点是：**内存里的东西全丢**。
+
+所以证据必须提前落盘（`lib/services/log_service.dart`）：
+
+| 手段 | 拿到什么 | 局限 |
+| --- | --- | --- |
+| `logs/app.log` | Dart 错误 + Go 日志（2s 增量） | 硬 abort 时最后 ~2s 的 Go 行可能丢 |
+| Go 侧 stderr tee | 被 abort 前的最后几行、`PANIC ...` + 栈 | Android 上 stderr 未必进 logcat，以文件为准 |
+| `session.json` | 是否正常收尾 | 强杀/系统回收也判为"没正常结束"，不能等同于闪退 |
+| 设置页诊断第 10 项 | 媒体经没经过 ECH、各状态码条数 | 不覆盖崩溃本身 |
+
+**两个必须知道的事实**（别指望 `guardPanic` 兜住一切）：
+
+1. `recover()` **抓不到 Go 的 `fatal error`**（concurrent map write、OOM 等）——
+   这类直接 abort，`guardPanic` 不参与。
+2. **不是所有 goroutine 都有 recover**。本项目自己的 goroutine 都包了，但依赖库里的
+   没有：`cloudflare_ech.InitDefault()` 起的 `refreshLoop`（wintools `pkg/ech/client.go`）
+   就没有 recover，它里面 panic 一样会带走进程。案例 9 里"每个 goroutine 各自 recover"
+   的说法只对本仓代码成立。
+
+**排查顺序**：先看 `logs/app.log` 尾部有没有 `PANIC`/`Dart 错误`；再看是不是 OOM
+（Android 看 logcat 的 `lowmemorykiller` / `ActivityManager`）；都没有则怀疑原生层
+（Android tombstone、Windows 事件查看器的应用日志）。

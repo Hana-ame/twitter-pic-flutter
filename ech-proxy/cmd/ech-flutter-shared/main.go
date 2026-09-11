@@ -43,6 +43,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -92,6 +93,11 @@ type logWriter struct{}
 
 func (w *logWriter) Write(p []byte) (int, error) {
 	line := strings.TrimRight(string(p), "\n")
+	// 同时透到 stderr：这个环形缓冲是**内存态**，进程一旦 abort（fatal error、
+	// 或未被 recover 的 goroutine panic —— recover 抓不到 fatal error）就随进程
+	// 一起消失，事后什么也查不到。stderr 至少在桌面端/CI 可见，Android 上也有
+	// 机会进 logcat。Dart 侧另有一份落盘（lib/services/log_service.dart）。
+	fmt.Fprintln(os.Stderr, line)
 	logMu.Lock()
 	logBuffer = append(logBuffer, line)
 	if len(logBuffer) > maxLogLines {
@@ -455,6 +461,14 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 		return
 	}
 	defer resp.Body.Close()
+
+	// 客户端要了分段、上游却回 200 全量：这不是错误状态码，但播放器（ExoPlayer
+	// 的 DefaultHttpDataSource）会从头读并**丢弃**到目标的偏移量，在墙内这条慢
+	// 链路上表现为"拖完进度条长时间卡住/黑屏"。200 本身在日志里毫无异常，
+	// 所以必须显式记一条，否则这条路径永远查不出来。
+	if rng := r.Header.Get("Range"); rng != "" && resp.StatusCode == http.StatusOK {
+		log.Printf("! Range 未生效：请求 %q，上游回 200 全量（播放器会丢弃前置字节）", rng)
+	}
 
 	hopByHop := map[string]bool{
 		"Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,

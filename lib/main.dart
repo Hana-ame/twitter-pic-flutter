@@ -10,43 +10,79 @@
 //   5. 新增 _startInFlight 守卫，防止并发启动
 //   6. 重启后端口可能变化，通过 _port 字段统一管理
 
+import 'dart:async';
+// 前缀导入：dart:ui 与 material 有同名导出（TextStyle / Image 等），
+// 不带前缀会直接变成歧义错误。
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/painting.dart';
 
 import 'api/twitter_api.dart';
+import 'services/log_service.dart';
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
 import 'screens/settings_screen.dart';
 import 'screens/user_list_screen.dart';
 import 'utils/doh_resolver.dart';
 import 'widgets/fav_list.dart';
+import 'widgets/report_help.dart';
 import 'widgets/tag_controller.dart';
 
 const _kBuildNum = String.fromEnvironment('BUILD_NUM', defaultValue: 'dev');
 
 // ─── 入口 ────────────────────────────────────────────────────────────────────
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() {
+  // 全局错误捕获：以前一处都没有 —— Dart 侧出错只在控制台一闪而过，用户报
+  // 「闪退」时手里没有任何线索。现在所有未捕获错误都会落到 logs/app.log，
+  // 并且能在设置页打包反馈（见 lib/services/log_service.dart）。
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  // 图片缓存放宽：默认是 100MB / 1000 张。列表里滚过去的图一旦被挤出去，
-  // 滚回来就得重新下载解码，中间那段就是空白。这里放宽到 160MB / 1500 张，
-  // 已经看过的图基本留在内存里。（解码后是位图，按屏幕宽度算一张几 MB。）
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 160 << 20;
-  PaintingBinding.instance.imageCache.maximumSize = 1500;
+    FlutterError.onError = (details) {
+      LogService.recordError('FlutterError', details.exception, details.stack);
+      FlutterError.presentError(details);
+    };
+    // 平台通道 / isolates 里抛出的错误（不经过 FlutterError）走这里。
+    ui.PlatformDispatcher.instance.onError = (error, stack) {
+      LogService.recordError('PlatformDispatcher', error, stack);
+      // 返回 true：已记录，不再走默认处理（默认也只是打印一行）。
+      return true;
+    };
 
-  await StorageService.ensureInitialized();
-  runApp(const MyApp());
+    // 图片缓存放宽：默认是 100MB / 1000 张。列表里滚过去的图一旦被挤出去，
+    // 滚回来就得重新下载解码，中间那段就是空白。这里放宽到 160MB / 1500 张，
+    // 已经看过的图基本留在内存里。（解码后是位图，按屏幕宽度算一张几 MB。）
+    PaintingBinding.instance.imageCache.maximumSizeBytes = 160 << 20;
+    PaintingBinding.instance.imageCache.maximumSize = 1500;
+
+    await StorageService.ensureInitialized();
+    await LogService.ensureInitialized(buildNum: _kBuildNum);
+
+    // 顺序要紧：先读上一次的会话文件判断是否正常结束，再写本次会话 ——
+    // 反过来的话 startSession() 会先把旧记录覆盖掉，永远检测不到异常退出。
+    final pendingExit = await LogService.takeUncleanExit();
+    LogService.startSession();
+
+    runApp(MyApp(pendingExit: pendingExit));
+  }, (error, stack) {
+    // 兜底：上面两个钩子之外的错误（未捕获的 Future、Timer 回调）落到这里。
+    LogService.recordError('zone', error, stack);
+  });
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  /// 上次运行没有正常结束时的记录（正常启动为 null）。
+  final Incident? pendingExit;
+
+  const MyApp({super.key, this.pendingExit});
 
   @override
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   final ProxyManager _proxy = ProxyManager();
   bool _proxyReady = false;
   String? _proxyError;
@@ -54,12 +90,65 @@ class _MyAppState extends State<MyApp> {
   bool _showLog = false;
   bool _startInFlight = false;
 
+  /// 用于在 MaterialApp 之上拿一个可用的 context 弹「上次异常结束」提示。
+  final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
+
+  /// Go 日志轮询：把代理的日志环形缓冲持续搬到磁盘。
+  ///
+  /// 只在需要时才读（内存里的缓冲随进程消失，这正是闪退查不出来的原因）。
+  /// 2 秒是「丢的日志足够少」与「不会反复写盘」之间的取舍。
+  Timer? _logTimer;
+
   // ─── 启动 / 重启 ─────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _start();
+    _startLogPolling();
+    // 首帧之后再弹，此时 Navigator 已就绪。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowExitReport());
+  }
+
+  /// 上次没有正常结束时，主动提示用户加群反馈。
+  void _maybeShowExitReport() {
+    final incident = widget.pendingExit;
+    if (incident == null || LogService.promptSuppressed || !mounted) return;
+    final ctx = _navKey.currentContext;
+    if (ctx == null) return;
+    showExitReportDialog(ctx, incident: incident, extra: _runtimeContext());
+  }
+
+  /// 反馈包里附带的运行时上下文。
+  Map<String, String> _runtimeContext() => <String, String>{
+        '代理': _proxy.isRunning ? '运行中' : '已停止',
+        '端口': '${_proxy.port ?? '-'}',
+        'ECH 初始化': '${_proxy.isInitialized}',
+      };
+
+  void _startLogPolling() {
+    _logTimer?.cancel();
+    _logTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!LogService.isReady) return;
+      unawaited(LogService.pollGoLogs(_proxy.getLogs()));
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      // 正常收尾：打上标记，下次启动就不会误报「上次没有正常结束」。
+      LogService.markCleanExit();
+      unawaited(LogService.flush());
+    } else if (state == AppLifecycleState.resumed) {
+      // 回到前台：把标记翻回「进行中」。detached 不一定真的结束进程，
+      // 留着 cleanExit=true 会让之后的闪退检测不到。
+      LogService.markSessionActive();
+    } else if (state == AppLifecycleState.paused) {
+      // 转入后台：先把挂起的日志刷下去，减少被系统杀掉时丢掉的行数。
+      unawaited(LogService.pollGoLogs(_proxy.getLogs()));
+    }
   }
 
   Future<void> _start() async {
@@ -139,6 +228,7 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Twitter Pic v$_kBuildNum',
+      navigatorKey: _navKey,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF4F6CFF),
@@ -301,6 +391,8 @@ class _MyAppState extends State<MyApp> {
 
   @override
   void dispose() {
+    _logTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _proxy.dispose();
     super.dispose();
   }

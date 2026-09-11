@@ -37,12 +37,18 @@
 - [x] 视频：Range 边下边播、缓冲进度、倍速、全屏、下载分享
 - [x] 会话内图片缓存（ImageCache 160MB / 1500 张）、元数据缓存（10 分钟 TTL + in-flight 去重）
 - [x] 设置页：代理状态、10 项网络诊断（可复制）、Go 调试日志、清缓存
+- [x] **日志落盘**：Dart 全局错误捕获 + Go 日志 2s 轮询增量追加（`logs/app.log`，512KB 轮转）
+- [x] **异常退出提示**：会话未打 `cleanExit` → 下次启动提示加群反馈 + 一键复制日志包
+- [x] 反馈渠道：设置页「加群反馈」+ 日志包内自带加群地址（chatto 群，房间「ECH Proxy」）
+- [x] 视频 seek 失败 / 播放器报错不再静默：写日志 + 卡片侧可见错误态 + 重试前释放旧 controller
+- [x] 代理在「请求了 `Range` 却收到 200」时显式记日志（拖动进度条后卡住的那条路径）
 
-## 测试（CI `flutter_test` job，10 个文件全跑，不过不发版）
+## 测试（CI `flutter_test` job，11 个文件全跑，不过不发版）
 - [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）
 - [x] `media_url_test.dart` — `MediaUrl.isImage` 预取判定（只认 pbs 图片，视频不预热）
 - [x] `progressive_image_test.dart` — 解码节流三规则 + provider 缓存标识
 - [x] `fav_list_test.dart` — 收藏夹回归：纵向 ListView 嵌套纵向 ListView（条目全空）
+- [x] `log_service_test.dart` — 日志增量落盘 / 缓冲轮转对齐 / 异常退出判定 / 反馈包内容
 - [x] `ech_url_test.dart` — 媒体 URL 改写（丢域名、保 query）
 - [x] `proxy_manager_test.dart`（平台库名/加载路径）
 - [x] `user_model_test.dart` — 容错 JSON 解析
