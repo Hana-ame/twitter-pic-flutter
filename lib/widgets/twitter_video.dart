@@ -26,6 +26,8 @@ import 'package:share_plus/share_plus.dart';
 import '../services/log_service.dart';
 import '../services/poster_service.dart';
 import '../services/proxy_manager.dart';
+import '../services/storage_service.dart';
+import '../utils/decode_budget.dart';
 import '../utils/ech_url.dart';
 import '../utils/video_failure.dart';
 
@@ -41,6 +43,12 @@ const Duration _kSlowHintAfter = Duration(minutes: 30);
 
 /// 自动重试前的等待：给抖动的连接一点恢复时间。
 const Duration _kAutoRetryDelay = Duration(milliseconds: 1200);
+
+/// 解码器类失败最多重排几次（每次都降一档并发上限）。
+const int _kMaxCodecRetries = 3;
+
+/// 降档后重排前的等待：给刚被回收的那一路释放解码器留点时间。
+const Duration _kCodecRetryDelay = Duration(milliseconds: 600);
 
 class TwitterVideo extends StatefulWidget {
   final String url;
@@ -89,6 +97,9 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 封面（静帧）字节。**这是卡片显示画面的主要方式**：有封面就显示封面，
   /// 不占解码器；解码器只用来给"还没有封面"的卡片抓一张封面，抓完立刻让位。
   Uint8List? _poster;
+
+  /// 解码器类失败的重排次数（每次都会把并发上限降一档）。
+  int _codecRetries = 0;
 
   /// 用户点了封面/重试：拿到播放器后直接开始播（点一下就能看，不用再点播放键）。
   bool _autoPlayOnReady = false;
@@ -314,8 +325,22 @@ class _TwitterVideoState extends State<TwitterVideo>
       _slowHintTimer?.cancel();
       _logFailure(e, st);
 
-      // 自动重试一次：冷启动（新进程首次 ECH 要 7~11s）与连接抖动多为一次性。
-      if (!_autoRetried) {
+      // 解码器类失败：多半是并发撞了本机硬解上限。**先降档并重新排队**，
+      // 不要直接甩错误卡片 —— 用户看到"视频不能播"，其实等一等就好。
+      if (VideoFailure.isCodecError(e)) {
+        _PlayerPool.noteCodecFailure();
+        _codecRetries++;
+        if (_codecRetries <= _kMaxCodecRetries) {
+          _PlayerPool.release(this);
+          _disposeController();
+          setState(() => _retrying = true);
+          await Future.delayed(_kCodecRetryDelay);
+          if (!mounted || seq != _initSeq) return;
+          _scheduleInit();
+          return;
+        }
+      } else if (!_autoRetried) {
+        // 自动重试一次：冷启动（新进程首次 ECH 要 7~11s）与连接抖动多为一次性。
         _autoRetried = true;
         setState(() => _retrying = true);
         await Future.delayed(_kAutoRetryDelay);
@@ -497,6 +522,8 @@ class _TwitterVideoState extends State<TwitterVideo>
     }
     setState(() => _poster = png);
     await PosterService.put(widget.url, png);
+    // 上报一次成功：连续成功说明本机还有解码器余量，可以谨慎上调并发。
+    _PlayerPool.noteSuccess();
     if (!_captureLogged) {
       _captureLogged = true;
       LogService.recordNote('poster', '封面抓帧成功（走缓存路径，解码器用完即还）');
@@ -1068,6 +1095,7 @@ class _TwitterVideoState extends State<TwitterVideo>
     _PlayerPool.release(this);
     _disposeController();
     _autoRetried = false;
+    _codecRetries = 0;
     setState(() {
       _error = null;
       _isLoading = _needsSlot;
@@ -1098,8 +1126,38 @@ class _TwitterVideoState extends State<TwitterVideo>
 class _PlayerPool {
   _PlayerPool._();
 
-  /// 上限。AVC 硬解实例常为 2~4、720p60 High 往往只吃得下 2 个，所以留 2。
-  static const int max = 2;
+  /// 自适应上限（策略见 utils/decode_budget.dart）。
+  ///
+  /// **不是写死 2**：硬解实例数因设备而异（常见 2~4，但不少机型能开更多），
+  /// 且系统没有 API 可查。起点取上次会话学到的值，之后靠"连续成功就 +1、
+  /// 撞 MediaCodec 失败就 -1"自己找位置（1~4）。
+  static final DecodeBudget _budget = DecodeBudget(
+    initial: StorageService.getDecodeBudget() ?? 2,
+  );
+
+  static int get max => _budget.value;
+
+  /// 一次成功（抓到一帧封面）：连续成功够了就谨慎上调。
+  static void noteSuccess() {
+    if (!_budget.onSuccess()) return;
+    _afterBudgetChange('连续抓帧成功');
+  }
+
+  /// 一次 MediaCodec 类失败：立即下调（多半是并发撞了本机硬解上限）。
+  static void noteCodecFailure() {
+    if (!_budget.onCodecFailure()) return;
+    _afterBudgetChange('撞解码器上限');
+  }
+
+  static void _afterBudgetChange(String why) {
+    // 存档：否则每次冷启动都要重新撞一次墙。
+    StorageService.setDecodeBudget(_budget.value);
+    LogService.recordNote(
+      'decode',
+      '$why → 并发上限=${_budget.value}'
+      '（存活=${_live.length} 排队=${_waiting.length}）',
+    );
+  }
 
   /// 已占槽的（含正在 initialize 的 —— 解码器是在 prepare 阶段就申请的，
   /// 所以必须把 in-flight 也算进来，否则并发数会失控）。

@@ -9,6 +9,7 @@ class StorageService {
   static const _kTagRules = 'tag-rules';
   static const _kCustomTags = 'user_custom_tags';
   static const _kSearchHistory = 'search-history';
+  static const _kDecodeBudget = 'decode-budget';
 
   static bool _loaded = false;
   static Map<String, String> _memory = {};
@@ -157,6 +158,16 @@ class StorageService {
   static void setCustomTags(List<String> tags) {
     _write(_kCustomTags, jsonEncode(tags));
   }
+
+  // --- decode-budget（自适应学到的解码器并发上限）---
+  /// 上次会话试出来的并发上限。取不到就返回 null（由调用方用默认值）。
+  static int? getDecodeBudget() {
+    final v = int.tryParse(_read(_kDecodeBudget));
+    if (v == null || v < 1) return null;
+    return v;
+  }
+
+  static void setDecodeBudget(int value) => _write(_kDecodeBudget, '$value');
 
   // --- search-history ---
   static List<String> getSearchHistory() {

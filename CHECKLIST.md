@@ -43,20 +43,24 @@
 - [x] 视频 seek 失败 / 播放器报错不再静默：写日志 + 卡片侧可见错误态 + 重试前释放旧 controller
 - [x] 代理在「请求了 `Range` 却收到 200」时显式记日志（拖动进度条后卡住的那条路径）
 - [x] **封面缓存 + 可见优先分槽**：解码器只用于给"还没有封面"的卡片抓一帧，
-      抓到即交还（`_PlayerPool` 上限 2）；回看走缓存封面、零解码器；抓帧不可用时
-      自动退回"每张卡片各自持有播放器"（v0.5.2 行为）
+      抓到即交还；回看走缓存封面、零解码器；抓帧不可用时自动退回"每张卡片各自
+      持有播放器"（v0.5.2 行为）
+- [x] **并发上限自适应**（`utils/decode_budget.dart`）：连续成功 +1、撞解码器失败 -1，
+      范围 1~4，学到值存档；撞上限的失败降档重排而不报错
 - [x] 视频重试手段：加载永不判成失败（慢就一直等）、失败自动重试一次、
       代理端口出现自动重试；错误卡片**重试按钮在最前 + 原样显示具体错误**（可选中复制）；
       代理未就绪不再静默退回直连 URL
 - [x] `_initSeq` + `_scheduleInit`：初始化去重，避免同帧起两个播放器/两个解码器
 
-## 测试（CI `flutter_test` job，12 个文件全跑，不过不发版）
+## 测试（CI `flutter_test` job，14 个文件全跑，不过不发版）
 - [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）
 - [x] `media_url_test.dart` — `MediaUrl.isImage` 预取判定（只认 pbs 图片，视频不预热）
 - [x] `progressive_image_test.dart` — 解码节流三规则 + provider 缓存标识
 - [x] `fav_list_test.dart` — 收藏夹回归：纵向 ListView 嵌套纵向 ListView（条目全空）
 - [x] `log_service_test.dart` — 日志增量落盘 / 缓冲轮转对齐 / 异常退出判定 / 反馈包内容
 - [x] `video_failure_test.dart` — 线上实测的 MediaCodec 报错必须判成"解码器"而非"网络"
+- [x] `decode_budget_test.dart` — 并发上限自适应（上调/下调/夹紧/失败清连击）
+- [x] `poster_service_test.dart` — 封面缓存（内存+磁盘、跨会话、淘汰、清空）
 - [x] `ech_url_test.dart` — 媒体 URL 改写（丢域名、保 query）
 - [x] `proxy_manager_test.dart`（平台库名/加载路径）
 - [x] `user_model_test.dart` — 容错 JSON 解析

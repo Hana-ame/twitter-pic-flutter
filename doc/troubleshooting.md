@@ -322,6 +322,17 @@ avc1.640020, 1891376, und, [1280, 720, 60.0, ...]), format_supported=YES, null, 
 若 `format_supported=YES` 却反复报同一个错、且换视频也一样，说明是**该编码在本机
 不可用**（不是不够用），此时重试无用，只能换视频或在别的机器上试。
 
+**并发上限不是写死的 2**：`utils/decode_budget.dart` 从 2 起步，连续抓帧成功 3 次
+上调 1、撞 MediaCodec 失败立即下调 1，范围 1~4，学到的值存档。日志里能看到本机实测：
+
+```
+decode: 连续抓帧成功 → 并发上限=3（存活=2 排队=7）
+decode: 撞解码器上限 → 并发上限=2（存活=2 排队=7）
+```
+
+**若上限已经降到 1 仍反复报同一个 MediaCodec 错、换视频也一样**，那就不是"不够用"
+而是**该编码在本机不可用**：此时重试无用，只能换视频或在别的机器上试。
+
 **注意**：`video_player` 插件用 `new ExoPlayer.Builder(context)` 建播放器，**没有**
 `setEnableDecoderFallback(true)`，而 media3 默认 `enableDecoderFallback = false` ——
 所以硬解失败时**不会**自动退到软解，这一层救不了，只能靠我们控制并发数。
