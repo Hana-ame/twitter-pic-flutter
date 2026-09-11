@@ -93,6 +93,13 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 用户点了封面/重试：拿到播放器后直接开始播（点一下就能看，不用再点播放键）。
   bool _autoPlayOnReady = false;
 
+  /// 这张卡片是**用户点播**的：不许把它的播放器交给池子。
+  ///
+  /// 必要性（第二个"点不动"的成因）：没有封面时点播 → 初始化成功、开始播放 →
+  /// 抓封面在下一帧（~16ms）就完成，此刻 `value.isPlaying` 可能还没翻转 →
+  /// `_becomePosterOnly` 判定"没在播"把播放器还回去 → **正在起播的视频当场死掉**。
+  bool _userInitiated = false;
+
   /// 抓封面用的边界（只包视频画面，不包控制栏）。
   final GlobalKey _posterKey = GlobalKey();
 
@@ -403,6 +410,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 有封面就显示封面；没有就继续排队等下一次（loading），**不落错误态** ——
   /// 主动让位不是失败。
   void _releaseForPool() {
+    _userInitiated = false;
     _disposeController();
     if (!mounted) return;
     setState(() {
@@ -425,6 +433,8 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 整个列表，而同时占用的解码器始终不超过 _PlayerPool.max。
   void _becomePosterOnly() {
     if (!mounted || _isPlayingNow || _fullscreenOpen) return;
+    // 用户点播的那张不许交还（见 _userInitiated 的注释）。
+    if (_userInitiated) return;
     // 抓帧不可用时槽位没有意义（没有"换出来"的东西），留着播放器显示画面更有用。
     if (_PlayerPool.captureUnavailable) return;
     _PlayerPool.release(this);
@@ -1045,6 +1055,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 重新申请一次解码器（错误态的「重试」、封面态/loading 的「点按/重试」共用）。
   void _retryInit({bool autoPlay = false}) {
     _autoPlayOnReady = autoPlay;
+    if (autoPlay) _userInitiated = true;
     // 先把自己占的槽位还掉再重新申请：池子按"用户点播 > 可见 > 排队顺序"分槽，
     // 所以刚点的那张必定拿得到。
     _PlayerPool.release(this);
