@@ -109,6 +109,20 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
   final ProgressiveDecodeThrottle throttle;
   final Duration timeout;
 
+  /// 已被框架释放（卡片滚出视口 / 页面被 pop）。
+  ///
+  /// 必要性：`_pump` 在构造函数里就启动了，`Image` 被移出树后最后一个 listener
+  /// 移除会调 `dispose()`，但 HTTP 下载不会因此停 —— 它会一直跑到 20s 超时或
+  /// 响应结束。详情页里有十几张图同时构建，用户按返回键后这些下载还在继续跑，
+  /// 在墙内 ECH 链路上每张 10-30s，白白吃带宽。
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
   // 自增长缓冲：避免每解码一次就整体复制一遍（BytesBuilder.toBytes()）。
   Uint8List _buf = Uint8List(64 * 1024);
   int _len = 0;
@@ -133,7 +147,9 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
   Future<void> _pump() async {
     final client = HttpClient()..connectionTimeout = timeout;
     try {
+      if (_disposed) return;
       final request = await client.getUrl(Uri.parse(url));
+      if (_disposed) return;
       final response = await request.close();
       if (response.statusCode != 200) {
         throw HttpException('HTTP ${response.statusCode}', uri: Uri.parse(url));
@@ -144,6 +160,7 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
 
       // 卡住不动 30 秒就放弃：connectionTimeout 只管建连，管不了中途断流。
       await for (final chunk in response.timeout(const Duration(seconds: 30))) {
+        if (_disposed) break; // 已经没人在看了，别继续吃带宽。
         _append(chunk);
         // 喂给 Image 的 loadingBuilder（进度条用它）。
         reportImageChunkEvent(ImageChunkEvent(
@@ -155,8 +172,11 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
         if (throttle.shouldDecode(_len, now)) {
           throttle.mark(_len, now);
           await _decodeAndEmit(_view, isFinal: false);
+          if (_disposed) break;
         }
       }
+
+      if (_disposed) return;
 
       if (_len == 0) {
         throw HttpException('响应为空', uri: Uri.parse(url));
@@ -166,6 +186,7 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
       // 最后才可解），失败时这里才报错给 errorBuilder。
       await _decodeAndEmit(_view, isFinal: true);
     } catch (e, s) {
+      if (_disposed) return;
       reportError(exception: e, stack: s);
     } finally {
       client.close(force: true);
@@ -173,18 +194,20 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
   }
 
   Future<void> _decodeAndEmit(Uint8List bytes, {required bool isFinal}) async {
-    if (bytes.isEmpty) return;
+    if (bytes.isEmpty || _disposed) return;
     ui.Codec? codec;
     try {
       final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
       codec = await decode(buffer);
       final frame = await codec.getNextFrame();
+      // 解码期间被释放（卡片滚出视口）：帧已经没人在看，别再去 setImage。
+      if (_disposed) return;
       // setImage 会把上一帧交还给框架释放，这里不要自己 dispose。
       setImage(ImageInfo(image: frame.image, scale: 1.0));
     } catch (e, s) {
       // 数据还不够：baseline JPEG / PNG 在数据不完整时会直接解失败，静默等
       // 下一块即可。只有"完整数据也解不出来"才是真的错误。
-      if (isFinal) reportError(exception: e, stack: s);
+      if (isFinal && !_disposed) reportError(exception: e, stack: s);
     } finally {
       codec?.dispose();
     }

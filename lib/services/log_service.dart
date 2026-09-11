@@ -114,6 +114,11 @@ class LogService {
   static int _goLogCount = 0;
   static String? _goLogTail;
 
+  /// 上次快照的倒数第二行。和 [_goLogTail] 组成**两行锚点**：
+  /// 单行做锚点时，`lastIndexOf` 会命中同一条内容在缓冲里**更晚**的重复行，
+  /// 中间的日志就静默丢了（同一媒体重复请求、高频重复的错误行都能触发）。
+  static String? _goLogTail2;
+
   // ─── 生命周期 ─────────────────────────────────────────────────────────────
 
   static bool get isReady => _ready;
@@ -129,6 +134,15 @@ class LogService {
       }
       _promptSuppressed = await _readSuppressed();
       _incidents = await _readIncidents();
+      // 上一次进程在 tmp + rename 的窗口里被杀，会留下 .tmp 孤儿文件。
+      // 它们没有对应的主文件可读，留着只是白占空间。
+      for (final name in const ['session.json.tmp', 'incidents.json.tmp']) {
+        final t = _file(name);
+        if (t == null) continue;
+        try {
+          if (await t.exists()) await t.delete();
+        } catch (_) {}
+      }
       _ready = true;
     } catch (e) {
       // 拿不到目录（极端情况）：退化成纯内存，功能不致命。
@@ -153,7 +167,7 @@ class LogService {
     if (f == null) return;
     final now = DateTime.now();
     try {
-      f.writeAsStringSync(jsonEncode({
+      _atomicWriteSync(f, jsonEncode({
         'startedAt': now.toIso8601String(),
         'buildNum': _buildNum,
         'cleanExit': false,
@@ -193,10 +207,23 @@ class LogService {
       final map = raw.cast<String, dynamic>();
       map['cleanExit'] = cleanExit;
       // startedAt 保持首次写入的值：它表示"这个会话从什么时候开始"。
-      f.writeAsStringSync(jsonEncode(map));
+      _atomicWriteSync(f, jsonEncode(map));
     } catch (e) {
       debugPrint('LogService._writeSession failed: $e');
     }
+  }
+
+  /// 同步原子写：先写 .tmp 再 rename 过去。
+  ///
+  /// 必须这样：`writeAsStringSync` 是就地 truncate-then-write，进程恰好在写入
+  /// 窗口里被杀，session.json 就会变成空文件或半截 JSON。下次启动
+  /// [takeUncleanExit] 的 jsonDecode 抛 FormatException → catch → return null，
+  /// **这次崩溃就永远不会被上报** —— 而崩溃检测存在的全部理由就是这种情况。
+  /// storage_service.dart 对 storage.json 早就这么写了，这里补齐。
+  static void _atomicWriteSync(File target, String content) {
+    final tmp = File('${target.path}.tmp');
+    tmp.writeAsStringSync(content);
+    tmp.renameSync(target.path);
   }
 
   /// 启动时调用一次：判定上次是否**没有正常结束**。
@@ -289,37 +316,58 @@ class LogService {
   /// 代理日志是一个固定长度（当前 500 行）的环形缓冲，所以不能只靠下标：
   /// 缓冲可能被裁剪（下标对不上）或被 StartProxy 清空。这里：
   ///   - 正常情况下从上次的条数往后追加；
-  ///   - 对不上时先找上次的最后一行（取最后一次出现），只补它之后的部分；
+  ///   - 对不上时按上次快照的**末两行**定位，只补它们之后的部分；
   ///   - 完全找不到（被清空）就打个分隔标记，全量重写一遍。
   static Future<void> pollGoLogs(List<String> lines) {
     if (lines.isEmpty) return Future.value();
     final List<String> toAppend;
     if (_goLogTail != null &&
-        lines.length > _goLogCount &&
         _goLogCount > 0 &&
+        lines.length > _goLogCount &&
         lines[_goLogCount - 1] == _goLogTail) {
+      // 环形缓冲没回绕：前 _goLogCount 行原样保留，新增在后面。
       toAppend = lines.sublist(_goLogCount);
     } else {
-      final tail = _goLogTail;
-      var start = 0;
-      if (tail != null) {
-        final idx = lines.lastIndexOf(tail);
-        if (idx >= 0) {
-          start = idx + 1;
-        } else {
-          // 缓冲被清空（StartProxy）或已滚掉：标记后全量补。
-          toAppend = <String>['--- Go 日志缓冲已轮转，以下是当前全部 ---', ...lines];
-          _goLogCount = lines.length;
-          _goLogTail = lines.last;
-          return _append('app.log', _capLines(toAppend));
-        }
-      }
-      toAppend = lines.sublist(start);
+      final start = _findGoLogAnchorStart(lines);
+      toAppend = start < 0
+          // 缓冲被清空（StartProxy）或整段已滚掉：标记后全量补。
+          ? <String>['--- Go 日志缓冲已轮转，以下是当前全部 ---', ...lines]
+          : lines.sublist(start);
     }
-    _goLogCount = lines.length;
-    _goLogTail = lines.last;
     if (toAppend.isEmpty) return Future.value();
-    return _append('app.log', _capLines(toAppend));
+    // 游标只在**真的落盘成功**之后才推进：反过来先推进再写盘，一旦写失败
+    // （磁盘满、权限）这批日志就永久丢了 —— 而丢的往往正是崩溃现场。
+    return _append('app.log', _capLines(toAppend)).then((_) {
+      _goLogCount = lines.length;
+      _goLogTail = lines.last;
+      _goLogTail2 = lines.length >= 2 ? lines[lines.length - 2] : null;
+    });
+  }
+
+  /// 在新一轮的环形缓冲里定位"上次快照的末尾"，返回新增内容的起始下标；
+  /// 找不到返回 -1（调用方走"整段重写"）。
+  ///
+  /// 匹配取**最后一次**出现：宁可能少补一点，也别把整个缓冲重新落盘一遍。
+  /// 锚点用**相邻两行**而不是单行 —— 单行内容在日志里会重复出现（同一 URL
+  /// 的重复请求、高频相同的错误行），单行 `lastIndexOf` 会命中重复的那一条，
+  /// 把中间**没落盘的日志永久丢掉**，而丢的往往正是崩溃现场。两行锚点加上
+  /// Go 侧 `log.Lmicroseconds` 的时间戳，碰撞概率可忽略。
+  ///
+  /// 彻底根治要 Go 侧给日志加单调序号（`ECHGetLog` 按序号取增量）；那要动
+  /// FFI 导出清单，先不动。
+  static int _findGoLogAnchorStart(List<String> lines) {
+    final tail = _goLogTail;
+    if (tail == null) return 0;
+    final tail2 = _goLogTail2;
+    if (tail2 != null) {
+      for (var i = lines.length - 2; i >= 0; i--) {
+        if (lines[i] == tail2 && lines[i + 1] == tail) return i + 2;
+      }
+      return -1;
+    }
+    // 上次快照只有 1 行（刚启动）：退化成单行锚点。
+    final idx = lines.lastIndexOf(tail);
+    return idx >= 0 ? idx + 1 : -1;
   }
 
   static List<String> _capLines(List<String> lines) =>
@@ -338,12 +386,24 @@ class LogService {
     if (f == null || lines.isEmpty) return;
     await f.writeAsString('${lines.join('\n')}\n', mode: FileMode.append);
     final size = await f.length();
-    if (size > maxLogBytes) {
-      final old = _file('$name.1');
-      if (old != null) {
-        if (await old.exists()) await old.delete();
-        await f.rename(old.path);
-      }
+    if (size <= maxLogBytes) return;
+    final old = _file('$name.1');
+    if (old == null) return;
+    try {
+      if (await old.exists()) await old.delete();
+      await f.rename(old.path);
+    } catch (e) {
+      // 轮转失败（.1 被占用 / 权限 / SELinux）绝不能让文件只长不转：否则每次
+      // 写入都超阈值、每次都轮转失败，app.log 会一路涨到撑爆 app 目录配额。
+      // 兜底截断：宁可丢这一整份（含刚写进来的新日志），也不要撑爆磁盘。
+      // 下一次写入会从空文件重新开始，功能不中断。
+      //
+      // 这里**不能** recordNote / _append：我们在写盘链里，再挂一个写盘任务
+      // 会在轮转持续失败时递归打日志，把日志空间自己塞满。
+      debugPrint('LogService: 轮转 $name 失败：$e（已截断兜底）');
+      try {
+        await f.writeAsString('', mode: FileMode.write);
+      } catch (_) {}
     }
   }
 
@@ -371,6 +431,10 @@ class LogService {
   /// - `session.json`：崩溃检测的标记位。删了它，[takeUncleanExit] 下次启动
   ///   就永远判不出"未正常结束"了 —— 正好毁掉这个功能存在的理由。
   ///
+  /// **会清** `prompt-suppressed`：那是用户点「不再提示」写下的开关。留着它，
+  /// 清完日志之后真闪退也再不会提示，崩溃检测等于被永久关掉了；用户是点这个
+  /// 按钮来"复位"的，所以清日志就该把它一起复位。
+  ///
   /// **Go 侧内存环形缓冲清不掉**：没有对应的 FFI 导出（[kMaxGoLogLines] 行的
   /// ring 只在 Go 侧 StartProxy 里被清空）。所以下一次 [pollGoLogs]
   /// 会把当前 ring 重新写回一个新的 app.log —— 这是预期行为：「查看日志」
@@ -385,14 +449,16 @@ class LogService {
   /// 我们正在等 _chain 完成，会死锁（CI 实测两个用例 30s 超时）。
   static Future<void> clearLogs() async {
     _goLogTail = null;
+    _goLogTail2 = null;
     _goLogCount = 0;
+    _promptSuppressed = false;
     // 原地 clear 而不是重新赋值：这两个是 static final，而且 buildDump 可能
     // 正拿着引用在组包，换对象会让它读到旧的（已清空前的）列表。
     _memoryErrors.clear();
     _memoryNotes.clear();
     _chain = _chain.then((_) async {
       try {
-        for (final name in const ['app.log', 'app.log.1']) {
+        for (final name in const ['app.log', 'app.log.1', 'prompt-suppressed']) {
           final f = _file(name);
           if (f == null) continue;
           if (await f.exists()) await f.delete();
@@ -433,12 +499,21 @@ class LogService {
     }
     final f = _file('incidents.json');
     if (f == null) return;
+    final tmp = File('${f.path}.tmp');
     try {
-      await f.writeAsString(
+      // tmp + rename，和 session.json 同一套：直接 writeAsString 是 truncate-
+      // then-write，进程恰好在窗口里被杀，incidents.json 会变成半截 JSON →
+      // 下次 [_readIncidents] 的 jsonDecode 抛异常 → catch 返回空 → 全部历史
+      // 崩溃记录凭空消失。
+      await tmp.writeAsString(
         jsonEncode(_incidents.map((e) => e.toJson()).toList()),
       );
+      await tmp.rename(f.path);
     } catch (e) {
       debugPrint('LogService._recordIncident failed: $e');
+      try {
+        await tmp.delete();
+      } catch (_) {}
     }
   }
 

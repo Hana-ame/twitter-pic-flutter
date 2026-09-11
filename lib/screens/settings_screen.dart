@@ -623,7 +623,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.delete_outline, color: Colors.red),
             title: const Text('清除日志'),
-            subtitle: const Text('清空 app.log 与内存日志，保留异常结束记录'),
+            subtitle: const Text('清空 app.log 与内存日志，并复位「不再提示」开关'),
             onTap: _clearLogs,
           ),
           const Divider(),
@@ -766,7 +766,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _showLogs(BuildContext context) {
-    final logs = widget.proxy.getLogs();
+    // 读磁盘 app.log（不是 Go ring）：反馈包里放的就是这份，看到什么就
+    // 能复制什么。Go ring 只有 500 行内存态，ring 里早就被挤掉的历史和
+    // 所有 Dart 侧错误（recordError 只落盘不进 ring）在这里是看不到的 ——
+    // 那等于让用户在屏幕上看到的和反馈包里对不上。
+    unawaited(LogService.logTail(maxLines: 400).then((logs) {
+      if (!mounted) return;
+      _showLogsDialog(context, logs);
+    }));
+  }
+
+  void _showLogsDialog(BuildContext context, List<String> logs) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -790,7 +800,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: () async {
                 final messenger = ScaffoldMessenger.of(ctx);
                 await Clipboard.setData(ClipboardData(text: logs.join('\n')));
-                messenger.showSnackBar(const SnackBar(content: Text('Go 日志已复制')));
+                messenger.showSnackBar(const SnackBar(content: Text('日志已复制')));
               },
               child: const Text('复制'),
             ),

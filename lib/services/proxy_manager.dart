@@ -156,10 +156,15 @@ class ProxyManager {
 
   /// 获取 Go 侧日志（调试用）。
   List<String> getLogs() {
-    // native 库未加载（_loadLib 失败）时返回空列表：直接解引用 _logCount!
-    // 会抛 "Null check operator used on a null value"，把真实的
-    // "Native library not found" 错误掩盖掉。
-    if (_logCount == null || _getLog == null || _free == null) return const [];
+    // native 库未加载（_loadLib 失败）时返回一条诊断行，**不是空列表**：
+    // 空列表会让上层 pollGoLogs 直接 return、什么都不落盘，「库根本没起来」
+    // 这条排查「代理连不上」最关键的线索就凭空消失了。同一行内容会被
+    // pollGoLogs 的游标去重合并，不会每 2 秒刷一条。
+    // （也不能直接解引用 _logCount! —— 那会抛 "Null check operator used on a
+    // null value"，把真实的 "Native library not found" 掩盖掉。）
+    if (_logCount == null || _getLog == null || _free == null) {
+      return const ['[ech-proxy] native library not loaded — Go 日志不可用'];
+    }
     final n = _logCount!();
     final list = <String>[];
     for (var i = 0; i < n; i++) {

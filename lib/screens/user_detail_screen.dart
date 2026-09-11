@@ -426,7 +426,12 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                 if (j < displayTimeline.length) {
                   final item = displayTimeline[j];
                   return _MediaCard(
-                    key: ValueKey(item.url),
+                    // key 必须唯一：同一 URL 会在时间线里重复出现（后端返的是
+                    // 未去重的，上面的 imageIndex 才做去重）。重复 ValueKey 在
+                    // debug 会断言、在 release 会让两张卡共用 element 状态。
+                    // 带上位置 j：续载是往尾部追加，已有条目的 j 不变，所以
+                    // 同一张卡的 key 在续载前后保持稳定，状态不会丢。
+                    key: ValueKey('${item.url}#$j'),
                     item: item,
                     proxy: widget.proxy,
                     // 全屏预览要能左右/上下翻页：把本页所有图片按顺序带过去

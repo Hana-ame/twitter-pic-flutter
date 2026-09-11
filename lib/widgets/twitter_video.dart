@@ -335,17 +335,26 @@ class _TwitterVideoState extends State<TwitterVideo>
         _PlayerPool.noteCodecFailure();
         _codecRetries++;
         if (_codecRetries <= _kMaxCodecRetries) {
+          // 必须把槽位还回去再重试：否则 _PlayerPool.request() 看到自己还在
+          // _live 里会直接 return true、不重新 grant，_initPlayer 永远不会
+          // 再被调用（卡片就卡在转圈且没有重试入口，只有代理换端口才可能
+          // 意外恢复）。
           _PlayerPool.release(this);
-          _disposeController();
           setState(() => _retrying = true);
           await Future.delayed(_kCodecRetryDelay);
+          // seq 检查必须在 _disposeController() **之前**：后者会 _initSeq++，
+          // 放后面这个分支就永远 return，重试是死代码。
           if (!mounted || seq != _initSeq) return;
+          _disposeController();
           _scheduleInit();
           return;
         }
       } else if (!_autoRetried) {
         // 自动重试一次：冷启动（新进程首次 ECH 要 7~11s）与连接抖动多为一次性。
         _autoRetried = true;
+        // 同 codec 分支：不还槽位的话 _scheduleInit → _requestSlot 会被
+        // request() 的 _live.contains 短路掉，重试静默变成 no-op。
+        _PlayerPool.release(this);
         setState(() => _retrying = true);
         await Future.delayed(_kAutoRetryDelay);
         if (!mounted || seq != _initSeq) return;

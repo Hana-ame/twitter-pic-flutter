@@ -35,4 +35,18 @@ void main() {
     expect(MediaUrl.isImage('not a url'), isFalse);
     expect(MediaUrl.isImage(''), isFalse);
   });
+
+  test('按 host 判定，不被包含 pbs.twimg.com 字样的 URL 骗过', () {
+    // 原来是 contains('pbs.twimg.com') 子串匹配，下面这几条都会被误判成图片
+    // 从而进入预取链路 —— 预取走的是本机代理，多拉一份就是多一分带宽。
+    expect(MediaUrl.isImage('https://evil.com/pbs.twimg.com/stolen.jpg'),
+        isFalse);
+    expect(MediaUrl.isImage('https://pbs.twimg.com.evil.com/x.jpg'), isFalse);
+    expect(MediaUrl.isImage('https://pbs.twimg.com.evil.com/video-cf/x.mp4'),
+        isFalse);
+    // 没有 scheme 的裸串不是合法 URL，也不能放行
+    expect(MediaUrl.isImage('pbs.twimg.com/media/x.jpg'), isFalse);
+    // 视频 CDN 的另一个域名同样不预取
+    expect(MediaUrl.isImage('https://video-cf.twimg.com/media/x.mp4'), isFalse);
+  });
 }

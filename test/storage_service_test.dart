@@ -62,6 +62,26 @@ void main() {
       expect(favs.length, 50);
     });
 
+    test('clearAll 返回时磁盘也已清空', () async {
+      StorageService.toggleFav('keep_me');
+      StorageService.setCustomTags(['t1']);
+      await StorageService.debugFlushPending();
+
+      // clearAll 必须 await 自己的写盘：返回时磁盘应该是空的。否则设置页
+      // 「清除数据」await 完就去改 UI，中途被系统杀进程时旧数据会残留
+      // —— 等于没清。
+      await StorageService.clearAll();
+
+      expect(StorageService.isFav('keep_me'), isFalse);
+      expect(StorageService.getCustomTags(), isEmpty);
+
+      // 模拟进程重启后磁盘上也没有残留
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+      expect(StorageService.isFav('keep_me'), isFalse);
+      expect(StorageService.getCustomTags(), isEmpty);
+    });
+
     test('写盘完成后无 .tmp 残留（原子替换）', () async {
       StorageService.setCustomTags(['a', 'b']);
       await StorageService.debugFlushPending();

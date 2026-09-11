@@ -93,6 +93,39 @@ void main() {
     expect('d'.allMatches(text).length, 1);
   });
 
+  test('尾行内容重复时按两行锚点定位，不丢中间的日志', () async {
+    // ring 已满 4 行，'x' 在第 2、4 行各出现一次
+    await LogService.pollGoLogs(['a', 'x', 'b', 'x']);
+
+    // 又写入两行，ring 回绕丢掉最老的 'a'。旧尾行 'x' 在新 ring 里出现了
+    // 两次（下标 1 和 3）。单行 lastIndexOf 会命中下标 3，把 'c' 和新的 'x'
+    // 一起永久丢掉 —— 而 'c' 很可能正是崩溃现场。
+    await LogService.pollGoLogs(['b', 'x', 'c', 'x']);
+
+    final text = await logText();
+    expect(text, contains('c'), reason: '新增行不能因为尾行内容重复而被跳过');
+    expect('c'.allMatches(text).length, 1);
+    expect('x'.allMatches(text).length, 3,
+        reason: 'x 应是原来的 2 次 + 新增 1 次，不能重复写也不能丢');
+    expect('a'.allMatches(text).length, 1);
+  });
+
+  test('日志超过 512KB 时轮转：旧内容进 .1，新文件从头开始', () async {
+    final dir = LogService.logDirectoryPath;
+    expect(dir, isNotNull);
+    final big = List.generate(400, (i) => 'line-$i ${'A' * 1500}');
+    await LogService.pollGoLogs(big);
+
+    final f = File('$dir/app.log');
+    expect(await f.length(), greaterThan(LogService.maxLogBytes));
+    expect(await File('$dir/app.log.1').exists(), isTrue,
+        reason: '超限时应轮转到 .1，否则 app.log 会一直涨到撑爆 app 目录');
+
+    // 轮转之后再写一行，确认新文件正常增长（轮转失败不能让写入彻底卡死）
+    await LogService.pollGoLogs(['z']);
+    expect(await f.readAsString(), contains('z'));
+  });
+
   test('Dart 错误同时进内存与磁盘，并出现在反馈包里', () async {
     LogService.recordError('FlutterError', 'boom', StackTrace.empty);
     await LogService.flush();

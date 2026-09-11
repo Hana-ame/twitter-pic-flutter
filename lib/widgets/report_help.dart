@@ -16,6 +16,9 @@ Future<void> copyLogDump(
 }) async {
   // await 之前先取 messenger，之后再取会用到可能已失效的 context。
   final messenger = ScaffoldMessenger.of(context);
+  // 先把挂起的写盘刷下去：Go 日志是 2 秒一轮异步落盘的，不刷的话反馈包会
+  // 缺最后一条错误 —— 而那条往往正是崩溃前留下的最后一行。
+  await LogService.flush();
   final dump = await LogService.buildDump(extra: extra);
   await Clipboard.setData(ClipboardData(text: dump));
   messenger.showSnackBar(const SnackBar(

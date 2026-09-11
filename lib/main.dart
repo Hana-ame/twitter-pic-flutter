@@ -135,22 +135,37 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     _logTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (!LogService.isReady) return;
       unawaited(LogService.pollGoLogs(_proxy.getLogs()));
+      // 调试面板开着时同步刷新：_logs 过去只在 _start 里赋过一次，面板里
+      // 看到的是启动那一刻的快照 —— 代理跑起来之后的日志永远看不到。
+      if (_showLog && mounted) {
+        final latest = _proxy.getLogs();
+        if (latest.length != _logs.length) {
+          _logs = latest;
+          setState(() {});
+        }
+      }
     });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.detached) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
       // 正常收尾：打上标记，下次启动就不会误报「上次没有正常结束」。
+      //
+      // 必须放在 **paused**，不能只放 detached：Android 从不触发 detached
+      // （只有 paused/resumed/inactive），只有切后台才会 paused。只挂 detached
+      // 的话，每次系统回收后台进程都会留下 cleanExit=false，下次启动 100%
+      // 误报「上次没有正常结束」；用户烦了点「不再提示」之后，真闪退也不再
+      // 提示 —— 崩溃检测等于被误报自己废掉了。
+      // detached 保留给桌面端（Windows 关掉窗口走这条）。
       LogService.markCleanExit();
+      unawaited(LogService.pollGoLogs(_proxy.getLogs()));
       unawaited(LogService.flush());
     } else if (state == AppLifecycleState.resumed) {
-      // 回到前台：把标记翻回「进行中」。detached 不一定真的结束进程，
+      // 回到前台：把标记翻回「进行中」。paused 不一定真的结束进程，
       // 留着 cleanExit=true 会让之后的闪退检测不到。
       LogService.markSessionActive();
-    } else if (state == AppLifecycleState.paused) {
-      // 转入后台：先把挂起的日志刷下去，减少被系统杀掉时丢掉的行数。
-      unawaited(LogService.pollGoLogs(_proxy.getLogs()));
     }
   }
 
@@ -174,11 +189,18 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       final port = await _proxy.start(bootstrapIp: ip!);
       print('ECH proxy started on port $port');
 
+      // 立即补一次 Go 日志，不等 2 秒的定时轮询：启动后 2 秒内的诊断行
+      // 是「代理连不上」时唯一有用的线索。
+      unawaited(LogService.pollGoLogs(_proxy.getLogs()));
+
       _logs = _proxy.getLogs();
       if (!mounted) return;
       setState(() => _proxyReady = true);
-    } catch (e) {
+    } catch (e, st) {
       _logs = _proxy.getLogs();
+      // 不落盘的话反馈包里完全没有痕迹：app 重启后 _proxyError 也空了，
+      // 排查者根本不知道这次启动失败过。
+      LogService.recordError('ProxyStart', e, st);
       if (!mounted) return;
       setState(() => _proxyError = e.toString());
     } finally {

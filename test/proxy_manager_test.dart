@@ -25,10 +25,17 @@ void main() {
       expect(() => manager.dispose(), returnsNormally);
     });
 
-    test('getLogs returns empty list when not initialized', () {
-      // getLogs will throw because FFI not loaded, but we can test the behavior
-      // This test is skipped because it requires native library
-      // expect(() => manager.getLogs(), throwsA(anything));
+    test('native 库未加载时 getLogs 返回诊断行，不抛异常也不返回空列表', () {
+      final manager = ProxyManager();
+      // 不能抛：直接解引用 _logCount! 会报 "Null check operator used on a
+      // null value"，把真正的 "Native library not found" 掩盖掉。
+      expect(() => manager.getLogs(), returnsNormally);
+
+      // 也不能返回空列表：空列表会让 pollGoLogs 直接 return、什么都不落盘，
+      // 「库根本没起来」这条排查「代理连不上」最关键的线索就凭空消失了。
+      final logs = manager.getLogs();
+      expect(logs, isNotEmpty);
+      expect(logs.single, contains('native library not loaded'));
     });
   });
 }

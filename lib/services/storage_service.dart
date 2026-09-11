@@ -34,20 +34,30 @@ class StorageService {
   /// 清空所有存储数据。
   static Future<void> clearAll() async {
     _memory = {};
-    _flush();
+    // 必须 await：设置页「清除数据」await 完就去改 UI 了，不等的化磁盘还没
+    // 写完就返回，中途被系统杀进程时旧数据会残留（等于没清）。
+    await _flush();
   }
 
   static Future<void> _flush() async {
     // 串行化 + 临时文件原子替换：快速连续 toggle 时多个 writeAsString
     // 并发交错可能写坏 storage.json；rename 保证读到的是完整文件。
-    _flushChain = _flushChain.then((_) async {
-      try {
-        final tmp = File('${_file!.path}.tmp');
-        await tmp.writeAsString(jsonEncode(_memory));
-        await tmp.rename(_file!.path);
-      } catch (_) {}
-    });
+    //
+    // 链里的代码**只能**调 [_doFlush]，绝不能回头调 _flush —— _flush 会重新
+    // 赋值 _flushChain，链里的回调去等链自己完成就是死锁（LogService 里踩过，
+    // CI 上两个用例 30s 超时才暴露，analyze 抓不到）。
+    _flushChain = _flushChain.then((_) => _doFlush());
     return _flushChain;
+  }
+
+  static Future<void> _doFlush() async {
+    try {
+      final f = _file;
+      if (f == null) return;
+      final tmp = File('${f.path}.tmp');
+      await tmp.writeAsString(jsonEncode(_memory));
+      await tmp.rename(f.path);
+    } catch (_) {}
   }
 
   /// 串行写盘链，保证并发写入不会交错。

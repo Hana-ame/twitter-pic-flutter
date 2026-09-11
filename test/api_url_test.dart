@@ -52,7 +52,13 @@ void main() {
     api = TwitterApi(adapter: adapter);
   });
 
-  tearDown(() => api.dispose());
+  // 元数据缓存是 static final、全实例共享。不重置的话本文件写进去的
+  // 'alice'/'bob' 会被其它测试文件（fav_list_test 用 getMetaData('alice')）
+  // 直接命中 —— 现在两边都碰巧拿到 {} 才没炸。Dart 不保证测试文件的执行顺序。
+  tearDown(() {
+    api.dispose();
+    TwitterApi.resetForTests();
+  });
 
   test('每个接口都拼出正确的绝对路径（baseUrl 与 path 之间必须有 /）', () async {
     await api.getUserList();
@@ -106,5 +112,25 @@ void main() {
     // forceRefresh 绕过缓存。
     await api.getMetaData('bob', forceRefresh: true);
     expect(adapter.seen.length, 2);
+  });
+
+  test('静态缓存跨实例共享；resetForTests 让它失效', () async {
+    final a = TwitterApi(adapter: adapter);
+    await a.getMetaData('carol');
+    expect(adapter.seen.length, 1);
+
+    // 新实例命中同一个静态缓存 —— 这是设计意图（并发 miss 复用同一个
+    // in-flight 请求，避免重复流量），不是缺陷。
+    final b = TwitterApi(adapter: adapter);
+    await b.getMetaData('carol');
+    expect(adapter.seen.length, 1, reason: '第二个实例应复用缓存，不再发请求');
+
+    // 有了这个入口，测试之间才可能隔离。
+    TwitterApi.resetForTests();
+    await b.getMetaData('carol');
+    expect(adapter.seen.length, 2, reason: 'resetForTests 之后缓存必须失效');
+
+    a.dispose();
+    b.dispose();
   });
 }

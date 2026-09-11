@@ -17,8 +17,21 @@ class MediaUrl {
 
   /// 是否是 pbs 图片（可以预取；视频不在预取范围内）。
   ///
-  /// 只看域名：线上图片是 pbs.twimg.com，视频是 video.twimg.com
-  /// （视频只有 tag=，甚至没有查询参数，形态与图片不同）。
-  static bool isImage(String url) =>
-      url.contains('pbs.twimg.com') && !url.contains('video.twimg.com');
+  /// 按 **host** 精确判定，不用子串匹配：`contains('pbs.twimg.com')` 会被
+  /// `https://evil.com/pbs.twimg.com/stolen.jpg` 和
+  /// `https://pbs.twimg.com.evil.com/x.jpg` 骗过，让非 CDN 资源走预取路径
+  /// 白白吃流量（这条预取链走的是本机代理，多拉一份就是多一分带宽）。
+  ///
+  /// 只判定原始 twimg 域名：调用方拿的是后端返回的原始 URL，
+  /// 重写成本机代理地址是在调用点之后才发生的。
+  static bool isImage(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return false;
+    // video / video-cf / amplify 都是视频 CDN（视频动辄几 MB，预热会打爆流量）。
+    if (uri.host == 'video.twimg.com' ||
+        uri.host == 'video-cf.twimg.com' ||
+        uri.host == 'abs.twimg.com') return false;
+    return uri.host == 'pbs.twimg.com';
+  }
 }

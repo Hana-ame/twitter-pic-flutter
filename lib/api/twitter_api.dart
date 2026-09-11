@@ -9,6 +9,7 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/user.dart';
 
@@ -47,6 +48,19 @@ class TwitterApi {
   // 进程内无限增长且永不失效。
   static final Map<String, DateTime> _metaCacheTime = {};
   static const Duration _kCacheTtl = Duration(minutes: 10);
+
+  /// 仅供测试：清掉静态元数据缓存。
+  ///
+  /// 缓存是 static final、全实例共享，没有这个入口的话测试之间会互相命中
+  /// 别人的缓存 —— api_url_test 用 `getMetaData('alice', forceRefresh: true)`
+  /// 写进去的内容，会被 fav_list_test 里不带 forceRefresh 的 `getMetaData('alice')`
+  /// 直接读走。现在两边都碰巧拿到 `{}` 才没炸；Dart 不保证测试文件的执行
+  /// 顺序，这是埋着的一颗雷。
+  @visibleForTesting
+  static void resetForTests() {
+    _metaCache.clear();
+    _metaCacheTime.clear();
+  }
 
   late final Dio _dio;
 

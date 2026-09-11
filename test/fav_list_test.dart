@@ -65,11 +65,13 @@ void main() {
     tmp = await Directory.systemTemp.createTemp('fav_list_test');
     PathProviderPlatform.instance = _FakePathProvider(tmp.path);
     StorageService.resetForTests();
+    TwitterApi.resetForTests();
     await StorageService.ensureInitialized();
   });
 
   tearDown(() async {
     StorageService.resetForTests();
+    TwitterApi.resetForTests();
     if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
