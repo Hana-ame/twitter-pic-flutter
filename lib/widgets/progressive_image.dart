@@ -11,6 +11,30 @@
 // 解码是节流的：部分解码等于把当前缓冲整张重解一遍，必须限制频率（增量
 // 太小、间隔太短都不解）。PNG 等不支持部分解码的格式会自动退化为
 // "下完再显示"，只是没有中间帧，不会报错。
+//
+// ── 关于「滚出视口 / pop 页面就取消下载」：试过，做不了，原因记在这里 ──
+//
+// 直觉做法是监听 listener 数量，最后一个走了就中止 HTTP。但在 Flutter 里这是
+// 空操作，原因在 image_cache.dart：`ImageCache.putIfAbsent` 对每一个它加载的
+// completer 都会加**自己**的 ImageStreamListener（`_PendingImage`），并且只在
+// 图片**完成**时才移除。所以下载期间 listener 计数永远不会掉到 0，
+// `ImageStreamCompleter` 内部的 `_maybeDispose` 不触发，`onDisposed` 和
+// `addOnLastListenerRemovedCallback` 都只能在下载结束之后才响。
+//
+// 真要取消就得从 `ProgressiveImage` 的 dispose 反推「还有几张卡片在用这个
+// URL」，那要按 URL 维护引用计数 —— 而 `ProgressiveImageProvider` 按 URL
+// `==` 共享、被 ImageCache 缓存，同一 URL 的多张卡片共用一个 completer，
+// provider 自己无法知道「还剩几个使用者」。那属于另一量级的改动（要动 provider
+// 的构造/缓存模型），收益（省几秒带宽）不抵风险（漏减一次计数就再也拉不回图）。
+//
+// 顺手记下两个坑，免得下次重踩：
+//   * Flutter 3.44.3 的 `ImageStreamCompleter` **没有 `dispose()`**（它不是
+//     ChangeNotifier），`@override void dispose()` 直接编译错
+//     `undefined_super_member`；生命周期钩子是 `onDisposed()`（@protected，
+//     必须调 super）。
+//   * 一旦内部 `_disposed` 置位，`setImage` / `reportError` / `addListener`
+//     全都会抛 `StateError('Stream has been disposed...')`，所以任何「已废弃」
+//     标记都必须守住每一处框架调用，否则异步里抛 StateError 就成未处理异常。
 
 import 'dart:async';
 import 'dart:io';
@@ -109,20 +133,6 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
   final ProgressiveDecodeThrottle throttle;
   final Duration timeout;
 
-  /// 已被框架释放（卡片滚出视口 / 页面被 pop）。
-  ///
-  /// 必要性：`_pump` 在构造函数里就启动了，`Image` 被移出树后最后一个 listener
-  /// 移除会调 `dispose()`，但 HTTP 下载不会因此停 —— 它会一直跑到 20s 超时或
-  /// 响应结束。详情页里有十几张图同时构建，用户按返回键后这些下载还在继续跑，
-  /// 在墙内 ECH 链路上每张 10-30s，白白吃带宽。
-  bool _disposed = false;
-
-  @override
-  void dispose() {
-    _disposed = true;
-    super.dispose();
-  }
-
   // 自增长缓冲：避免每解码一次就整体复制一遍（BytesBuilder.toBytes()）。
   Uint8List _buf = Uint8List(64 * 1024);
   int _len = 0;
@@ -147,9 +157,7 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
   Future<void> _pump() async {
     final client = HttpClient()..connectionTimeout = timeout;
     try {
-      if (_disposed) return;
       final request = await client.getUrl(Uri.parse(url));
-      if (_disposed) return;
       final response = await request.close();
       if (response.statusCode != 200) {
         throw HttpException('HTTP ${response.statusCode}', uri: Uri.parse(url));
@@ -160,7 +168,6 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
 
       // 卡住不动 30 秒就放弃：connectionTimeout 只管建连，管不了中途断流。
       await for (final chunk in response.timeout(const Duration(seconds: 30))) {
-        if (_disposed) break; // 已经没人在看了，别继续吃带宽。
         _append(chunk);
         // 喂给 Image 的 loadingBuilder（进度条用它）。
         reportImageChunkEvent(ImageChunkEvent(
@@ -172,11 +179,8 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
         if (throttle.shouldDecode(_len, now)) {
           throttle.mark(_len, now);
           await _decodeAndEmit(_view, isFinal: false);
-          if (_disposed) break;
         }
       }
-
-      if (_disposed) return;
 
       if (_len == 0) {
         throw HttpException('响应为空', uri: Uri.parse(url));
@@ -186,7 +190,6 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
       // 最后才可解），失败时这里才报错给 errorBuilder。
       await _decodeAndEmit(_view, isFinal: true);
     } catch (e, s) {
-      if (_disposed) return;
       reportError(exception: e, stack: s);
     } finally {
       client.close(force: true);
@@ -194,20 +197,18 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
   }
 
   Future<void> _decodeAndEmit(Uint8List bytes, {required bool isFinal}) async {
-    if (bytes.isEmpty || _disposed) return;
+    if (bytes.isEmpty) return;
     ui.Codec? codec;
     try {
       final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
       codec = await decode(buffer);
       final frame = await codec.getNextFrame();
-      // 解码期间被释放（卡片滚出视口）：帧已经没人在看，别再去 setImage。
-      if (_disposed) return;
       // setImage 会把上一帧交还给框架释放，这里不要自己 dispose。
       setImage(ImageInfo(image: frame.image, scale: 1.0));
     } catch (e, s) {
       // 数据还不够：baseline JPEG / PNG 在数据不完整时会直接解失败，静默等
       // 下一块即可。只有"完整数据也解不出来"才是真的错误。
-      if (isFinal && !_disposed) reportError(exception: e, stack: s);
+      if (isFinal) reportError(exception: e, stack: s);
     } finally {
       codec?.dispose();
     }
