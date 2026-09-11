@@ -84,7 +84,7 @@ class LogService {
   static const String kGroupApplyUrl = 'https://chatto.810114.xyz';
 
   /// 群内房间名。
-  static const String kGroupRoom = 'ECH Proxy';
+  static const String kGroupRoom = '推图';
 
   // ─── 容量上限（避免日志无限膨胀撑爆 app 目录）─────────────────────────────
   static const int maxLogBytes = 512 * 1024;
@@ -351,6 +351,48 @@ class LogService {
 
   /// 等待挂起的写入完成（退出前 / 测试里用）。
   static Future<void> flush() => _chain;
+
+  /// 清空日志：磁盘日志文件 + 内存里待反馈的日志内容。
+  ///
+  /// **有意不清**的东西：
+  /// - `incidents.json` / [_incidents]：异常结束记录，与"日志"无关，而且清空
+  ///   它会让反馈包丢掉最近一次崩溃的上下文。
+  /// - `session.json`：崩溃检测的标记位。删了它，[takeUncleanExit] 下次启动
+  ///   就永远判不出"未正常结束"了 —— 正好毁掉这个功能存在的理由。
+  ///
+  /// **Go 侧内存环形缓冲清不掉**：没有对应的 FFI 导出（[kMaxGoLogLines] 行的
+  /// ring 只在 Go 侧 StartProxy 里被清空）。所以下一次 [pollGoLogs]
+  /// 会把当前 ring 重新写回一个新的 app.log —— 这是预期行为：「查看日志」
+  /// 页面显示的本来就是这个 ring，清了 app.log 它还在，下一次轮询再补回来。
+  ///
+  /// 游标必须**在删文件之前**同步重置：残留的 [_goLogTail] 会让下一次轮询
+  /// 走"整段重写"分支，把旧内容重新灌回来。这两行之间没有 await，所以不会
+  /// 被正在跑的轮询插队。
+  static Future<void> clearLogs() async {
+    _goLogTail = null;
+    _goLogCount = 0;
+    // 原地 clear 而不是重新赋值：这两个是 static final，而且 buildDump 可能
+    // 正拿着引用在组包，换对象会让它读到旧的（已清空前的）列表。
+    _memoryErrors.clear();
+    _memoryNotes.clear();
+    _chain = _chain.then((_) async {
+      try {
+        for (final name in const ['app.log', 'app.log.1']) {
+          final f = _file(name);
+          if (f == null) continue;
+          if (await f.exists()) await f.delete();
+        }
+        // 留一条分隔线，方便在反馈包里看出"清除"发生过（同会话分隔线的约定）。
+        await _append('app.log', [
+          '',
+          '=== 日志已清除 ${_fmt(DateTime.now())} ===',
+        ]);
+      } catch (e) {
+        debugPrint('LogService.clearLogs failed: $e');
+      }
+    });
+    return _chain;
+  }
 
   /// 读日志文件末尾若干行（跨轮转文件一起读）。
   static Future<List<String>> logTail({int maxLines = 400}) async {

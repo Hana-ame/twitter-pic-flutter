@@ -515,6 +515,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 清除日志：磁盘 app.log + 内存日志。范围与边界见 LogService.clearLogs
+  /// —— 异常结束记录与崩溃检测标记有意保留。
+  Future<void> _clearLogs() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清除日志'),
+        content: const Text('将清空磁盘日志文件（app.log）和内存中的日志记录。\n\n'
+            '异常结束记录与崩溃检测标记会保留。\n\n'
+            '此操作不可撤销。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('清除')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await LogService.clearLogs();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('日志已清除')));
+    }
+  }
+
   Future<void> _restart() async {
     if (_restarting) return;
     setState(() => _restarting = true);
@@ -597,6 +620,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('清除收藏、屏蔽、标签、搜索历史'),
             onTap: _clearData,
           ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline, color: Colors.red),
+            title: const Text('清除日志'),
+            subtitle: const Text('清空 app.log 与内存日志，保留异常结束记录'),
+            onTap: _clearLogs,
+          ),
           const Divider(),
 
           // ─── 网络诊断 ───────────────────────────────────────────────────────
@@ -644,7 +673,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.groups, color: Colors.purple),
             title: const Text('加群反馈'),
-            subtitle: const Text('chatto 聊天群「ECH Proxy」'),
+            subtitle: const Text('chatto 聊天群「推图」'),
             onTap: () => showGroupHelpDialog(context),
           ),
           if (LogService.incidents.isNotEmpty)

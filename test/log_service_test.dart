@@ -104,6 +104,9 @@ void main() {
     // 反馈包里必须带上反馈渠道，否则用户拿到日志也不知道发去哪
     expect(dump, contains(LogService.kGroupUrl));
     expect(dump, contains(LogService.kGroupApplyUrl));
+    // 房间名必须是应用名，不能是代理组件名 —— 用户是照着这个去聊天群里找房间的。
+    expect(LogService.kGroupRoom, '推图');
+    expect(dump, contains('群内房间：${LogService.kGroupRoom}'));
   });
 
   test('诊断信息（非错误）也会落盘并进反馈包', () async {
@@ -142,5 +145,48 @@ void main() {
     expect(f, isNotNull);
     expect(await f!.exists(), isTrue);
     expect(await f.readAsString(), contains('=== Twitter Pic 反馈日志 ==='));
+  });
+
+  test('清除日志：磁盘与内存日志清空，异常结束记录与会话标记保留', () async {
+    LogService.startSession();
+    LogService.recordError('FlutterError', 'boom', StackTrace.empty);
+    await LogService.flush();
+    expect(await logText(), contains('boom'));
+
+    await LogService.clearLogs();
+
+    final text = await logText();
+    expect(text, isNot(contains('boom')));
+    expect(text, contains('日志已清除'));
+
+    // 内存日志也清了：反馈包不应再带本次运行之前的错误。
+    final dump = await LogService.buildDump();
+    expect(dump, isNot(contains('boom')));
+
+    // 关键不变量：清日志不能把"上次没正常结束"这个事实抹掉。
+    // session.json 若被删掉，takeUncleanExit 会永远判不出异常退出，
+    // 正好毁掉这个功能存在的理由。
+    final incident = await LogService.takeUncleanExit();
+    expect(incident, isNotNull);
+    expect(LogService.incidents, isNotEmpty);
+
+    // incidents.json 同样保留：反馈包要能看到最近一次崩溃的上下文。
+    final f = LogService.logDirectoryPath;
+    expect(File('${f!}/incidents.json').existsSync(), isTrue);
+  });
+
+  test('清除日志重置轮询游标：下一次轮询是干净的全量，不沿用旧 tail', () async {
+    await LogService.pollGoLogs(['a', 'b']);
+    await LogService.clearLogs();
+
+    // Go ring 没法清（没有 FFI 导出），清完盘上文件后同一段日志会重新落盘。
+    // 但必须走"整段重写"分支 —— 若残留旧 tail，增量分支会按错位下标判断，
+    // 把 a/b 当成"已写过"而不再落盘。
+    await LogService.pollGoLogs(['a', 'b', 'c']);
+    final text = await logText();
+    expect(text, contains('日志已清除'));
+    expect(text, contains('c'));
+    expect('a'.allMatches(text).length, 1);
+    expect('b'.allMatches(text).length, 1);
   });
 }
