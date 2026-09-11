@@ -916,16 +916,22 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 只写 Container(width/height: null) 会被压成 36px 的小黑块，看起来就是
   /// "没有 media"。这里用 16:9 先占位，视频初始化完成后换成真实比例。
   Widget _buildLoading() {
+    // 排队等槽位时点一下 = "我要这张，先给我"（走 userInitiated 抢位）。
+    // **已经在初始化中的不响应点击**：否则用户多点几下就把下载反复打断重来，
+    // 在墙内这条慢链路上等于永远加载不完。
+    final queued = _PlayerPool.isWaiting(this);
     return AspectRatio(
       aspectRatio: 16 / 9,
-      child: Container(
-        width: widget.width,
-        height: widget.height,
-        color: Colors.black,
-        alignment: Alignment.center,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+      child: GestureDetector(
+        onTap: queued ? () => _retryInit(autoPlay: true) : null,
+        child: Container(
+          width: widget.width,
+          height: widget.height,
+          color: Colors.black,
+          alignment: Alignment.center,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
             // 慢才出现的重试入口同样放最前（与错误卡片一致）。
             if (_slow) ...[
               TextButton(
@@ -949,7 +955,8 @@ class _TwitterVideoState extends State<TwitterVideo>
               _retrying ? '正在重试…' : '视频加载中…',
               style: const TextStyle(color: Colors.white70, fontSize: 12),
             ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1125,6 +1132,9 @@ class _PlayerPool {
 
   static int get liveCount => _live.length;
   static int get waitingCount => _waiting.length;
+
+  /// 这张卡片在排队等槽位（还没开始初始化）。
+  static bool isWaiting(_TwitterVideoState s) => _waiting.contains(s);
 
   /// 申请槽位：有空位立刻给，否则排队。
   ///
