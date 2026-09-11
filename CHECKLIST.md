@@ -1,6 +1,6 @@
 # 项目总检清单
 
-> 最后核对：v0.5.0（2026-09-10）。细节见 [README](README.md)、
+> 最后核对：v0.5.1（2026-09-11，含其后一个未发布的 origin 重构）。细节见 [README](README.md)、
 > [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
 ## 目标
@@ -26,21 +26,23 @@
 - [x] 代理 TLS 模式 → 所有请求 400（"从来没成功访问过"）
 - [x] 视频停在加载中：Range 未透传 / 未强制 identity（无 Content-Length）
 - [x] 启动偶发闪退：cgo 导出内 panic abort 进程（`guardPanic` + 锁内清缓冲）
-- [x] 滑动白屏：原图 `name=orig` + `cacheExtent` 过小 + ImageCache 过小
+- [x] 滑动白屏：`cacheExtent` 过小 + ImageCache 过小 + 整图下完才解码
+      （现由预取 + 逐块解码承担；媒体统一 origin，不再靠 `name=` 档位省流量）
 
 ## 功能
 - [x] 用户列表 / 搜索（用户名、昵称）/ 收藏
 - [x] 详情页：媒体时间线、标签、emoji 投票、批量下载（流式 / 兼容 / 应急）
-- [x] 图片：逐块解码（下到哪显示到哪）+ 按显示尺寸取 `name=` 档位
+- [x] 图片：逐块解码（下到哪显示到哪）+ 媒体 URL **一律 origin**（已删除 `name=` 尺寸档位）
 - [x] 图片全屏：左右滑动 / 上下滑动翻页、双击放大、进度叠底
 - [x] 视频：Range 边下边播、缓冲进度、倍速、全屏、下载分享
 - [x] 会话内图片缓存（ImageCache 160MB / 1500 张）、元数据缓存（10 分钟 TTL + in-flight 去重）
 - [x] 设置页：代理状态、10 项网络诊断（可复制）、Go 调试日志、清缓存
 
-## 测试（CI `flutter_test` job，不过不发版）
+## 测试（CI `flutter_test` job，10 个文件全跑，不过不发版）
 - [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）
-- [x] `media_url_test.dart` — `name=` 档位选择；线上真实视频 URL（含无 query）不改写
+- [x] `media_url_test.dart` — `MediaUrl.isImage` 预取判定（只认 pbs 图片，视频不预热）
 - [x] `progressive_image_test.dart` — 解码节流三规则 + provider 缓存标识
+- [x] `fav_list_test.dart` — 收藏夹回归：纵向 ListView 嵌套纵向 ListView（条目全空）
 - [x] `ech_url_test.dart` — 媒体 URL 改写（丢域名、保 query）
 - [x] `proxy_manager_test.dart`（平台库名/加载路径）
 - [x] `user_model_test.dart` — 容错 JSON 解析

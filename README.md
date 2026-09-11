@@ -3,7 +3,8 @@
 > 浏览 Twitter（X）图片与视频的 Flutter 客户端。墙内直连 `*.twimg.com` 必死，
 > 媒体统一经**本机 Go ECH 代理**转发到 `video-cf.twimg.com`；API/JSON 直连自建后端。
 
-当前版本 **v0.5.0**（Android arm64 + Windows x64）。
+当前版本 **v0.5.1**（Android arm64 + Windows x64）。分支上还有一个未发布的
+「媒体一律 origin」重构（`v0.5.1` 之后一个提交，见更新日志）。
 
 | 平台 | 产物 |
 | --- | --- |
@@ -94,7 +95,7 @@ lib/
 
 ech-proxy/cmd/ech-flutter-shared/main.go   # 代理唯一实现（供 CI 编 .so/.dll）
 .github/workflows/build.yml                # 测试 → 双平台构建 → 发 Release
-test/                                      # 9 个测试文件，CI 全跑
+test/                                      # 10 个测试文件，CI 全跑
 doc/architecture.md                        # 架构细节
 doc/troubleshooting.md                     # 症状 → 根因 → 怎么确认
 ```
@@ -218,6 +219,15 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 
 ## 更新日志
 
+### 未发布（`v0.5.1` 之后）
+- **媒体 URL 一律 origin**，删除 `name=` 尺寸档位：`MediaUrl` 只剩"能不能预取"的判定，
+  同一张图只对应一个 canonical URL（见上文「媒体 URL 一律 origin」）
+
+### v0.5.1
+- 修复收藏夹里看不到收藏的内容（纵向 `ListView` 嵌套纵向 `ListView`，内层拿到无界高度）
+- 修复 `_FavTile` 缺 `super.key`（analyze 报 `undefined_named_parameter`）
+- 重写 README 与 CHECKLIST，新增 `doc/architecture.md`、`doc/troubleshooting.md`
+
 ### v0.5.0
 - 媒体（图片/头像/视频）统一经本机 ECH 代理 → `video-cf.twimg.com`；API/JSON 直连
 - 代理改为**纯 HTTP**（此前 TLS 模式导致所有请求 `400`，即"从来没成功访问过"）
@@ -226,6 +236,7 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
   （症状：详情页"暂无内容"、头像全空、标签/emoji 空）
 - 修复媒体卡片在无界高度里没有确定高度 → 整片 media 空白
 - 图片**逐块解码**（下到哪显示到哪）；列表按显示尺寸取 `name=` 缩略图档位
+  （该档位已于 v0.5.1 之后移除，改进方向见上文「媒体 URL 一律 origin」）
 - 图片全屏支持左右/上下滑动翻页 + 双击放大
 - 修复全屏视频黑屏（`FittedBox` + `Texture`）与鬼影（同一 controller 渲染两次）
 - 诊断面板扩到 10 项，含 ECH 转发记录
