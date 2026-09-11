@@ -20,10 +20,12 @@ void main() {
       expect(cnMatchesHost('*.alidns.com', 'alidns.com'), isFalse);
     });
 
-    test('历史 bug 回归：不再要求 `*.` + 完整 expected', () {
-      // 早期实现只接受 `*.dns.alidns.com`，把阿里的 `*.alidns.com` 判成失败，
-      // 等于白配一整级兜底。这条断言锁住那个修复。
-      expect(cnMatchesHost('*.dns.alidns.com', 'dns.alidns.com'), isTrue);
+    test('两层通配只覆盖它自己那一层', () {
+      // 注意：`*.dns.alidns.com` **不**匹配 `dns.alidns.com` —— 它覆盖的是
+      // `a.dns.alidns.com` 这类两层子域；`dns.alidns.com` 归 `*.alidns.com` 管。
+      // 历史 bug（把阿里 `*.alidns.com` 判成失败）的回归锁在上面那条「通配前缀
+      // 匹配一层子域」，本条只验证多层通配的正向覆盖。
+      expect(cnMatchesHost('*.dns.alidns.com', 'a.dns.alidns.com'), isTrue);
     });
 
     test('通配位置不对或整体不同就不匹配', () {
