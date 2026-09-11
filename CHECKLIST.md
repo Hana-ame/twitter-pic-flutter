@@ -1,6 +1,6 @@
 # 项目总检清单
 
-> 最后核对：v0.5.1（2026-09-11，含其后一个未发布的 origin 重构）。细节见 [README](README.md)、
+> 最后核对：v0.5.10（2026-09-11）。细节见 [README](README.md)、
 > [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
 ## 目标
@@ -55,6 +55,50 @@
       代理端口出现自动重试；错误卡片**重试按钮在最前 + 原样显示具体错误**（可选中复制）；
       代理未就绪不再静默退回直连 URL
 - [x] `_initSeq` + `_scheduleInit`：初始化去重，避免同帧起两个播放器/两个解码器
+
+## v0.5.10 本轮修复（2026-09-11）
+### 日志（最要紧的一块）
+- [x] **丢日志行**：`pollGoLogs` 用单行游标判断「上次写到哪」，尾部行内容重复时整段跳过
+      （同一 URL 的日志行高频重复就是这种情况，Go ring 回绕后必现）。改成**两行锚点**才推进，
+      找不到锚点则整段重写并留标记行。已补回归测试。
+- [x] **崩溃检测全误报**：`markCleanExit` 原来只挂在 `detached`，Android 从不发 `detached`
+      （只有 paused/resumed/inactive）→ 每次切后台都被判成「上次异常退出」；用户烦了点
+      「不再提示」之后，真崩溃也永远不再提示。现挂在 `paused`（桌面端补 `detached`）。
+- [x] **轮转失败被吞**：`.1` 被占用/权限问题时 `rename` 失败静默 → app.log 只长不转，
+      一路涨到撑爆 app 目录配额。现失败时截断兜底（这里**不能** `recordNote`：我们在写盘链里，
+      再挂一个写盘任务就是递归打日志、把日志空间自己塞满）。
+- [x] **半截 JSON**：`session.json` / `incidents.json` 改 **tmp + rename 原子写**
+      （原先直接 `writeAsString`，进程在写入中途被杀就成半截，`jsonDecode` 抛异常被吞
+      → 崩溃历史/会话标记凭空消失）。`ensureInitialized` 顺手清理遗留的 `.tmp` 孤儿。
+- [x] `clearLogs` 现在也删 `prompt-suppressed` 并复位内存里的「不再提示」开关
+      （否则清了日志、真崩溃还是不再提示）。
+- [x] 调试日志面板改读**磁盘 app.log**，不再读 Go ring 快照（ring 只有 500 行内存态，
+      看不到 Dart 侧错误，也和反馈包内容对不上）。
+- [x] `ProxyManager.getLogs` 在 native 库未加载时返回一条诊断行，不再返回空列表
+      （空列表会让 `pollGoLogs` 直接 return，「库根本没起来」这条最关键的排查线索凭空消失）。
+- [x] 复制日志包前先 `flush()`，避免拿到还没落盘的半份。
+- [x] `flutter_test` 里 `flutter analyze` 改为 `--no-fatal-warnings --no-fatal-infos`：
+      仓库里本来就有一批 `prefer_const_constructors`，让它们只报不挡发布。
+
+### 其他
+- [x] `StorageService.clearAll` 改 `await _flush()`（原来 fire-and-forget，清完立刻读会得到旧数据）；
+      `_flush` 拆出 `_doFlush`，并写明「链内只能调 `_doFlush`，回头调 `_flush` 就是死锁」。
+- [x] `TwitterApi.resetForTests` 清静态元数据缓存（没有它，测试之间共享同一份静态缓存，
+      而 Dart 不保证测试文件执行顺序，会偶发串味）。
+- [x] `MediaUrl.isImage` 改按 **host 精确判定**（原先 `contains('pbs.twimg.com')` 会被
+      `https://evil.com/pbs.twimg.com/x.jpg` 骗过）。
+- [x] 视频卡片 codec 失败重试：`_PlayerPool.release(this)` 移到 seq 检查**之前**
+      （原来顺序反了，seq 检查恒真 → 那段重试是死代码，卡片永远卡着）；非 codec 分支补上
+      `_PlayerPool.release`（原来漏了，槽位永远不还）。
+- [x] 时间线卡片 key 加位置 `j`（同一 URL 出现两次会让两张卡共用状态）。
+- [x] 补测试：重复尾行不丢日志、512KB 轮转、clearAll 真清磁盘、resetForTests 隔离、
+      media_url 子串欺骗、`TimelineItem.type` 原样透传（原先那条断言是同义反复）。
+
+### 已评估、故意不做
+- [ ] 图片「滚出视口就取消下载」：**做不了**，原因写在 `progressive_image.dart` 文件头。
+      要点：`ImageCache.putIfAbsent` 会给每个它加载的 completer 加**自己**的 listener，
+      只在图片完成时移除，所以下载期间 listener 数永远不为 0，取消钩子不会触发。
+      真要取消得按 URL 维护引用计数，而 provider 按 URL 共享并被缓存，自己不知道还剩几个使用者。
 
 ## 测试（CI `flutter_test` job，14 个文件全跑，不过不发版）
 - [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）

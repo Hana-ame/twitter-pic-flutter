@@ -620,6 +620,7 @@ class LogService {
     _chain = Future.value();
     _goLogCount = 0;
     _goLogTail = null;
+    _goLogTail2 = null;
   }
 
   /// 测试用：指定日志目录，等价于 path_provider 返回该目录。

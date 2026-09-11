@@ -116,14 +116,22 @@ void main() {
     final big = List.generate(400, (i) => 'line-$i ${'A' * 1500}');
     await LogService.pollGoLogs(big);
 
-    final f = File('$dir/app.log');
-    expect(await f.length(), greaterThan(LogService.maxLogBytes));
-    expect(await File('$dir/app.log.1').exists(), isTrue,
+    // 轮转是 rename 语义：超阈值后旧文件整体改名成 .1，app.log 此刻**不存在**，
+    // 直到下一次写入才重新创建。所以"大文件"是 .1，不是 app.log。
+    final rotated = File('$dir/app.log.1');
+    expect(await rotated.exists(), isTrue,
         reason: '超限时应轮转到 .1，否则 app.log 会一直涨到撑爆 app 目录');
+    expect(await rotated.length(), greaterThan(LogService.maxLogBytes));
+    expect(await File('$dir/app.log').exists(), isFalse,
+        reason: '旧文件被 rename 走之后不应还占着 app.log 这个名字');
 
-    // 轮转之后再写一行，确认新文件正常增长（轮转失败不能让写入彻底卡死）
-    await LogService.pollGoLogs(['z']);
+    // 轮转之后再写一行，确认新文件从头开始正常增长（轮转失败不能让写入卡死）
+    await LogService.pollGoLogs([...big, 'z']);
+    final f = File('$dir/app.log');
+    expect(await f.exists(), isTrue, reason: '轮转之后下一次写入必须重新创建 app.log');
     expect(await f.readAsString(), contains('z'));
+    expect(await f.length(), lessThan(LogService.maxLogBytes),
+        reason: '新文件从头开始，不能继承旧文件的体积');
   });
 
   test('Dart 错误同时进内存与磁盘，并出现在反馈包里', () async {
