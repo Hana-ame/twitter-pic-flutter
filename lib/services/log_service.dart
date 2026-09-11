@@ -327,21 +327,32 @@ class LogService {
           ? lines
           : lines.sublist(lines.length - maxAppendLinesPerPoll);
 
+  /// 实际的文件写入（追加 + 必要时轮转）。**不碰 [_chain]。**
+  ///
+  /// 单独拆出来是因为 [_append] 会把任务挂到 [_chain] 上；已经**在链上**的
+  /// 代码（比如 [clearLogs]）不能再调 _append —— 那会重新赋值
+  /// `_chain = _chain.then(...)`，变成"链里的回调等链自己完成"，直接死锁
+  /// （CI 实测：两个用例都 30s 超时）。链内的代码调本方法。
+  static Future<void> _writeFile(String name, List<String> lines) async {
+    final f = _file(name);
+    if (f == null || lines.isEmpty) return;
+    await f.writeAsString('${lines.join('\n')}\n', mode: FileMode.append);
+    final size = await f.length();
+    if (size > maxLogBytes) {
+      final old = _file('$name.1');
+      if (old != null) {
+        if (await old.exists()) await old.delete();
+        await f.rename(old.path);
+      }
+    }
+  }
+
   /// 追加若干行到日志文件，必要时轮转。
   static Future<void> _append(String name, List<String> lines) {
-    final f = _file(name);
-    if (f == null || lines.isEmpty) return Future.value();
+    if (_file(name) == null || lines.isEmpty) return Future.value();
     _chain = _chain.then((_) async {
       try {
-        await f.writeAsString('${lines.join('\n')}\n', mode: FileMode.append);
-        final size = await f.length();
-        if (size > maxLogBytes) {
-          final old = _file('$name.1');
-          if (old != null) {
-            if (await old.exists()) await old.delete();
-            await f.rename(old.path);
-          }
-        }
+        await _writeFile(name, lines);
       } catch (e) {
         debugPrint('LogService._append failed: $e');
       }
@@ -368,6 +379,10 @@ class LogService {
   /// 游标必须**在删文件之前**同步重置：残留的 [_goLogTail] 会让下一次轮询
   /// 走"整段重写"分支，把旧内容重新灌回来。这两行之间没有 await，所以不会
   /// 被正在跑的轮询插队。
+  ///
+  /// 文件操作挂到 [_chain] 末尾，排在此前所有 append 之后。**链内必须用
+  /// [_writeFile]，不能用 [_append]** —— _append 会重新赋值 `_chain`，而
+  /// 我们正在等 _chain 完成，会死锁（CI 实测两个用例 30s 超时）。
   static Future<void> clearLogs() async {
     _goLogTail = null;
     _goLogCount = 0;
@@ -383,7 +398,8 @@ class LogService {
           if (await f.exists()) await f.delete();
         }
         // 留一条分隔线，方便在反馈包里看出"清除"发生过（同会话分隔线的约定）。
-        await _append('app.log', [
+        // 刚删完两个文件，新 app.log 只有这一行，轮转不会触发。
+        await _writeFile('app.log', [
           '',
           '=== 日志已清除 ${_fmt(DateTime.now())} ===',
         ]);
