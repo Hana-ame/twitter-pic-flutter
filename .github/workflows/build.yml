@@ -374,27 +374,46 @@ jobs:
     # 分支/workflow_dispatch 的构建都只留 artifact（90 天），不进 Release
     # 列表 —— 之前没有这道门槛，163 个 Release 里 148 个是日期 tag，而且每个
     # 都 make_latest，把 Release 列表彻底淹了。
-    if: ${{ github.ref_type == 'tag' && github.ref_name =~ '^v[0-9]+\.[0-9]+\.[0-9]+$' }}
+    #
+    # 精确的 semver 判定放在下面的 step 里用 bash 做：**Actions 表达式不支持
+    # 正则**（没有 =~ 运算符，写了会直接 workflow parse 失败、整个 run 0 秒
+    # 挂掉），所以 job 层这里只做粗筛。
+    if: ${{ github.ref_type == 'tag' }}
     permissions:
       contents: write
     steps:
+      - name: 判断是否需要发 Release
+        id: is_release
+        run: |
+          # bash 的 ERE 里有正则可用；点号放字符类里，避免各平台对 \. 的解释差异。
+          if [[ "${{ github.ref_name }}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ github.ref_name }} 不是 semver tag，跳过 Release（artifact 仍保留）"
+          fi
+
       - uses: actions/checkout@v4
+        if: ${{ steps.is_release.outputs.publish == 'true' }}
         with:
           fetch-depth: 0
 
       - name: Download APK artifact
+        if: ${{ steps.is_release.outputs.publish == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: apk
           path: ./artifact/apk
 
       - name: Download Windows artifact
+        if: ${{ steps.is_release.outputs.publish == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: windows-zip
           path: ./artifact/windows
 
       - name: Generate release notes
+        if: ${{ steps.is_release.outputs.publish == 'true' }}
         run: |
           REF="${{ github.ref_name }}"
           SHA="${{ github.sha }}"
@@ -426,15 +445,13 @@ jobs:
           } > /tmp/release_body.md
 
       - name: Get version
+        if: ${{ steps.is_release.outputs.publish == 'true' }}
         id: version
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=v$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_OUTPUT
-          fi
+          echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
 
       - name: Create Release
+        if: ${{ steps.is_release.outputs.publish == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
