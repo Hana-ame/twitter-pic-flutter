@@ -42,13 +42,18 @@
 - [x] 反馈渠道：设置页「加群反馈」+ 日志包内自带加群地址（chatto 群，房间「ECH Proxy」）
 - [x] 视频 seek 失败 / 播放器报错不再静默：写日志 + 卡片侧可见错误态 + 重试前释放旧 controller
 - [x] 代理在「请求了 `Range` 却收到 200」时显式记日志（拖动进度条后卡住的那条路径）
+- [x] **播放器池**（`max = 2`）：限制同时存活的 ExoPlayer，修 `MediaCodecVideoRenderer error`
+- [x] 视频重试手段：加载看门狗 15s、失败自动重试一次、代理端口出现自动重试、
+      错误卡片「重试 / 详情（可复制）」；代理未就绪不再静默退回直连 URL
+- [x] `_initSeq` + `_scheduleInit`：初始化去重，避免同帧起两个播放器/两个解码器
 
-## 测试（CI `flutter_test` job，11 个文件全跑，不过不发版）
+## 测试（CI `flutter_test` job，12 个文件全跑，不过不发版）
 - [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）
 - [x] `media_url_test.dart` — `MediaUrl.isImage` 预取判定（只认 pbs 图片，视频不预热）
 - [x] `progressive_image_test.dart` — 解码节流三规则 + provider 缓存标识
 - [x] `fav_list_test.dart` — 收藏夹回归：纵向 ListView 嵌套纵向 ListView（条目全空）
 - [x] `log_service_test.dart` — 日志增量落盘 / 缓冲轮转对齐 / 异常退出判定 / 反馈包内容
+- [x] `video_failure_test.dart` — 线上实测的 MediaCodec 报错必须判成"解码器"而非"网络"
 - [x] `ech_url_test.dart` — 媒体 URL 改写（丢域名、保 query）
 - [x] `proxy_manager_test.dart`（平台库名/加载路径）
 - [x] `user_model_test.dart` — 容错 JSON 解析

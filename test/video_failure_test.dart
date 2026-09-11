@@ -1,0 +1,65 @@
+// video_failure_test.dart
+// 视频失败分类的回归测试。
+//
+// 用例 1 的字符串是**线上实测**（用户报「视频经常加载失败」时贴出来的完整
+// PlatformException），它必须被判成"解码器"而不是"网络" —— 这两种的处置完全
+// 不同：解码器类重试前要先释放其它播放器（腾解码器槽位），网络类重试只需等一等。
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:twitter_pic_flutter/utils/video_failure.dart';
+
+/// 用户实测报错（原样保留，不要"美化"）。
+const String kRealCodecError =
+    'PlatformException(VideoError, Video player had error v.i: '
+    'MediaCodecVideoRenderer error, index=0, '
+    'format=Format(1, null, video/mp4, video/avc, avc1.640020, 1891376, und, '
+    '[1280, 720, 60.0, ColorInfo(Unset color space, Unset color range, '
+    'Unset color transfer, false, 8bit Luma, 8bit Chroma)], [-1, -1]), '
+    'format_supported=YES, null, null)';
+
+void main() {
+  test('线上实测的 MediaCodec 报错判为解码器问题', () {
+    expect(VideoFailure.isCodecError(kRealCodecError), isTrue);
+    // 不能同时被判成网络问题：两者处置不同
+    expect(VideoFailure.isNetworkError(kRealCodecError), isFalse);
+    expect(VideoFailure.humanize(kRealCodecError), contains('解码器'));
+    expect(VideoFailure.humanize(kRealCodecError), contains('重试'));
+  });
+
+  test('代理未就绪的文案优先于其它判断', () {
+    const e = VideoProxyNotReady();
+    expect(VideoFailure.isProxyNotReady(e), isTrue);
+    // 代理没起来时点多少次重试都是白点，必须先说清楚
+    expect(VideoFailure.humanize(e), contains('代理未就绪'));
+    // 也不能被误判成网络或解码器问题
+    expect(VideoFailure.isCodecError(e), isFalse);
+    expect(VideoFailure.isNetworkError(e), isFalse);
+  });
+
+  test('取数据失败判为网络/链路问题', () {
+    for (final msg in <String>[
+      'PlatformException(VideoError, Video player had error '
+          'androidx.media3.exoplayer.ExoPlaybackException: Source error, null, null)',
+      'HttpDataSource$HttpDataSourceException: Unable to connect',
+      'SocketException: Connection reset by peer',
+    ]) {
+      expect(VideoFailure.isNetworkError(msg), isTrue, reason: msg);
+      expect(VideoFailure.isCodecError(msg), isFalse, reason: msg);
+      expect(VideoFailure.humanize(msg), contains('取不到视频数据'), reason: msg);
+    }
+  });
+
+  test('认不出的失败给通用文案，不撒谎', () {
+    final msg = VideoFailure.humanize('some totally unknown failure');
+    expect(msg, contains('视频加载失败'));
+    expect(msg, isNot(contains('解码器')));
+    expect(msg, isNot(contains('代理未就绪')));
+  });
+
+  test('CodecException 也算解码器问题', () {
+    expect(
+      VideoFailure.isCodecError('MediaCodec.CodecException: error 0x80000000'),
+      isTrue,
+    );
+  });
+}

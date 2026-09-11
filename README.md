@@ -86,6 +86,7 @@ lib/
 ├── utils/
 │   ├── ech_url.dart               # 媒体 URL → 本机代理 URL
 │   ├── media_url.dart             # 图片判定（预取时跳过视频）
+│   ├── video_failure.dart         # 播放失败分类（解码器 / 网络 / 代理未就绪）
 │   └── doh_resolver.dart          # DoH 自举 IP 解析
 ├── widgets/
 │   ├── progressive_image.dart     # 逐块解码 ImageProvider（核心）
@@ -99,7 +100,7 @@ lib/
 
 ech-proxy/cmd/ech-flutter-shared/main.go   # 代理唯一实现（供 CI 编 .so/.dll）
 .github/workflows/build.yml                # 测试 → 双平台构建 → 发 Release
-test/                                      # 11 个测试文件，CI 全跑
+test/                                      # 12 个测试文件，CI 全跑
 doc/architecture.md                        # 架构细节
 doc/troubleshooting.md                     # 症状 → 根因 → 怎么确认
 ```
@@ -172,6 +173,36 @@ doc/troubleshooting.md                     # 症状 → 根因 → 怎么确认
 全屏用 `Center + AspectRatio + VideoPlayer`，**不能用 `FittedBox`**：`VideoPlayer` 渲染的是
 `Texture`，`TextureBox` 是 `sizedByParent`（尺寸取 `constraints.biggest`），而 `FittedBox`
 会用无界约束去量孩子 → 高度 `∞` → 整层渲染失败 → 全屏黑屏（见 `doc/troubleshooting.md`）。
+
+#### 解码器上限：为什么必须有播放器池
+
+Android 的**硬件** AVC 解码器实例是稀缺资源（常见只有 2~4 个，720p60 High profile 往往
+只吃得下 2 个）。而详情页 `cacheExtent` 是 1800px、卡片高约 200px，一次能构建十几张卡片；
+**每张 `TwitterVideo` 在 `initState` 里就 `initialize()`** —— 哪怕它在屏幕外、也没人按播放
+（卡片不自动播放，它只是为了显示一张静帧）。十几路 initialize 必然撞上解码器上限，报出来
+的就是 `MediaCodecVideoRenderer error ... format_supported=YES`：格式是支持的，只是没有空闲
+解码器。
+
+`_PlayerPool`（`twitter_video.dart`）因此给**同时存活**的播放器设上限（`max = 2`）：超出就
+回收最久未用的那个，被回收的卡片回到「点按加载视频」**待机态**（不是错误态——主动让位不是
+失败）。手动重试前会先 `freeAllExcept(this)` 腾位，否则重试必然以同样的错误再失败。
+
+> 副作用：视频密集的时间线上，同时只有 2 张卡片显示静帧，其余是「点按加载」。
+> 想多保留静帧就调大 `_PlayerPool.max`，代价是更容易撞上限。
+
+#### 重试手段
+
+| 场景 | 处理 |
+| --- | --- |
+| 加载卡住 | 看门狗 15s（> ECH 冷启动 7~11s）→ 转错误态 + 重试；**不打断**底层 initialize，真慢但能成会自动切回播放器 |
+| 首次失败 | 自动重试一次（1.2s 后），ECH 冷启动与抖动多为一次性 |
+| 代理刚重启 | 监听 `portNotifier`，端口一出现就自动重试（否则卡片会一直停在错误态） |
+| 解码器类失败 | 重试前先放掉其它播放器腾解码器槽位 |
+| 代理未就绪 | 不退回直连 URL（墙内必死），直接给「代理未就绪」的明确提示 |
+| 出错后想看原因 | 错误卡片「详情」显示 URL / 端口 / 同时存活播放器数 + 原始异常，可一键复制 |
+
+另外 `_initSeq` + `_scheduleInit()` 负责初始化去重：端口变化时 `portNotifier` 与
+`didUpdateWidget` 会各触发一次，不合并就会同帧起两个播放器、两个解码器。
 
 ## 构建与发布
 
@@ -258,6 +289,10 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 - 设置页新增「日志与反馈」区（复制日志包 / 加群 / 异常结束记录），日志弹窗可复制
 - 视频：**seek 失败与播放器报错不再静默** —— `_seekTo` 接住 `PlatformException`
   并写日志，卡片侧转成可见错误态 + 重试，`_retryInit` 补上旧 controller 的 dispose
+- 视频：**修「经常加载失败」** —— 播放器池限制同时存活的 ExoPlayer 数（`max = 2`），
+  避免十几张卡片各占一个硬件解码器报 `MediaCodecVideoRenderer error`；
+  加载看门狗（15s）、失败自动重试一次、代理端口出现自动重试、错误卡片带「重试/详情」
+- 视频：代理未就绪不再静默退回直连 URL（墙内必死），改为明确提示
 - 代理：客户端要了 `Range` 却收到 `200` 全量时**显式记一条日志**（拖动进度条后
   长时间卡住的那条路径，以前日志里只有一条正常的 200，查不出来）
 

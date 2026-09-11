@@ -20,9 +20,22 @@ import 'package:share_plus/share_plus.dart';
 import '../services/log_service.dart';
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
+import '../utils/video_failure.dart';
 
-/// 视频加载通道：先走 ECH 代理，失败后自动降级到直连。
+/// 视频加载通道。
+///
+/// 注意：`direct` **已不再使用** —— 直连 `*.twimg.com` 在墙内必死（实测 000），
+/// 所谓"降级到直连"只会把一次失败换成另一次失败，还掩盖了真实原因。
 enum _UrlMode { proxy, direct }
+
+/// 首次加载多久算超时。
+///
+/// 取值依据：新进程里第一次 ECH 请求要 7~11s（先通过 DoH 取 ECH 配置），
+/// 15s 是"放冷启动过去、又不让用户对着转圈干等"的位置。
+const Duration _kLoadTimeout = Duration(seconds: 15);
+
+/// 自动重试前的等待：给抖动的连接一点恢复时间。
+const Duration _kAutoRetryDelay = Duration(milliseconds: 1200);
 
 class TwitterVideo extends StatefulWidget {
   final String url;
@@ -56,66 +69,203 @@ class _TwitterVideoState extends State<TwitterVideo>
   bool _fullscreenOpen = false;
   _UrlMode _mode = _UrlMode.proxy;
 
+  /// 待机：被播放器池收回了槽位，或代理还没就绪。点一下才去加载。
+  bool _idle = false;
+
+  /// 加载看门狗：`initialize()` 自己没有超时，代理卡住时就是无限转圈 ——
+  /// 既没有提示也没有出口，用户只能退出重进。
+  Timer? _loadWatchdog;
+
+  /// 首次失败后自动重试一次（ECH 冷启动 7~11s、连接抖动多半是一次性的）。
+  bool _autoRetried = false;
+
+  /// 正在自动重试：loading 文案里体现，避免"卡住不动"的观感。
+  bool _retrying = false;
+
+  /// 上次失败是不是解码器类（决定重试前要不要先释放其它播放器）。
+  bool _lastErrorWasCodec = false;
+
+  /// 技术细节。卡片上只显示人话，细节留给「详情」按钮与日志。
+  String? _errorDetail;
+
+  /// 初始化序号：只有最新一次 init 的回调才允许改状态。
+  ///
+  /// 没有它，"端口变化触发 portNotifier + 父级重建触发 didUpdateWidget" 会
+  /// 同时留下两个 in-flight 的 `initialize()` —— 旧的那个会写到新 controller 上，
+  /// 而且**白白多吃一个解码器**（正是本次要修的资源问题）。
+  int _initSeq = 0;
+
+  /// 同一轮里多次请求初始化时合并成一次（见 [_scheduleInit]）。
+  bool _initScheduled = false;
+
   Uri _buildUrl() {
     final port = widget.proxy.port;
-    // 全部走 ECH 代理，不降级 pbs.twimg.com 直连（墙内必死，实测 000）。
-    if (port != null) return EchUrl.rewriteToUri(widget.url, port);
-    return Uri.parse(widget.url);
+    // 不降级直连：墙内直连 twimg 必死（实测 000）。那样只会把一个失败换成
+    // 另一个失败，还让用户看不出原因。抛出去，由上层给出可操作的提示。
+    if (port == null) throw const VideoProxyNotReady();
+    return EchUrl.rewriteToUri(widget.url, port);
   }
 
   @override
   void initState() {
     super.initState();
-    _initPlayer();
+    // 代理重启后端口会变（也可能从 null 变成有值）。没有这个监听，视频会一直
+    // 停在错误态不动 —— 因为 IndexedStack/列表不会因为端口变化而重建。
+    widget.proxy.portNotifier.addListener(_onPortChanged);
+    _scheduleInit();
   }
 
   @override
   void didUpdateWidget(TwitterVideo old) {
     super.didUpdateWidget(old);
+    if (old.proxy != widget.proxy) {
+      old.proxy.portNotifier.removeListener(_onPortChanged);
+      widget.proxy.portNotifier.addListener(_onPortChanged);
+    }
     if (old.url != widget.url || old.proxy.port != widget.proxy.port) {
-      _controller?.removeListener(_onVideoUpdate);
-      _controller?.dispose();
-      _controller = null;
+      _disposeController();
       _videoValue = null;
       _error = null;
+      _errorDetail = null;
       _isLoading = true;
+      _idle = false;
       _showControls = true;
       _hideTimer?.cancel();
       _isDragging = false;
+      _autoRetried = false;
       _mode = _UrlMode.proxy;
-      _initPlayer();
+      _scheduleInit();
     }
   }
 
+  /// 代理端口出现/变化时自动重试一次：端口变化意味着代理刚起来或刚重启，
+  /// 之前那次失败已经过期了。
+  void _onPortChanged() {
+    if (!mounted) return;
+    if (widget.proxy.port == null) return;
+    if (_error == null && !_idle) return;
+    _autoRetried = false;
+    _retryInit();
+  }
+
+  /// 合并同一轮内的多次初始化请求。
+  ///
+  /// 触发源可能叠加：初始构建、父级重建（`didUpdateWidget`）、代理端口变化
+  /// （`portNotifier`）、自动重试、手动重试。都直接调 `_initPlayer()` 的话，
+  /// 同一帧里会起两个播放器、两个解码器。
+  void _scheduleInit() {
+    if (_initScheduled) return;
+    _initScheduled = true;
+    scheduleMicrotask(() {
+      _initScheduled = false;
+      if (!mounted) return;
+      _initPlayer();
+    });
+  }
+
   Future<void> _initPlayer() async {
+    final seq = ++_initSeq;
+    _loadWatchdog?.cancel();
+    _loadWatchdog = Timer(_kLoadTimeout, () {
+      // 只有当前这次尝试才有资格报超时。
+      if (seq == _initSeq) _onLoadTimeout();
+    });
+
     try {
       final url = _buildUrl();
-      _controller = VideoPlayerController.networkUrl(url);
-      await _controller!.initialize();
+      final controller = VideoPlayerController.networkUrl(url);
+      _controller = controller;
+      await controller.initialize();
 
-      // initialize 期间视频可能已滚出列表被 dispose：后续副作用必须先判
-      // mounted，否则触发 "setState() called after dispose()" 崩溃。
-      if (!mounted) {
-        await _controller!.dispose();
-        _controller = null;
+      // initialize 期间视频可能已滚出列表被 dispose，或被更新的一次初始化取代；
+      // 两种情况都必须先判，否则触发 "setState() called after dispose()" 崩溃，
+      // 或者把旧结果写到新 controller 上。
+      if (!mounted || seq != _initSeq) {
+        unawaited(controller.dispose());
+        if (identical(_controller, controller)) _controller = null;
         return;
       }
 
-      _controller!.addListener(_onVideoUpdate);
-      _controller!.setLooping(false);
+      _loadWatchdog?.cancel();
+      controller.addListener(_onVideoUpdate);
+      controller.setLooping(false);
 
       setState(() {
         _isLoading = false;
-        _videoValue = _controller!.value;
+        _retrying = false;
+        _idle = false;
+        // 看门狗先报了超时、底层后来才成功：把错误态收回来，换成播放器。
+        _error = null;
+        _errorDetail = null;
+        _videoValue = controller.value;
       });
-    } catch (e) {
-      if (!mounted) return;
-      // 不降级 pbs.twimg.com 直连（墙内必死）：代理失败直接给错误 + 手动重试。
-      setState(() {
-        _error = '经 ECH 代理加载失败：$e';
-        _isLoading = false;
-      });
+      // 登记进池子：超过上限会回收最久未用的那个（见 _PlayerPool 的注释）。
+      _PlayerPool.touch(this);
+    } catch (e, st) {
+      if (!mounted || seq != _initSeq) return;
+      _loadWatchdog?.cancel();
+      _logFailure(e, st);
+
+      // 自动重试一次：冷启动（新进程首次 ECH 要 7~11s）与连接抖动多为一次性，
+      // 直接甩错误态会显得"经常加载失败"。
+      if (!_autoRetried) {
+        _autoRetried = true;
+        setState(() => _retrying = true);
+        await Future.delayed(_kAutoRetryDelay);
+        if (!mounted || seq != _initSeq) return;
+        _disposeController();
+        _scheduleInit();
+        return;
+      }
+
+      _lastErrorWasCodec = _looksLikeCodecError(e);
+      _fail(_humanize(e), '$e');
     }
+  }
+
+  /// 看门狗：只切状态，**不打断**底层 initialize。
+  ///
+  /// 真慢但最终能成的话，成功回调会把错误态清掉、自动切回播放器（见上面成功分支）。
+  void _onLoadTimeout() {
+    if (!mounted || !_isLoading) return;
+    final port = widget.proxy.port;
+    _fail(
+      port == null
+          ? 'ECH 代理未就绪（还没启动或刚重启）。等代理就绪后点重试。'
+          : '加载超时（${_kLoadTimeout.inSeconds} 秒没有响应）。点重试，'
+              '或在设置页看代理状态与通道测试。',
+      'initialize() timeout, proxyPort=${port ?? '-'}',
+    );
+  }
+
+  /// 统一的失败落点（保证看门狗停掉、loading 关掉）。
+  void _fail(String message, String? detail) {
+    _loadWatchdog?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _error = message;
+      _errorDetail = detail;
+      _isLoading = false;
+      _retrying = false;
+      _idle = false;
+    });
+  }
+
+  /// MediaCodec 类失败（分类逻辑与文案见 utils/video_failure.dart，那边有测试）。
+  static bool _looksLikeCodecError(Object e) => VideoFailure.isCodecError(e);
+
+  /// 把技术错误翻成一句能行动的话。原始细节进「详情」与日志。
+  String _humanize(Object e) => VideoFailure.humanize(e);
+
+  /// 原始错误里带着 ExoPlayer 的 Format（编码/分辨率/帧率）与
+  /// `format_supported`，是区分"解码器不够"和"网络失败"的唯一线索，
+  /// 必须原样留下来 —— 否则报告里只剩一句"加载失败"。
+  void _logFailure(Object e, StackTrace st) {
+    LogService.recordError(
+      'video.init',
+      'url=${widget.url}\nproxyPort=${widget.proxy.port ?? '-'}\n$e',
+      st,
+    );
   }
 
   void _onVideoUpdate() {
@@ -124,24 +274,61 @@ class _TwitterVideoState extends State<TwitterVideo>
     final v = c.value;
     setState(() {
       _videoValue = v;
-      // 播放器自己报错（seek 拉不到数据、解码失败）时以前**什么都不显示**：
-      // 画面就那么黑着/卡着，用户只能说"拖完进度条就废了"，而日志里也没有任何
-      // 痕迹。这里把播放器的错误变成可见状态并留痕，重试入口是现成的。
+      // 播放器自己报错（解码器失败、seek 拉不到数据）时以前**什么都不显示**：
+      // 画面就那么黑着/卡着，用户只能说"拖完进度条就废了"，日志里也没有痕迹。
       if (v.hasError && _error == null) {
-        _error = '播放失败：${v.errorDescription ?? '未知错误'}';
-        LogService.recordError('player', '${v.errorDescription}');
+        final desc = '${v.errorDescription}';
+        _lastErrorWasCodec = _looksLikeCodecError(desc);
+        _error = _humanize(desc);
+        _errorDetail = desc;
+        LogService.recordError('player', desc);
       }
     });
   }
 
   void _togglePlay() {
     if (_controller == null) return;
+    // 用户在用的这个不该被池子回收。
+    _PlayerPool.touch(this);
     if (_controller!.value.isPlaying) {
       _controller!.pause();
     } else {
       _controller!.play();
     }
   }
+
+  /// 释放当前 controller（重试 / 重建 / 被池子回收都走这里）。
+  void _disposeController() {
+    // 作废在飞的初始化：它的回调即使回来也不许再改状态。
+    _initSeq++;
+    _loadWatchdog?.cancel();
+    final old = _controller;
+    _controller = null;
+    if (old != null) {
+      old.removeListener(_onVideoUpdate);
+      unawaited(old.dispose());
+    }
+    _PlayerPool.remove(this);
+  }
+
+  /// 被池子回收：释放解码器，回到待机态。
+  ///
+  /// **不落到错误态**：这是主动让位而不是失败，否则用户会看到满屏"加载失败"，
+  /// 而实际上点一下就能播。
+  void _releaseForPool() {
+    if (!mounted) return;
+    _disposeController();
+    setState(() {
+      _videoValue = null;
+      _isLoading = false;
+      _retrying = false;
+      _error = null;
+      _errorDetail = null;
+      _idle = true;
+    });
+  }
+
+  bool get _isPlayingNow => _controller?.value.isPlaying ?? false;
 
   /// seek 失败必须留痕。
   ///
@@ -223,11 +410,19 @@ class _TwitterVideoState extends State<TwitterVideo>
     // 防重入：控制栏按钮 + 长按菜单可并发触发，同名临时文件被两个
     // RandomAccessFile 同时写会损坏（全屏版已有该守卫）。
     if (_downloading) return;
+
+    // 代理没起来就直接说清楚：以前会静默退回原始 URL（墙内必死），
+    // 用户只会看到"下载失败"却不知道为什么。
+    final proxyPort = widget.proxy.port;
+    if (proxyPort == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未就绪，暂时无法下载')),
+      );
+      return;
+    }
+
     setState(() => _downloading = true);
 
-    // 与 _buildUrl() 同源：视频已回退直连时下载也走原始 URL。原实现硬编码
-    // EchUrl.rewrite(widget.url, port)，回退直连后下载仍走代理必失败；
-    // port == null 时静默 return 无任何提示。
     final uri = _buildUrl();
 
     final messenger = ScaffoldMessenger.of(context);
@@ -295,8 +490,11 @@ class _TwitterVideoState extends State<TwitterVideo>
   @override
   void dispose() {
     _hideTimer?.cancel();
+    _loadWatchdog?.cancel();
+    widget.proxy.portNotifier.removeListener(_onPortChanged);
     _controller?.removeListener(_onVideoUpdate);
     _controller?.dispose();
+    _PlayerPool.remove(this);
     super.dispose();
   }
 
@@ -308,6 +506,11 @@ class _TwitterVideoState extends State<TwitterVideo>
 
     if (_error != null) {
       return _buildError(_error!);
+    }
+
+    // 待机（被池子回收 / 代理未就绪）：给个明确的"点按加载"，而不是空白或转圈。
+    if (_idle || _controller == null) {
+      return _buildIdle();
     }
 
     return AspectRatio(
@@ -497,17 +700,46 @@ class _TwitterVideoState extends State<TwitterVideo>
         height: widget.height,
         color: Colors.black,
         alignment: Alignment.center,
-        child: const Column(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SizedBox(
+            const SizedBox(
               width: 32,
               height: 32,
               child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
             ),
-            SizedBox(height: 10),
-            Text('视频加载中…', style: TextStyle(color: Colors.white70, fontSize: 12)),
+            const SizedBox(height: 10),
+            Text(
+              _retrying ? '正在重试…' : '视频加载中…',
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 待机：被池子回收、或代理未就绪。
+  ///
+  /// 必须给**确定高度**（同 loading）：本组件挂在 ListView 的无界高度 item 里。
+  Widget _buildIdle() {
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: GestureDetector(
+        onTap: () => _retryInit(),
+        child: Container(
+          width: widget.width,
+          height: widget.height,
+          color: Colors.black,
+          alignment: Alignment.center,
+          child: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.play_circle_outline, size: 40, color: Colors.white70),
+              SizedBox(height: 6),
+              Text('点按加载视频', style: TextStyle(color: Colors.white70, fontSize: 12)),
+            ],
+          ),
         ),
       ),
     );
@@ -520,61 +752,180 @@ class _TwitterVideoState extends State<TwitterVideo>
         width: widget.width,
         height: widget.height,
         color: Colors.grey[800],
+        // SingleChildScrollView 兜底：卡片高度固定，文案长短不一（解码器那条
+        // 有两行），不加这个在某些字体缩放下会溢出报错。
         child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.movie, size: 48, color: Colors.white54),
-              const SizedBox(height: 8),
-              const Text(
-                '视频加载失败',
-                style: TextStyle(color: Colors.white70, fontSize: 14),
-              ),
-              const SizedBox(height: 4),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: GestureDetector(
-                  onTap: _retryInit,
-                  child: SelectableText(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.movie, size: 40, color: Colors.white54),
+                const SizedBox(height: 6),
+                const Text(
+                  '视频加载失败',
+                  style: TextStyle(color: Colors.white70, fontSize: 14),
+                ),
+                const SizedBox(height: 4),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
                     message,
                     style: const TextStyle(color: Colors.white54, fontSize: 11),
                     textAlign: TextAlign.center,
                   ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              ElevatedButton.icon(
-                onPressed: _retryInit,
-                icon: const Icon(Icons.refresh, size: 16),
-                label: const Text('重试'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ElevatedButton.icon(
+                      // 解码器不够用时先腾位再重试，否则重试必然同样失败。
+                      onPressed: () => _retryInit(freeOthers: _lastErrorWasCodec),
+                      icon: const Icon(Icons.refresh, size: 16),
+                      label: const Text('重试'),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        minimumSize: const Size(0, 34),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      onPressed: () => _showErrorDetail(context),
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 34),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text('详情', style: TextStyle(fontSize: 12)),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  /// 视频重新初始化（错误态的"重试"与文字点击共用）。
-  void _retryInit() {
+  /// 技术细节弹窗：卡片上只显示"人话"，这里给全（含代理端口与原始异常），
+  /// 并且可一键复制 —— 反馈时这一条比截图有用得多。
+  void _showErrorDetail(BuildContext context) {
+    final detail = _errorDetail ?? _error ?? '(无)';
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('加载失败详情'),
+        content: SizedBox(
+          // 不用 double.maxFinite：Windows 端会撑成整屏宽（已知问题）。
+          width: 320,
+          height: 320,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              '视频: ${widget.url}\n'
+              '代理端口: ${widget.proxy.port ?? '-'}\n'
+              '同时存活播放器: ${_PlayerPool.liveCount}/${_PlayerPool.max}\n\n'
+              '$detail',
+              style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(ctx);
+              await Clipboard.setData(ClipboardData(text: detail));
+              messenger.showSnackBar(const SnackBar(
+                content: Text('错误信息已复制，可粘贴到群里反馈'),
+              ));
+            },
+            child: const Text('复制'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
+        ],
+      ),
+    );
+  }
+
+  /// 视频重新初始化（错误态的「重试」、待机态的「点按加载」共用）。
+  ///
+  /// [freeOthers]：解码器类失败时的重试要先释放其它播放器腾出解码器，
+  /// 否则重试必然以同样的错误失败 —— 用户只会得出"重试没用"。
+  void _retryInit({bool freeOthers = false}) {
+    if (freeOthers) _PlayerPool.freeAllExcept(this);
     // 先释放旧 controller：_initPlayer 会直接给 _controller 赋值，不先
     // dispose 就泄漏一个还在解码、还占着 texture 的播放器。
-    // （这条以前只在 initialize 失败时走到，现在播放器报错也会走到重试。）
-    final old = _controller;
-    _controller = null;
-    if (old != null) {
-      old.removeListener(_onVideoUpdate);
-      unawaited(old.dispose());
-    }
+    _disposeController();
+    _autoRetried = false;
     setState(() {
       _error = null;
+      _errorDetail = null;
       _isLoading = true;
+      _retrying = false;
+      _idle = false;
       _mode = _UrlMode.proxy;
     });
-    _initPlayer();
+    _scheduleInit();
+  }
+}
+
+/// 播放器池：限制**同时活着**的 ExoPlayer 数量。
+///
+/// 为什么必须有：Android 的硬件 AVC 解码器实例是稀缺资源（实测常见只有 2~4 个，
+/// 720p60 High profile 往往只吃得下 2 个）。而详情页 `cacheExtent` 是 1800px、
+/// 卡片高约 200px，一次能构建十几张卡片；**每张 `TwitterVideo` 在 initState 里
+/// 就 `initialize()`**（哪怕在屏幕外、也没人按播放，只是为了显示一张静帧）。
+/// 十几路 initialize 必然撞上解码器上限，报出来的正是：
+///
+///     MediaCodecVideoRenderer error ... format_supported=YES
+///
+/// —— 格式本身是支持的，只是没有空闲解码器。所以这里给存活数量设上限：
+/// 超了就回收最久未用的那个，被回收的卡片回到「点按加载」待机态（不是错误态）。
+class _PlayerPool {
+  _PlayerPool._();
+
+  /// 上限。AVC 硬解实例常为 2~4、720p60 High 往往只吃得下 2 个，所以留 2。
+  /// 想让更多卡片保留静帧可以调大，代价是更容易撞上解码器上限。
+  static const int max = 2;
+
+  /// 队首 = 最近使用。
+  static final List<_TwitterVideoState> _live = <_TwitterVideoState>[];
+
+  static int get liveCount => _live.length;
+
+  /// 标记为最近使用，并回收超出的。
+  static void touch(_TwitterVideoState s) {
+    _live.remove(s);
+    _live.insert(0, s);
+    _evict();
+  }
+
+  static void remove(_TwitterVideoState s) {
+    _live.remove(s);
+  }
+
+  /// 手动重试前腾位：把**其它**全放掉，确保这次重试真的有空闲解码器可用。
+  static void freeAllExcept(_TwitterVideoState keep) {
+    final others = _live.where((e) => !identical(e, keep)).toList();
+    _live
+      ..clear()
+      ..add(keep);
+    for (final o in others) {
+      o._releaseForPool();
+    }
+  }
+
+  static void _evict() {
+    while (_live.length > max) {
+      // 优先回收没在播的；全在播就回收最久未用的（队尾）。
+      final victim = _live.lastWhere(
+        (e) => !e._isPlayingNow,
+        orElse: () => _live.last,
+      );
+      _live.remove(victim);
+      victim._releaseForPool();
+    }
   }
 }
 
@@ -641,11 +992,15 @@ class _FullscreenVideoState extends State<_FullscreenVideo>
 
   Future<void> _downloadVideo() async {
     if (_downloading) return;
-    // 全屏版无降级状态（播放通道由父级 _TwitterVideoState 决定）：有代理
-    // 走代理，否则走原始 URL。
+    // 同卡片版：代理没起来不能退回原始 URL（墙内直连必死），直接说清楚。
     final port = widget.proxy.port;
-    final uri =
-        port != null ? EchUrl.rewriteToUri(widget.url, port) : Uri.parse(widget.url);
+    if (port == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未就绪，暂时无法下载')),
+      );
+      return;
+    }
+    final uri = EchUrl.rewriteToUri(widget.url, port);
 
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _downloading = true);

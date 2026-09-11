@@ -253,6 +253,45 @@ comma-ok；每个 goroutine 各自 recover。
 给 `m_seekingToPts` 加超时兜底；`Shutdown()` 在 `m_pEngine.reset()` **之前**等线程退出，
 而不是只 `SetEvent`。
 
+## 案例 14：视频加载失败，报 `MediaCodecVideoRenderer error`（解码器不够用）
+
+**症状**：视频经常"加载失败"，有的能播有的不能，同一个视频重进有时又好了。
+报错原文（用户实测，可直接对号入座）：
+
+```
+经 ECH 代理加载失败：PlatformException(VideoError, Video player had error v.i:
+MediaCodecVideoRenderer error, index=0, format=Format(1, null, video/mp4, video/avc,
+avc1.640020, 1891376, und, [1280, 720, 60.0, ...]), format_supported=YES, null, null)
+```
+
+**先看清楚这不是网络问题**：`Format(...)` 已经把编码/分辨率/帧率都解析出来了
+（720p60、H.264 High、1.9Mbps），而且 `format_supported=YES` —— 数据取到了、
+格式也支持。报错来自 **MediaCodec**，即拿不到空闲的**硬件解码器**。
+
+**根因**：Android 的 AVC 硬解实例是稀缺资源（常见只有 2~4 个，720p60 High profile
+往往只吃得下 2 个）。而详情页 `cacheExtent` 是 1800px、卡片高约 200px，一次能构建
+十几张卡片；**每张 `TwitterVideo` 在 initState 里就 `initialize()`** —— 哪怕它在
+屏幕外、也没人按播放（卡片不自动播放，它只是为了显示一张静帧）。十几路
+`initialize()` 必然撞上解码器上限。
+
+**修法**：`_PlayerPool`（`twitter_video.dart`）给**同时存活**的播放器设上限
+（`max = 2`）。超出时回收最久未用的那个，被回收的卡片回到「点按加载视频」**待机态**
+（不是错误态 —— 主动让位不是失败，落成错误会让用户看到满屏"加载失败"，其实点一下就
+能播）。另外：
+
+- 手动重试前先 `freeAllExcept(this)` 腾位 —— 不腾位的话重试必然以同样的错误再失败，
+  用户只会得出"重试没用"；
+- `_initSeq` 序号 + `_scheduleInit()` 合并，防止"端口变化时 `portNotifier` 与
+  `didUpdateWidget` 各触发一次初始化"同时留下两个解码器。
+
+**确认**：错误卡片点「详情」，里面直接显示 `同时存活播放器: N/2`。N 一直是 2 而仍
+报 MediaCodec，说明是**该视频编码本机不支持**（不是不够用），此时重试无用，只能换
+视频或在别的机器上试。日志里对应 `video.init` 开头的 `Dart 错误`（含完整 Format）。
+
+**注意**：`video_player` 插件用 `new ExoPlayer.Builder(context)` 建播放器，**没有**
+`setEnableDecoderFallback(true)`，而 media3 默认 `enableDecoderFallback = false` ——
+所以硬解失败时**不会**自动退到软解，这一层救不了，只能靠我们控制并发数。
+
 ---
 
 ## 排查"媒体到底走没走 ECH"
