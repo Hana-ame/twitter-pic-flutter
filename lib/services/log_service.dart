@@ -89,6 +89,7 @@ class LogService {
   // ─── 容量上限（避免日志无限膨胀撑爆 app 目录）─────────────────────────────
   static const int maxLogBytes = 512 * 1024;
   static const int maxMemoryErrors = 100;
+  static const int maxMemoryNotes = 60;
   static const int maxIncidents = 10;
   static const int maxAppendLinesPerPoll = 500;
 
@@ -103,6 +104,7 @@ class LogService {
   static bool _promptSuppressed = false;
 
   static final List<String> _memoryErrors = <String>[];
+  static final List<String> _memoryNotes = <String>[];
   static List<Incident> _incidents = <Incident>[];
 
   /// 写盘串行链：并发的 append / rename 交错会写坏文件（同 StorageService）。
@@ -269,6 +271,19 @@ class LogService {
     }
   }
 
+  /// 记一条**非错误**的诊断信息（落盘 + 进反馈包）。
+  ///
+  /// 与 [recordError] 分开，是为了让反馈包里的段落名不撒谎：像"抓帧可用/不可用"
+  /// 这类事实不是错误，但同样必须留痕 —— 否则真机上只能靠猜走了哪条分支。
+  static void recordNote(String source, String message) {
+    final line = '[${_fmt(DateTime.now())}] [$source] $message';
+    _memoryNotes.add(line);
+    if (_memoryNotes.length > maxMemoryNotes) {
+      _memoryNotes.removeRange(0, _memoryNotes.length - maxMemoryNotes);
+    }
+    _append('app.log', ['### $source: $message']);
+  }
+
   /// 把 Go 代理的日志环形缓冲增量追加到磁盘。
   ///
   /// 代理日志是一个固定长度（当前 500 行）的环形缓冲，所以不能只靠下标：
@@ -414,6 +429,12 @@ class LogService {
       buf.writeln('');
     }
 
+    if (_memoryNotes.isNotEmpty) {
+      buf.writeln('--- 本次运行诊断（非错误）---');
+      buf.writeln(_memoryNotes.join('\n'));
+      buf.writeln('');
+    }
+
     final tail = await logTail(maxLines: maxLogLines);
     buf.writeln('--- 日志文件（最近 ${tail.length} 行）---');
     if (tail.isEmpty) {
@@ -461,6 +482,7 @@ class LogService {
     _dirOverride = null;
     _promptSuppressed = false;
     _memoryErrors.clear();
+    _memoryNotes.clear();
     _incidents = <Incident>[];
     _chain = Future.value();
     _goLogCount = 0;

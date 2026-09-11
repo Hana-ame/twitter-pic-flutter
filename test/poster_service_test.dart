@@ -36,7 +36,10 @@ void main() {
     expect(PosterService.memory(url), equals(data));
     expect(await PosterService.load(url), equals(data));
 
-    final f = File('${PosterService.directoryPath}/${PosterService.keyFor(url)}.jpg');
+    final f = File(
+      '${PosterService.directoryPath}/${PosterService.keyFor(url)}'
+      '.${PosterService.fileExtension}',
+    );
     expect(await f.exists(), isTrue);
     expect(await f.readAsBytes(), equals(data));
   });

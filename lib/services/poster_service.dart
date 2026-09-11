@@ -66,10 +66,14 @@ class PosterService {
 
   static String keyFor(String videoUrl) => stableHash(videoUrl);
 
+  /// 封面是 PNG（抓屏用 `ImageByteFormat.png` 编码）—— 扩展名别写成 .jpg，
+  /// 否则以后有人按 JPEG 去解析会莫名其妙。
+  static const String fileExtension = 'png';
+
   static File? _file(String videoUrl) {
     final dir = _rootDir;
     if (dir == null) return null;
-    return File('${dir.path}/${keyFor(videoUrl)}.jpg');
+    return File('${dir.path}/${keyFor(videoUrl)}.$fileExtension');
   }
 
   /// 只查内存（不碰磁盘）。

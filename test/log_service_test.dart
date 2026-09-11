@@ -106,6 +106,19 @@ void main() {
     expect(dump, contains(LogService.kGroupApplyUrl));
   });
 
+  test('诊断信息（非错误）也会落盘并进反馈包', () async {
+    LogService.recordNote('poster', '抓帧不可用：已退回每张卡片各自持有播放器');
+    await LogService.flush();
+
+    expect(await logText(), contains('抓帧不可用'));
+
+    final dump = await LogService.buildDump();
+    expect(dump, contains('本次运行诊断'));
+    expect(dump, contains('抓帧不可用'));
+    // 不能混进"错误"段：段落名撒谎就等于没有诊断
+    expect(dump, isNot(contains('本次运行 Dart 错误')));
+  });
+
   test('调用方补充的上下文（代理状态等）会进反馈包', () async {
     final dump = await LogService.buildDump(
       extra: const {'代理': '运行中', '端口': '8443'},

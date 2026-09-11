@@ -93,6 +93,9 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 抓封面用的边界（只包视频画面，不包控制栏）。
   final GlobalKey _posterKey = GlobalKey();
 
+  /// "封面抓帧成功"整轮只记一条日志（每个视频都记会把反馈包刷满）。
+  static bool _captureLogged = false;
+
   /// 初始化序号：只有最新一次 init 的回调才允许改状态。
   ///
   /// 没有它，"端口变化触发 portNotifier + 父级重建触发 didUpdateWidget" 会
@@ -471,6 +474,10 @@ class _TwitterVideoState extends State<TwitterVideo>
     }
     setState(() => _poster = png);
     await PosterService.put(widget.url, png);
+    if (!_captureLogged) {
+      _captureLogged = true;
+      LogService.recordNote('poster', '封面抓帧成功（走缓存路径，解码器用完即还）');
+    }
     // 封面到手，交还解码器（除非用户正在这一张上播放）。
     _becomePosterOnly();
   }
@@ -482,6 +489,12 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 还惨。所以这里直接标记"抓帧不可用"，池子从此不再限制并发，
   /// 退化成 0.5.2 的行为：每张卡片都有自己的播放器、都有自己的画面。
   void _giveUpCapture() {
+    if (_PlayerPool.captureUnavailable) return;
+    LogService.recordNote(
+      'poster',
+      '抓帧不可用（整片黑或异常）：已停止限制并发，退回"每张卡片各自持有播放器"'
+      '（v0.5.2 行为）。url=${widget.url}',
+    );
     _PlayerPool.noteCaptureUnavailable();
   }
 
