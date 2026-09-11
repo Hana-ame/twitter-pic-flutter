@@ -81,12 +81,26 @@ var (
 	proxyServer *http.Server
 	proxyPort   uint16
 	echReady    bool
+	// proxyGen 每次 StartProxy 进入 / StopProxy 各递增一次。StartProxy 的 ECH
+	// 探测要 25~35s 且不持锁（见 StartProxy 注释），期间 StopProxy 可能返回；
+	// 靠这个代号在绑定端口前复查，避免"App 已退出但端口仍被绑上"。
+	proxyGen uint64
 
 	// 日志缓冲
 	logMu       sync.RWMutex
 	logBuffer   []string
 	maxLogLines = 500
 )
+
+// hopByHop 逐跳头：只描述"上一跳到下一跳"的这条连接，绝不能转发给客户端连接。
+// 原实现只在 echProxyHandler 里有一份，apiProxyHandler 直接全量转发 → 上游的
+// Transfer-Encoding 会和 Go ResponseWriter 自己的分帧叠加，Connection/Keep-Alive
+// 也会把上游连接的存活策略泄漏给客户端。两个 handler 现在共用这一份。
+var hopByHop = map[string]bool{
+	"Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,
+	"Proxy-Authorization": true, "Te": true, "Trailer": true,
+	"Transfer-Encoding": true, "Upgrade": true,
+}
 
 // logWriter 把 log 包输出重定向到内部缓冲，供 ECHGetLog* 读取。
 type logWriter struct{}
@@ -252,8 +266,14 @@ func StartProxy(bootstrapIP *C.char) (port uint16) {
 		}
 	}()
 
+	// ── 阶段 0：清状态 + 领本代号（持锁，瞬时）──────────────────────────
+	// ECH 探测要 25~35s。原来整段锁在 proxyMu 里，而 StopProxy / GetProxyPort
+	// 抢同一把锁 —— Dart 的 stop() 是**同步**调用（proxy_manager.dart 的
+	// stop/dispose/restart 都走它），恰在探测期被调就把 isolate 冻住 20~35s。
+	// 现在只在改状态时短暂持锁，网络探测放在锁外。
 	proxyMu.Lock()
-	defer proxyMu.Unlock()
+	proxyGen++
+	myGen := proxyGen
 
 	// logWriter 在 logMu 保护下并发追加；这里清空也必须持锁，否则 slice
 	// header 被撕裂读会让 ECHGetLog 拿到越界的 len 而 panic。
@@ -266,7 +286,14 @@ func StartProxy(bootstrapIP *C.char) (port uint16) {
 		proxyServer.Close()
 		proxyServer = nil
 	}
+	// 先清成"未就绪"：探测失败直接 return 0，echReady/proxyPort 就保持
+	// false/0。原来失败路径不清，上次成功的 echReady=true / proxyPort=8443 会
+	// 残留 —— IsEchReady 谎报就绪，GetProxyPort 返回一个没人监听的端口。
+	echReady = false
+	proxyPort = 0
+	proxyMu.Unlock()
 
+	// ── 阶段 1：ECH 探测（不持锁，25~35s）────────────────────────────────
 	// 1. 配置 ECH：DoH 域名硬编码（服务固有配置），bootstrapIP 由调用方
 	//    传入（运行时解析 moonchan.xyz 得到，不可硬编码）。
 	bootstrap := C.GoString(bootstrapIP)
@@ -287,8 +314,18 @@ func StartProxy(bootstrapIP *C.char) (port uint16) {
 		return 0
 	}
 	resp.Body.Close()
-	echReady = true
 	log.Printf("ECH ready")
+
+	// ── 阶段 2：绑定端口 + 启动（持锁，瞬时）─────────────────────────────
+	proxyMu.Lock()
+	defer proxyMu.Unlock()
+	if proxyGen != myGen {
+		// 探测期间 StopProxy（或一次新的 StartProxy）来过，App 已经不打算要
+		// 这个代理了 —— 别再把端口绑上去，否则会在一个即将退出的进程里留下
+		// 一个没人管的监听。
+		log.Printf("StartProxy aborted: stopped mid-probe")
+		return 0
+	}
 
 	// 注意：本库只提供**明文 HTTP**监听，不提供 TLS。Dart 侧
 	// EchUrl.rewrite 永远生成 http://127.0.0.1:<port>；若这里优先包上 TLS，
@@ -326,6 +363,8 @@ func StartProxy(bootstrapIP *C.char) (port uint16) {
 		}
 	}()
 
+	// echReady 放到监听真正起来之后：这样"就绪"与"端口有人在听"同时成立。
+	echReady = true
 	log.Printf("Proxy started on port %d", proxyPort)
 	return proxyPort
 }
@@ -335,6 +374,10 @@ func StopProxy() {
 	defer guardPanic("StopProxy")
 	proxyMu.Lock()
 	defer proxyMu.Unlock()
+
+	// 递增代号：无条件的，即使 proxyServer 已经是 nil。那样正在探测中的
+	// StartProxy 能在绑定端口前发现"已经有人停过我了"。
+	proxyGen++
 
 	if proxyServer != nil {
 		proxyServer.Close()
@@ -356,6 +399,10 @@ func GetProxyPort() (port uint16) {
 //export IsEchReady
 func IsEchReady() (ret C.int) {
 	defer guardPanic("IsEchReady")
+	// echReady 由 StartProxy / StopProxy 在 proxyMu 下写，这里必须同样持锁读，
+	// 否则 go test -race 会标记（写方持锁、读方裸读）。
+	proxyMu.Lock()
+	defer proxyMu.Unlock()
 	if echReady {
 		return 1
 	}
@@ -437,7 +484,14 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	targetURL := withQuery("https://"+targetHost+normalizePath(path), r)
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
-	req, err := http.NewRequest(r.Method, targetURL, nil)
+	// 必须绑定 r.Context()：原来用 http.NewRequest（context 是 Background），
+	// 客户端断连后 r.Context() 被取消但上游毫不知情。wintools 的 Client 又是
+	// Timeout:0（防砍断长视频），所以只要上游 Read 卡住（墙内常态），这个
+	// goroutine 永远走不到 w.Write 失败的分支，resp.Body.Close() 也不执行 →
+	// goroutine + TCP 连接双重泄漏，列表滚动时越积越多。
+	// http.Client.Do 内部会 context.WithCancel(req.Context()) 派生传输上下文，
+	// 所以只要这里绑上 r.Context()，客户端一断上游请求就被中止。
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
 	if err != nil {
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 		return
@@ -470,11 +524,7 @@ func echProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 		log.Printf("! Range 未生效：请求 %q，上游回 200 全量（播放器会丢弃前置字节）", rng)
 	}
 
-	hopByHop := map[string]bool{
-		"Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,
-		"Proxy-Authorization": true, "Te": true, "Trailer": true,
-		"Transfer-Encoding": true, "Upgrade": true,
-	}
+	// 逐跳头不转发（见包级 hopByHop 注释）。
 	for k, vs := range resp.Header {
 		if hopByHop[k] {
 			continue
@@ -528,7 +578,8 @@ func apiProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	log.Printf("→ %s (from %s)", targetURL, r.RemoteAddr)
 
 	// 透传请求体：POST /api/twitter/<username> 保存标签依赖 body。
-	req, err := http.NewRequest(r.Method, targetURL, r.Body)
+	// 同样绑 r.Context()：客户端断连就中止上游，别白占连接。
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 		return
@@ -554,7 +605,12 @@ func apiProxyHandler(w http.ResponseWriter, r *http.Request, targetHost, path st
 	}
 	defer resp.Body.Close()
 
+	// 逐跳头必须过滤（见包级 hopByHop 注释）：原来这里全量转发，上游的
+	// Transfer-Encoding 会和 Go ResponseWriter 自己的分帧叠加。
 	for k, vs := range resp.Header {
+		if hopByHop[k] {
+			continue
+		}
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}

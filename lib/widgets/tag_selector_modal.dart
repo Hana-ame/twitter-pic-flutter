@@ -57,7 +57,11 @@ class _TagSelectorModalState extends State<TagSelectorModal> {
   void _init() {
     _tagScores = {};
     for (final e in widget.initialValues.entries) {
-      var score = (e.value as num).toInt();
+      // 同 tag_display_area：e.value 是 dynamic，字符串型 score 会让 `as num`
+      // 抛 TypeError。
+      var score = e.value is num
+          ? e.value.toInt()
+          : (int.tryParse('${e.value}') ?? 0);
       if (score > 1) score = 1;
       if (score < -1) score = -1;
       if (score != 0) _tagScores[e.key] = score;

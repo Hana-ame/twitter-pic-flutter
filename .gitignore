@@ -1,1 +1,38 @@
+# Flutter/Dart 工具产物
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+coverage/
+android/
+ios/
+windows/
+linux/
+macos/
+web/
+*.iml
+.idea/
+.vscode/
+*.g.dart
+*.freezed.dart
+
+# 签名材料，绝不入库
 keystore/
+*.keystore
+*.jks
+
+# Go 工具产物（ech-proxy/ 是独立的 Go module）
+ech-proxy/**/*.so
+ech-proxy/**/*.dll
+ech-proxy/**/*.dylib
+ech-proxy/**/_cgo_*
+ech-proxy/**/cgo-gcc-prolog
+
+# 日志与本地状态
+*.log
+tmp/
+tmp*/
+
+# 内含上传接口 token 的本地状态文件（无任何引用方，纯属运行时产物）
+.last_upload_url

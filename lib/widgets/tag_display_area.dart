@@ -22,7 +22,12 @@ class TagDisplayArea extends StatelessWidget {
       child: Wrap(
         spacing: 6, runSpacing: 4,
         children: tags.entries.map((e) {
-          final score = (e.value as num).toInt();
+          // e.value 声明是 dynamic：API 返回字符串型 score（"3"）时 `as num`
+          // 会抛 TypeError 直接崩掉整个标签条。字符串也能解析就解析，解析不了
+          // 当 0 处理。
+          final score = e.value is num
+              ? e.value.toInt()
+              : (int.tryParse('${e.value}') ?? 0);
           final color = score > 0 ? Colors.blue : Colors.red;
           final isHighlighted = hits.contains(e.key);
           return Container(

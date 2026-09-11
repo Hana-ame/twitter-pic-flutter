@@ -151,8 +151,9 @@ class TwitterApi {
         return cached;
       }
       // 过期丢弃，重新拉取。
-      _metaCache.remove(username);
-      _metaCacheTime.remove(username);
+      // 注意：这里**故意不** remove 那个过期 future —— 它可能还在飞，一旦它的
+      // catch 无条件 remove，就会把下面刚写入的新 future 一起删掉（stale
+      // callback）。清缓存的动作交给 catch 里的身份判定。
     }
 
     final inFlight = _fetchMetaData(username, t);
@@ -162,8 +163,13 @@ class TwitterApi {
       return await inFlight;
     } catch (_) {
       // 失败不进缓存，下次调用重试。
-      _metaCache.remove(username);
-      _metaCacheTime.remove(username);
+      // 只在"缓存里还是我自己"时才清：TTL 过期时会写入新 future，旧 future
+      // 的失败回调若无条件 remove 会把新 future 误删，表现为偶发的重复拉取
+      // 与 UI 闪烁。
+      if (identical(_metaCache[username], inFlight)) {
+        _metaCache.remove(username);
+        _metaCacheTime.remove(username);
+      }
       rethrow;
     }
   }

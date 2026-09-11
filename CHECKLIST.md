@@ -1,6 +1,6 @@
 # 项目总检清单
 
-> 最后核对：v0.5.10（2026-09-11）。细节见 [README](README.md)、
+> 最后核对：v0.5.11（2026-09-12）。细节见 [README](README.md)、
 > [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
 ## 目标
@@ -55,6 +55,85 @@
       代理端口出现自动重试；错误卡片**重试按钮在最前 + 原样显示具体错误**（可选中复制）；
       代理未就绪不再静默退回直连 URL
 - [x] `_initSeq` + `_scheduleInit`：初始化去重，避免同帧起两个播放器/两个解码器
+
+## v0.5.11 本轮修复（2026-09-12）
+> 主题：**ECH 代理的资源泄漏与冻结**、**DoH 解析链的降级**、**元数据缓存的 stale callback**。
+> 这轮改动一半在 Go（`ech-proxy/`），本地 `go build ./...` / `go vet ./...` / `go test -race` 全绿。
+
+### ECH 代理（`ech-proxy/`，Go）
+- [x] **上游卡死 → goroutine + TCP 永久泄漏**：`echProxyHandler` / `apiProxyHandler` 原来用
+      `http.NewRequest`（context 是 Background），客户端断连后 `r.Context()` 被取消而上游毫不知情。
+      wintools 的 `Client` 又是 `Timeout: 0`（防砍断长视频），所以只要上游 `Read` 卡住（墙内常态），
+      这个 goroutine 永远走不到 `w.Write` 失败的分支，`resp.Body.Close()` 也不执行 →
+      goroutine 与 TCP 连接双重泄漏，列表滚动时越积越多。改成
+      `http.NewRequestWithContext(r.Context(), ...)`——`http.Client.Do` 内部会用
+      `context.WithCancel(req.Context())` 派生传输上下文，客户端一断上游即中止。
+- [x] **退出 App 时 UI 卡死 20~35s**：`StartProxy` 原来把整段（含 25~35s 的 ECH 探测）都锁在
+      `proxyMu` 里，而 `StopProxy` / `GetProxyPort` 抢同一把锁。Dart 的 `stop()` 是**同步**调用
+      （`stop` / `dispose` / `restart` 都走它），恰在探测期被调就把 isolate 冻住。
+      现拆成三阶段：清状态（持锁瞬时）→ 探测（**不持锁**）→ 绑定端口（持锁瞬时）。
+      另加 `proxyGen` 代号：探测期间若 `StopProxy` 来过，绑定前复查发现并放弃启动，
+      不会在即将退出的进程里留下一个没人管的监听。
+- [x] **`IsEchReady` 无锁读**：`echReady` 由持锁的 `StartProxy` / `StopProxy` 写、
+      `IsEchReady` 裸读，`go test -race` 会标记。补锁。
+- [x] **`StartProxy` 失败残留 stale 状态**：原来关旧 server 时只置 `proxyServer = nil`，
+      探测失败直接 `return 0` 而 `echReady` / `proxyPort` 不清 → 上次成功后本次失败，
+      `IsEchReady` 谎报就绪、`GetProxyPort` 返回一个没人监听的端口。现在阶段 0 就清成
+      未就绪，`echReady = true` 也挪到监听真正起来之后，保证「就绪」与「端口有人在听」同时成立。
+- [x] **`apiProxyHandler` 不滤逐跳头**：上游的 `Transfer-Encoding` 原样搬到客户端连接，
+      会和 Go `ResponseWriter` 自己的分帧叠加；`Connection` / `Keep-Alive` 也会把上游的
+      存活策略泄漏给客户端。逐跳头表提为包级 `hopByHop`，两个 handler 共用（原来只有一份、还写死在函数里）。
+- [x] **`ech-proxy/main.go` 根本编译不过**：用的是已不存在的旧 wintools API
+      （`NewClient` / `ClientConfig` / `client.Get`），`go build ./...` 一直红，
+      而 CI 只构建 `./cmd/ech-flutter-shared`，所以从来没被发现。顺带修掉两个真 bug：
+      ① 用 `strings.Index` / `strings.LastIndex` 切 path 解析主机名，对
+      `/video-cf.twimg.com/media/x.jpg` 切出 `video-cf.twimg.com/media`（多切一段），
+      path 恰好等于前缀时更会 `path[1:0]` 直接 panic；② `fmt.Sscanf` 忽略返回值，
+      `PROXY_PORT=abc` 静默落到 8443。现 `go build ./...`、`go vet ./...` 全绿。
+
+### Dart
+- [x] **元数据缓存被过期 future 误删**（stale callback）：`getMetaData` 里 TTL 过期会
+      `_metaCache.remove(username)`，随后写入新 future；但**旧** future 的 `catch` 无条件
+      `_metaCache.remove`，把新 future 一起删掉。表现为偶发的重复拉取与 UI 闪烁。
+      改成 `identical(_metaCache[username], inFlight)` 才清，过期处不再 remove。
+- [x] **DoH 明文查询**：腾讯兜底原来是 `http://119.29.29.29/...`，域名明文上链，
+      MITM 能看见也能改写。改 `https://`。
+- [x] **DoH 接受任意证书**：`badCertificateCallback = (cert, host, port) => true` 等于把
+      HTTPS 又降级回明文。现在换成校验证书确实属于预期的 DNS 服务域名
+      （`doh.pub` / `dns.alidns.com`，含 `*.doh.pub` 通配），见 `_certLooksLike`。
+      之所以还需要回调：拨的是固定 IP（RFC 9460 bootstrap），Dart 会把 URL host（即 IP）
+      拿去比对证书，必然不匹配；但「必然不匹配」不等于「接受一切」。
+- [x] **DoH 请求无超时**：冷启动时 DNS 侧挂起会永久卡死，而且 `main.dart` 的 5 次重试
+      救不了「单次请求挂起」。补 `connectionTimeout` + 10s 整体预算（用定时器强关 client）。
+- [x] **Tencent 返回的整个 JSON 被当成 IP**：腾讯/阿里都返回标准 DNS-JSON，
+      旧实现的腾讯分支是 `body.split(';').first`——JSON 里含 `.`，于是把整段 JSON
+      当 IP 返回，Go 侧拿垃圾去拨号，ECH 初始化必然失败。统一按 JSON 解析 `Answer`，
+      取第一条 A 记录并校验是合法 IPv4。
+- [x] **`downloadToTempFile` 文件名碰撞**：直接用 URL 末段当文件名，不同用户/路径容易同名
+      （`1.jpg`），后下的覆盖前下的，分享时拿到别人的图。现在拼 `stableHash(url)` 并清洗非法字符。
+- [x] **`downloadToTempFile` 响应无超时**：`connectionTimeout` 只管建连，响应体挂起时
+      `await for` 永久不返回。补 90s 整体预算。
+- [x] **`tag_display_area` / `tag_selector_modal` 的 `as num` 会崩**：`e.value` 是 `dynamic`，
+      API 返回字符串型 score（`"3"`）时 `as num` 抛 `TypeError`，整个标签条/选择弹窗直接崩。
+      改类型判定 + `int.tryParse` 兜底。
+
+### 其他
+- [x] **`.gitignore` 只有 `keystore/` 一行**：任何构建产物、平台壳、Go 产物都能被误提交。
+      补齐 Dart/Go 产物与平台壳（本仓库不跟踪平台壳，CI 每次现造，所以忽略是对的）。
+- [x] **`.last_upload_url` 含上传接口 token 却进了版本库**：
+      内容是 `https://upload.moonchan.xyz/api/<token>/report.md.gz`，全仓库无任何引用方。
+      已 `git rm --cached`（文件留在磁盘）并加入 `.gitignore`。
+
+### 已评估、故意不做
+- [ ] **`ECHSetDohURL` / `ECHInitWithBootstrap` 是死参数**：Dart 的 `dohHost` / `dohUrl`
+      在 Go 侧被写死覆盖。真正修好需要新增 FFI 导出并在 Go 侧接收，本轮不动 FFI 面。
+- [ ] **Go 日志缓冲的下标漂移**：`logBuffer` 是线性尾截断而非环形，截断后
+      `ECHGetLogCount` / `ECHGetLog` 的下标会整体左移，读到重复或漏行。
+      Dart 侧的 2 行锚点已经兜住，彻底修好需要新增「按序号增量拉取」的导出。
+- [ ] **`poster_service` 磁盘封面缓存无淘汰**：跨会话累积，磁盘满后 `writeAsBytes` 静默失败。
+- [ ] 全屏画廊**双击放大后无法平移**（只能看画面中央那 40%）。
+- [ ] `twitter_image.dart` 的 `_watchSize` 用 `NetworkImage` 量尺寸，与
+      `ProgressiveImageProvider` 的缓存 key 不同 → 同一张图会下载两遍。属效率缺陷，不影响正确性。
 
 ## v0.5.10 本轮修复（2026-09-11）
 ### 日志（最要紧的一块）

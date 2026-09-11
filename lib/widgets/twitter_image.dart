@@ -14,6 +14,7 @@
 //      显示且不留黑边）；
 //   3. 加载中显示百分比进度——一边加载一边显示，而不是等全部就绪。
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -21,7 +22,12 @@ import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
+import '../utils/stable_hash.dart';
 import 'progressive_image.dart';
+
+/// 单次下载的整体预算。[HttpClient.connectionTimeout] 只管建连，
+/// 上游已建连但响应体迟迟不吐数据（墙内常态）时不会触发。
+const _kDownloadTimeout = Duration(seconds: 90);
 
 class TwitterImage extends StatefulWidget {
   /// 实际加载的 URL（一律 origin，不做 name= 档位）。
@@ -322,12 +328,23 @@ class _TwitterImageState extends State<TwitterImage> {
 Future<File?> downloadToTempFile(Uri uri, String originalUrl) async {
   final client = HttpClient();
   client.connectionTimeout = const Duration(seconds: 30);
+  // HttpClient 没有请求级超时，只有 connectionTimeout。这里用定时器强关
+  // client：force close 会让在途请求以错误结束，await 抛错后走 catch 返回 null。
+  final deadline = Timer(_kDownloadTimeout, () {
+    client.close(force: true);
+  });
   try {
     final request = await client.getUrl(uri);
     final response = await request.close();
     if (response.statusCode != 200) return null;
 
-    final fileName = originalUrl.split('/').last.split('?').first;
+    // 文件名不能直接取 URL 末段：不同用户/不同路径很容易同名（1.jpg、
+    // default.png），后下的会覆盖前下的，用户分享时拿到的是别人的图。
+    // 拼上 URL 的稳定哈希，并顺手把路径分隔符等非文件名字符清掉。
+    final raw = originalUrl.split('/').last.split('?').first;
+    final safeBase = raw.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    final fileName =
+        'twitter_${stableHash(originalUrl)}_${safeBase.isEmpty ? 'file' : safeBase}';
     final file = File('${Directory.systemTemp.path}/$fileName');
     final raf = await file.open(mode: FileMode.write);
     try {
@@ -341,7 +358,8 @@ Future<File?> downloadToTempFile(Uri uri, String originalUrl) async {
   } catch (_) {
     return null;
   } finally {
-    client.close();
+    deadline.cancel();
+    client.close(force: true);
   }
 }
 
