@@ -128,14 +128,17 @@ class _TwitterImageState extends State<TwitterImage> {
     _sizeStream = null;
   }
 
-  /// 解析真实宽高比：与下面 Image.network 用同一个 NetworkImage key，
-  /// 命中 Flutter ImageCache 的同一份缓存，不会重复下载。
+  /// 解析真实宽高比。用和显示处**同一个** ProgressiveImageProvider（按 url
+  /// 判等，见 progressive_image.dart），命中 Flutter ImageCache 的同一份
+  /// completer，探测不会额外触发一次下载。
+  /// 这里**不能**用 NetworkImage：不同 provider 类型就是不同的缓存 key，
+  /// 同一张图会被下载两遍。原注释声称两者共享缓存，是错的。
   void _watchSize() {
     final url = _proxiedUrl();
     if (url == null || url == _sizeUrl) return;
     _sizeUrl = url;
     _detachSizeListener();
-    final stream = NetworkImage(url).resolve(createLocalImageConfiguration(context));
+    final stream = ProgressiveImageProvider(url).resolve(createLocalImageConfiguration(context));
     final listener = ImageStreamListener(
       (info, _) {
         if (!mounted) return;
@@ -146,7 +149,7 @@ class _TwitterImageState extends State<TwitterImage> {
           setState(() => _aspect = ratio);
         }
       },
-      // 失败由 Image.network 的 errorBuilder 负责呈现，这里静默即可。
+      // 失败由显示处 Image 的 errorBuilder 负责呈现，这里静默即可。
       onError: (_, __) {},
     );
     _sizeListener = listener;
