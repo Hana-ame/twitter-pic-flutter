@@ -59,6 +59,16 @@
       （`Hana-ame/video_player_android` tag `2.12.2-fallback.1`），在 ExoPlayer 的
       `DefaultRenderersFactory` 开 `setEnableDecoderFallback(true)` —— 优先硬解，硬解
       解不了/实例被占满时自动退软解（`c2.android.*`）；Windows 端无此回退
+- [x] **fork 后的效率修正**（`lib/video/decoder_policy.dart`）：软解回吞掉了"撞硬解
+      上限"的报错信号 → codec 类失败改判 `failFast`（不再降档+重排×3，那等于重烧
+      moov 下载）；并发上限 1~6 → **1~3**（语义变为约束软解 CPU 负载）；连击 3→4
+- [x] **视频侧组件化**：`_PlayerPool` → `lib/video/video_decoder_pool.dart`
+      （只通过 `DecoderSlotUser` 接口看卡片，note/save 可注入 → 可单测）；
+      全屏页 → `widgets/video/fullscreen_video.dart`；进度条 →
+      `widgets/video/video_slider_with_buffer.dart`；下载去重 →
+      `services/video_downloader.dart`（卡片/全屏曾各有一份逐字拷贝）；黑帧判定 →
+      `utils/frame_luma.dart`。顺带删掉 `_capturePoster` 成功路径重复的第二次
+      `_becomePosterOnly()` 与两处空转的 `SingleTickerProviderStateMixin`
 
 ## v0.5.11 本轮修复（2026-09-12）
 > 主题：**ECH 代理的资源泄漏与冻结**、**DoH 解析链的降级**、**元数据缓存的 stale callback**。

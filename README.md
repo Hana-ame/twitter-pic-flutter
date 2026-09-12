@@ -207,34 +207,37 @@ prepare 快结束时才配 MediaCodec）。所以槽位只能从 init 开始按�
 decode: 槽位占用 1.8s（init 1.8s + 抓帧 43ms） 上限=3 存活=2 排队=7
 ```
 
-**并发上限不是写死的 2**（`utils/decode_budget.dart`）：硬解实例数因设备而异
-（常见 2~4，但不少机型能开更多），而 Android 没有 API 能查。所以：
-连续抓帧成功 3 次就 +1（试探余量），一旦出现 MediaCodec 类失败就立即 -1
-（撞上限了），范围夹在 **1~6**；学到的值由 `StorageService` **存档**，
-下次冷启动直接当起点，不用再撞一次墙。撞上限那一次失败是**可自愈**的
-（降档 + 重新排队，不弹错误卡片），所以上限放宽的代价很小。日志里会留痕：
+**并发上限不是写死的 2**（`utils/decode_budget.dart` + `video/decoder_policy.dart`）：
+硬解实例数因设备而异（常见 2~4），Android 没有 API 能查，只能靠"连续抓帧成功 N 次
+就 +1"试探；学到的值由 `StorageService` **存档**，下次冷启动直接当起点。日志里会留痕：
 
 ```
 decode: 连续抓帧成功 → 并发上限=3（存活=2 排队=7）
-decode: 撞解码器上限 → 并发上限=2（存活=2 排队=7）
 ```
 
-另一条配合：**解码器类失败不再直接报错**，而是降一档 + 重新排队（最多 3 次），
-因为撞上限的失败等一等就好，甩给用户一张"加载失败"是错的。
+> **fork 之后信号变了**（v0.5.13）：曾经还有一条"MediaCodec 失败 → 立即 -1 +
+> 降档重排最多 3 次"。开启软解回退后，"硬解实例被占满"在 media3 内部就被消化了，
+> 报上来的 codec 错误 = **软硬解都不行**，降档和重排都救不了它（重排反而在墙内
+> 慢链路上重烧一遍 moov 下载）。所以 `decoder_policy.dart` 现在对这类失败判
+> `failFast`（不重试、不动预算），只剩网络抖动类还走一次性自动重试。上限的含义
+> 也从"防撞硬解报错"变成"约束同时进行的解码负载"（最坏全在软解），**1~6 收缩
+> 到 1~3**，上调连击从 3 次放慢到 4 次。
 
-**自适应软解硬解**：上面的并发控制解决"硬解实例不够用"，但还有一类失败是**硬解根本
-解不了这个规格**（如 4K60 High profile，`format_supported=NO_EXCEEDS_CAPABILITIES`）。
+**自适应软解硬解**：并发控制解决"硬解实例不够用"，另一类失败是**硬解根本解不了
+这个规格**（如 4K60 High profile，`format_supported=NO_EXCEEDS_CAPABILITIES`）。
 media3 的 `DefaultRenderersFactory` 默认 `enableDecoderFallback = false`，上游
 `video_player` 又没暴露开关，所以本仓 fork 了 `video_player_android`
 （`pubspec.yaml` 的 `dependency_overrides` 指向 `Hana-ame/video_player_android`），
-在 `DefaultRenderersFactory` 上开了 `setEnableDecoderFallback(true)`：**优先硬解**，
-硬解初始化失败或能力不足时自动退到软解（`c2.android.*`）。软解吃 CPU，4K60 可能卡顿，
-但至少打得开；并发上限仍由 `DecodeBudget` 控制，避免同时开太多软解。Windows 端走
-`video_player_win`（Media Foundation），没有这层回退。
+在 `DefaultRenderersFactory` 上开了 `setEnableDecoderFallback(true)`。
+解码器顺序（media3 源码核实）：Android framework 把 MediaCodecList 按"最好的
+解码器在前"排序，media3 再把**真正能解这个格式**的排最前 —— 所以普通视频永远
+优先硬解；软解只发生在"硬解声明解不了/初始化失败"之后（`c2.android.*`）。
+软解吃 CPU，4K60 可能卡顿，但至少打得开；上限 1~3 约束同时解码路数，避免烧满。
+Windows 端走 `video_player_win`（Media Foundation），没有这层回退。
 
 **必须存在的兜底**：这套设计的前提是"封面能把解码器换出来"。如果真机上
-`RepaintBoundary.toImage()` 抓不到 `Texture`（会得到整片黑，`_mostlyBlack` 抽样检查
-能识别），代码会**立刻停止限制并发**（`_PlayerPool.captureUnavailable`），退回 v0.5.2
+`RepaintBoundary.toImage()` 抓不到 `Texture`（会得到整片黑，`isMostlyBlack` 抽样检查
+能识别），代码会**立刻停止限制并发**（`VideoDecoderPool.captureUnavailable`），退回 v0.5.2
 的行为：每张卡片各自持有播放器、都有画面。没有这个兜底，抓帧失败会让后面所有卡片
 永远排队转圈 —— 比 v0.5.2 还惨。
 
@@ -332,8 +335,16 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 - **自适应软解硬解**：fork `video_player_android`（`Hana-ame/video_player_android`
   tag `2.12.2-fallback.1`），在 ExoPlayer 的 `DefaultRenderersFactory` 开
   `setEnableDecoderFallback(true)` —— 优先硬解，硬解解不了规格 / 实例被占满时自动
-  退软解（`c2.android.*`），不再把 `NO_EXCEEDS_CAPABILITIES` 直接甩成永久失败；
-  Windows（Media Foundation）无此回退
+  退软解（`c2.android.*`）；Windows（Media Foundation）无此回退
+- **fork 后的效率修正**：软解回退把"撞硬解上限"的报错在 media3 内部消化掉了，
+  旧的自适应因此失去信号 —— `video/decoder_policy.dart` 统一决策：codec 类失败
+  判 `failFast`（不再"降档 + 重排 ×3"，那只是在慢链路上重烧 moov 下载），
+  上限 1~6 → **1~3**（按"最坏全软解"约束 CPU 负载），上调连击 3 → 4
+- **视频侧封装拆分**：`_PlayerPool` → `video/video_decoder_pool.dart`（面向
+  `DecoderSlotUser` 接口，可单测）；失败分类 → `video/decoder_policy.dart`；
+  全屏页/进度条 → `widgets/video/`；下载去重 → `services/video_downloader.dart`
+  （卡片与全屏曾各有一份逐字复制的实现）；黑帧判定 → `utils/frame_luma.dart`。
+  顺带修掉 `_capturePoster` 成功路径里重复调用两次 `_becomePosterOnly()`
 
 ### v0.5.8
 - 量出"槽位到底被占多久"：日志新增 `decode: 槽位占用 1.8s（init 1.8s + 抓帧 43ms）`

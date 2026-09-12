@@ -3,7 +3,8 @@
 //
 // 为什么需要它：Android 的**硬件**解码器实例只有 2~4 个（720p60 High profile 往往
 // 只吃得下 2 个），而时间线上每一张视频卡片都想显示一张静帧。靠"每张卡片都开一个
-// 播放器"必然撞上限（见 _PlayerPool 与 doc/troubleshooting.md 案例 14）。
+// 播放器"必然撞上限（见 lib/video/video_decoder_pool.dart 与 doc/troubleshooting.md
+// 案例 14）。
 //
 // 做法：卡片持有播放器时**抓一次当前帧**当封面（`RepaintBoundary.toImage()`，不额外
 // 占解码器），存到这里（内存 + 磁盘）。之后这张卡片再被池子回收，就能用缓存封面
@@ -15,7 +16,7 @@
 //
 // 抽帧没有用 video_thumbnail（MediaMetadataRetriever）：它自己也要占一个解码器，
 // 会在"播放器池已经占满"时把并发解码数顶到 3 —— 正是要避免的事。抓屏不占解码器，
-// 代价是**抓不到 Texture 时会是整片黑**，所以那边有黑帧检查（见 twitter_video.dart）。
+// 代价是**抓不到 Texture 时会是整片黑**，所以那边有黑帧检查（utils/frame_luma.dart）。
 
 import 'dart:async';
 import 'dart:io';

@@ -350,10 +350,27 @@ decode: 撞解码器上限 → 并发上限=2（存活=2 排队=7）
 `new DefaultRenderersFactory(context).setEnableDecoderFallback(true)`）。
 
 语义：**仍然优先硬解**，只有硬解初始化失败/能力不足才自动用软解（`c2.android.*`）。
-所以上面"该编码在本机不可用"要打个折：现在只有**软解也解不了**时才会真正失败。
-代价是软解吃 CPU，4K60 这类规格可能卡顿但不至于打不开；并发上限（`DecodeBudget`）
-仍然生效，避免同时开太多软解把 CPU 打满。Windows 端走 `video_player_win`
-（Media Foundation），没有这层回退。升级 `video_player` 时必须同步 rebase 这个 fork。
+解码器顺序（media3 源码核实，1.9.2）：framework 的 `MediaCodecList` 本身"最好的
+解码器在前"（`MediaCodecUtil.getDecoderInfosInternal` 注释），`MediaCodecVideoRenderer`
+再把**真正 functionally 支持该格式**的排最前（`getDecoderInfosSortedByFormatSupport`）；
+`enableDecoderFallback(true)` 的作用只是"第一个初始化失败时，按序尝试列表里的
+下一个"（`MediaCodecRenderer.maybeInitCodecWithFallback`）。所以普通 720p/1080p
+视频**永远走硬解**，不会被软解抢跑。
+
+**对自适应上限的影响（效率检查的结论，v0.5.13）**：软解回退把"硬解实例被占满"
+的报错在 media3 内部消化了 —— 以前这条报错正是 `DecodeBudget` 下调的依据。
+现在这个信号没了：失败只剩"硬解+软解都不行"（降档救不了）与网络抖动两类。
+因此 `lib/video/decoder_policy.dart` 统一裁决：
+- codec 类失败 → `failFast`：**不降档、不重排**（旧逻辑重排 ×3 等于在墙内慢链路
+  上重烧 3 遍 moov 下载，纯浪费流量和电池）；
+- 上限含义从"防撞硬解报错"改为"约束同时解码负载（最坏全软解）"：**1~6 收缩到
+  1~3**，连击上调放慢（3→4 次）；
+- `DecodeBudget.onCodecFailure()` 保留但当前无人调用（关掉 fallback 时的正确
+  策略，测试仍覆盖）。
+
+代价是软解吃 CPU，4K60 这类规格可能卡顿但不至于打不开；并发上限
+（`DecodeBudget`）仍然生效，避免同时开太多软解把 CPU 打满。Windows 端走
+`video_player_win`（Media Foundation），没有这层回退。升级 `video_player` 时必须同步 rebase 这个 fork。
 
 ---
 

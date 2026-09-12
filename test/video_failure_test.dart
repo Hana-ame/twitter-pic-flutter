@@ -47,8 +47,10 @@ void main() {
 
   test('超出解码器能力的格式判为永久失败', () {
     expect(VideoFailure.isUnsupportedFormat(kRealUnsupportedFormat), isTrue);
-    // 关键回归锁：绝不能同时判成 isCodecError —— 那样会白跑 3 次重试，
-    // 还会 noteCodecFailure 降整个池子的解码器预算、误伤同屏其它视频。
+    // 关键回归锁：绝不能同时判成 isCodecError —— 两条分支在 humanize 里顺序
+    // 有讲究，被吞掉会给出错误的文案。v0.5.13 起两者在 decoder_policy 里都判
+    // failFast（fork 开了软解回退后，还能报上来的解码错误=软硬解都不行），
+    // 但**分类**本身仍是日志/文案的依据，不能糊。
     expect(VideoFailure.isCodecError(kRealUnsupportedFormat), isFalse);
     expect(VideoFailure.isNetworkError(kRealUnsupportedFormat), isFalse);
   });
