@@ -55,6 +55,10 @@
       代理端口出现自动重试；错误卡片**重试按钮在最前 + 原样显示具体错误**（可选中复制）；
       代理未就绪不再静默退回直连 URL
 - [x] `_initSeq` + `_scheduleInit`：初始化去重，避免同帧起两个播放器/两个解码器
+- [x] **自适应软解硬解**：`dependency_overrides` 指向 fork 的 `video_player_android`
+      （`Hana-ame/video_player_android` tag `2.12.2-fallback.1`），在 ExoPlayer 的
+      `DefaultRenderersFactory` 开 `setEnableDecoderFallback(true)` —— 优先硬解，硬解
+      解不了/实例被占满时自动退软解（`c2.android.*`）；Windows 端无此回退
 
 ## v0.5.11 本轮修复（2026-09-12）
 > 主题：**ECH 代理的资源泄漏与冻结**、**DoH 解析链的降级**、**元数据缓存的 stale callback**。
@@ -206,7 +210,10 @@
 - `dio ^5.7.0` — API 客户端（路径归一化拦截器 + 结构化异常）
 - `ffi ^2.2.0` — Go c-shared 绑定（12 个导出符号）
 - `path_provider ^2.1.5` — 应用目录（原生库释放、下载目录）
-- `video_player ^2.9.0` + `video_player_win ^3.2.2` — Range 边下边播（federated 自动注册）
+- `video_player >=2.12.0 <2.15.0` + `video_player_win ^3.2.2` — Range 边下边播（federated 自动注册）；
+  上界收紧以匹配被 fork 固定的 Android 实现（2.12~2.14 同用平台接口 ^6.9.0）
+- `video_player_android`（fork `Hana-ame/video_player_android` tag `2.12.2-fallback.1`，
+  见 `dependency_overrides`）— 开 `setEnableDecoderFallback(true)`，硬解失败自动退软解
 - `share_plus ^10.0.0` — 分享图片/视频
 - `video_thumbnail`（fork `Hana-ame/video_thumbnail` tag `v0.5.6-flutter44`，仅为 Gradle 9/AGP 9 兼容）
 - `cached_network_image ^3.4.1` — 保留依赖（图片主通道已换成自研逐块解码）

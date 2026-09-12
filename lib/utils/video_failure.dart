@@ -68,6 +68,11 @@ class VideoFailure {
   /// ```
   /// 这里只判字符串，不解析分辨率：`isFormatSupported` 是解码器**静态声明的
   /// 能力**与格式属性的比较，同一台设备上重试必然得到同一个结果。
+  ///
+  /// **软解回退的交互**：Android 端的 fork `video_player_android` 已开启
+  /// `setEnableDecoderFallback(true)`（见 pubspec 的 dependency_overrides）；硬解解不了
+  /// 会先自动退到软解，只有**软解也解不了**（或本机没有该编码的软解）时才会真正失败。
+  /// 所以本类判"永久失败、不该重试"的结论依然成立。
   static bool isUnsupportedFormat(Object e) {
     final s = '$e';
     return s.contains('EXCEEDS_CAPABILITIES') ||
@@ -100,7 +105,7 @@ class VideoFailure {
     }
     if (isUnsupportedFormat(e)) {
       return '这台设备的视频解码器解不了这个视频：编码本身支持，但分辨率/帧率'
-          '超出硬解上限。重试也不会成功，可换用支持该规格的设备。\n'
+          '超出硬解上限，且软解回退也没成功。重试不会成功，可换用支持该规格的设备。\n'
           '（原文保留在下方，反馈时一并带上）';
     }
     if (isCodecError(e)) {

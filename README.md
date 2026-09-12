@@ -222,6 +222,16 @@ decode: 撞解码器上限 → 并发上限=2（存活=2 排队=7）
 另一条配合：**解码器类失败不再直接报错**，而是降一档 + 重新排队（最多 3 次），
 因为撞上限的失败等一等就好，甩给用户一张"加载失败"是错的。
 
+**自适应软解硬解**：上面的并发控制解决"硬解实例不够用"，但还有一类失败是**硬解根本
+解不了这个规格**（如 4K60 High profile，`format_supported=NO_EXCEEDS_CAPABILITIES`）。
+media3 的 `DefaultRenderersFactory` 默认 `enableDecoderFallback = false`，上游
+`video_player` 又没暴露开关，所以本仓 fork 了 `video_player_android`
+（`pubspec.yaml` 的 `dependency_overrides` 指向 `Hana-ame/video_player_android`），
+在 `DefaultRenderersFactory` 上开了 `setEnableDecoderFallback(true)`：**优先硬解**，
+硬解初始化失败或能力不足时自动退到软解（`c2.android.*`）。软解吃 CPU，4K60 可能卡顿，
+但至少打得开；并发上限仍由 `DecodeBudget` 控制，避免同时开太多软解。Windows 端走
+`video_player_win`（Media Foundation），没有这层回退。
+
 **必须存在的兜底**：这套设计的前提是"封面能把解码器换出来"。如果真机上
 `RepaintBoundary.toImage()` 抓不到 `Texture`（会得到整片黑，`_mostlyBlack` 抽样检查
 能识别），代码会**立刻停止限制并发**（`_PlayerPool.captureUnavailable`），退回 v0.5.2
@@ -317,6 +327,13 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 7. **不支持 iOS**。
 
 ## 更新日志
+
+### 未发布
+- **自适应软解硬解**：fork `video_player_android`（`Hana-ame/video_player_android`
+  tag `2.12.2-fallback.1`），在 ExoPlayer 的 `DefaultRenderersFactory` 开
+  `setEnableDecoderFallback(true)` —— 优先硬解，硬解解不了规格 / 实例被占满时自动
+  退软解（`c2.android.*`），不再把 `NO_EXCEEDS_CAPABILITIES` 直接甩成永久失败；
+  Windows（Media Foundation）无此回退
 
 ### v0.5.8
 - 量出"槽位到底被占多久"：日志新增 `decode: 槽位占用 1.8s（init 1.8s + 抓帧 43ms）`

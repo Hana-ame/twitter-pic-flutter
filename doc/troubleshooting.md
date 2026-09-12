@@ -338,9 +338,22 @@ decode: 撞解码器上限 → 并发上限=2（存活=2 排队=7）
 **若上限已经降到 1 仍反复报同一个 MediaCodec 错、换视频也一样**，那就不是"不够用"
 而是**该编码在本机不可用**：此时重试无用，只能换视频或在别的机器上试。
 
-**注意**：`video_player` 插件用 `new ExoPlayer.Builder(context)` 建播放器，**没有**
-`setEnableDecoderFallback(true)`，而 media3 默认 `enableDecoderFallback = false` ——
-所以硬解失败时**不会**自动退到软解，这一层救不了，只能靠我们控制并发数。
+**软解回退（自适应软解硬解）**：上游 `video_player` 用
+`new ExoPlayer.Builder(context)` 建播放器，没有调 `setEnableDecoderFallback(true)`，
+而 media3 的 `DefaultRenderersFactory` 默认 `enableDecoderFallback = false` ——
+硬解初始化解不了的规格（`format_supported=NO_EXCEEDS_CAPABILITIES`）或实例被占满时
+会直接失败，**不会**退到软解。
+
+本仓用 fork 补上这一层：`pubspec.yaml` 的 `dependency_overrides` 指向
+`Hana-ame/video_player_android`（tag `2.12.2-fallback.1`，基于上游 2.12.2，唯一改动
+是在 `TextureVideoPlayer` / `PlatformViewVideoPlayer` 里
+`new DefaultRenderersFactory(context).setEnableDecoderFallback(true)`）。
+
+语义：**仍然优先硬解**，只有硬解初始化失败/能力不足才自动用软解（`c2.android.*`）。
+所以上面"该编码在本机不可用"要打个折：现在只有**软解也解不了**时才会真正失败。
+代价是软解吃 CPU，4K60 这类规格可能卡顿但不至于打不开；并发上限（`DecodeBudget`）
+仍然生效，避免同时开太多软解把 CPU 打满。Windows 端走 `video_player_win`
+（Media Foundation），没有这层回退。升级 `video_player` 时必须同步 rebase 这个 fork。
 
 ---
 

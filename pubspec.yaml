@@ -18,7 +18,11 @@ dependencies:
   # 边下边播（系统播放器/ExoPlayer 播本地流）真机不可行已移除；
   # 下载完成原地播放用 video_player（Windows 由 video_player_win 实现，
   # federated 自动注册，无需手动 registerWith）。
-  video_player: ^2.9.0
+  # 上界收紧到 <2.15.0：Android 实现被下面 dependency_overrides 固定在 fork 的
+  # 2.12.2，而 2.12~2.14 的 video_player 都用同版本平台接口（^6.9.0）与之配套。
+  # 不设上界的话，未来 video_player 若要求更新的 video_player_android 会与 fork
+  # 静默错配（pub 不会报错，运行时才炸）。
+  video_player: ">=2.12.0 <2.15.0"
   video_player_win: ^3.2.2
   share_plus: ^10.0.0                    # 分享图片/视频到系统应用
   # 封面（静帧）当初用 video_thumbnail（git fork v0.5.6-flutter44，仅为
@@ -38,6 +42,22 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.1
   # 测试 StorageService 时 mock path_provider 平台通道
   path_provider_platform_interface: ^2.1.0
+
+# 自适应软解硬解：上游 video_player 用 `new ExoPlayer.Builder(context)` 建播放器，
+# 而 media3 的 DefaultRenderersFactory 默认 `enableDecoderFallback = false` —— 硬解
+# 解不了的规格（format_supported=NO_EXCEEDS_CAPABILITIES）或硬解实例被占满时，直接
+# 失败，**不会**退到软解（c2.android.*）。上游没有暴露任何开关，所以只能 fork。
+#
+# fork 内容：Hana-ame/video_player_android，基于上游 2.12.2，唯一改动是在
+# TextureVideoPlayer / PlatformViewVideoPlayer 里
+# `new DefaultRenderersFactory(context).setEnableDecoderFallback(true)`。
+# 行为：仍然优先硬解，只有硬解初始化失败/能力不足时才自动用软解。
+# 升级 video_player 时需同步 rebase 这个 fork（见 doc/troubleshooting.md 案例 14）。
+dependency_overrides:
+  video_player_android:
+    git:
+      url: https://github.com/Hana-ame/video_player_android.git
+      ref: 2.12.2-fallback.1
 
 flutter_launcher_icons:
   android: true
