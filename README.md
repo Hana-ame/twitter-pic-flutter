@@ -331,7 +331,7 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 
 ## 更新日志
 
-### 未发布
+### v0.5.13/v0.5.14
 - **自适应软解硬解**：fork `video_player_android`（`Hana-ame/video_player_android`
   tag `2.12.2-fallback.1`），在 ExoPlayer 的 `DefaultRenderersFactory` 开
   `setEnableDecoderFallback(true)` —— 优先硬解，硬解解不了规格 / 实例被占满时自动
