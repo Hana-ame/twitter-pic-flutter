@@ -329,9 +329,14 @@ class _TwitterVideoState extends State<TwitterVideo>
       _slowHintTimer?.cancel();
       _logFailure(e, st);
 
-      // 解码器类失败：多半是并发撞了本机硬解上限。**先降档并重新排队**，
+      // 解码器**争用**类失败：多半是并发撞了本机硬解上限。**先降档并重新排队**，
       // 不要直接甩错误卡片 —— 用户看到"视频不能播"，其实等一等就好。
-      if (VideoFailure.isCodecError(e)) {
+      //
+      // EXCEEDS_CAPABILITIES 那类**一律不重试**：本机解码器静态声明的能力就解
+      // 不了这个规格，重试必然重复失败；而且 noteCodecFailure 会降整个池子的
+      // 解码器预算，误伤同屏其它视频。详见 VideoFailure.isUnsupportedFormat。
+      final retryable = !VideoFailure.isUnsupportedFormat(e);
+      if (retryable && VideoFailure.isCodecError(e)) {
         _PlayerPool.noteCodecFailure();
         _codecRetries++;
         if (_codecRetries <= _kMaxCodecRetries) {
@@ -349,7 +354,7 @@ class _TwitterVideoState extends State<TwitterVideo>
           _scheduleInit();
           return;
         }
-      } else if (!_autoRetried) {
+      } else if (retryable && !_autoRetried) {
         // 自动重试一次：冷启动（新进程首次 ECH 要 7~11s）与连接抖动多为一次性。
         _autoRetried = true;
         // 同 codec 分支：不还槽位的话 _scheduleInit → _requestSlot 会被
@@ -760,7 +765,11 @@ class _TwitterVideoState extends State<TwitterVideo>
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return _buildError(_error!);
+      final msg = _error!;
+      // 解码器解不了这个规格时不给重试按钮：本机解码器静态声明的能力决定的，
+      // 重试必然重复失败，按钮只会诱导用户反复点一个没用的动作。错误原文照留
+      // ——反馈定位靠的就是那串编码/分辨率/帧率。
+      return _buildError(msg, retryable: !VideoFailure.isUnsupportedFormat(msg));
     }
 
     // 播放器就绪（initialize 完成）→ 真画面。
@@ -1064,7 +1073,12 @@ class _TwitterVideoState extends State<TwitterVideo>
   ///
   /// 按钮在前还有个实际原因：具体错误动辄 5~10 行，卡片只有 16:9 高，
   /// 按钮放下面会被挤出可视区。
-  Widget _buildError(String message) {
+  /// 错误卡片（0.5.2 的形态）：**重试按钮放最前**，下面原样显示具体错误。
+  ///
+  /// [retryable] 为 false 时**不显示重试按钮**：解码器解不了这个规格是永久
+  /// 失败，按钮只会诱导用户反复点一个必然失败的动作。错误原文照样留着——反馈
+  /// 定位靠的就是那串编码/分辨率/帧率。
+  Widget _buildError(String message, {bool retryable = true}) {
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: Container(
@@ -1078,18 +1092,20 @@ class _TwitterVideoState extends State<TwitterVideo>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                ElevatedButton.icon(
-                  // 重试 = 用户就是要看这个视频：抢到槽位后直接播。
-                  onPressed: () => _retryInit(autoPlay: true),
-                  icon: const Icon(Icons.refresh, size: 16),
-                  label: const Text('重试'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    minimumSize: const Size(0, 32),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                if (retryable) ...[
+                  ElevatedButton.icon(
+                    // 重试 = 用户就是要看这个视频：抢到槽位后直接播。
+                    onPressed: () => _retryInit(autoPlay: true),
+                    icon: const Icon(Icons.refresh, size: 16),
+                    label: const Text('重试'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      minimumSize: const Size(0, 32),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
+                  const SizedBox(height: 8),
+                ],
                 // SelectableText：长按可选中复制（0.5.2 就是这个行为），
                 // 反馈时比截图有用。
                 SelectableText(

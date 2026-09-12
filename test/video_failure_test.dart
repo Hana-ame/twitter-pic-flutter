@@ -17,6 +17,20 @@ const String kRealCodecError =
     'Unset color transfer, false, 8bit Luma, 8bit Chroma)], [-1, -1]), '
     'format_supported=YES, null, null)';
 
+/// 用户实测报错：竖屏 4K@60 H.264 High@5.1（2160×3840，约 498 Mpx/s），
+/// 本机硬解解不了。
+///
+/// `format_supported=NO_EXCEEDS_CAPABILITIES` 是 Media3 `Util.getFormatSupportString`
+/// 对 `C.FORMAT_EXCEEDS_CAPABILITIES` 的字符串渲染（"NO" + 原因），**不是**
+/// "没有超出能力"。
+const String kRealUnsupportedFormat =
+    'PlatformException(VideoError, Video player had error v.i: '
+    'MediaCodecVideoRenderer error, index=0, '
+    'format=Format(1, null, video/mp4, video/avc, avc1.640034, 32516104, und, '
+    '[2160, 3840, 60.00103, ColorInfo(Unset color space, Unset color range, '
+    'Unset color transfer, false, 8bit Luma, 8bit Chroma)], [-1, -1]), '
+    'format_supported=NO_EXCEEDS_CAPABILITIES, null, null)';
+
 void main() {
   test('线上实测的 MediaCodec 报错判为解码器问题', () {
     expect(VideoFailure.isCodecError(kRealCodecError), isTrue);
@@ -24,6 +38,46 @@ void main() {
     expect(VideoFailure.isNetworkError(kRealCodecError), isFalse);
     expect(VideoFailure.humanize(kRealCodecError), contains('解码器'));
     expect(VideoFailure.humanize(kRealCodecError), contains('重试'));
+  });
+
+  test('format_supported=YES 不被新分类吞掉，仍是可重试的解码器争用', () {
+    expect(VideoFailure.isUnsupportedFormat(kRealCodecError), isFalse);
+    expect(VideoFailure.isCodecError(kRealCodecError), isTrue);
+  });
+
+  test('超出解码器能力的格式判为永久失败', () {
+    expect(VideoFailure.isUnsupportedFormat(kRealUnsupportedFormat), isTrue);
+    // 关键回归锁：绝不能同时判成 isCodecError —— 那样会白跑 3 次重试，
+    // 还会 noteCodecFailure 降整个池子的解码器预算、误伤同屏其它视频。
+    expect(VideoFailure.isCodecError(kRealUnsupportedFormat), isFalse);
+    expect(VideoFailure.isNetworkError(kRealUnsupportedFormat), isFalse);
+  });
+
+  test('永久失败的文案说清"重试不会成功"，且不再引导用户点重试', () {
+    final msg = VideoFailure.humanize(kRealUnsupportedFormat);
+    expect(msg, contains('解码器'));
+    expect(msg, contains('不会成功'));
+    // 不给"点重试"这种必然失败的引导（文案里说明"重试也不会成功"是对的）
+    expect(msg, isNot(contains('点重试')));
+    expect(msg, isNot(contains('代理')));
+    expect(msg, isNot(contains('取不到视频数据')));
+  });
+
+  test('其它 UNSUPPORTED_* 变体同样算永久失败', () {
+    for (final msg in <String>[
+      '...format_supported=NO_UNSUPPORTED_SUBTYPE, null, null)',
+      '...format_supported=NO_UNSUPPORTED_DRM, null, null)',
+    ]) {
+      expect(VideoFailure.isUnsupportedFormat(msg), isTrue, reason: msg);
+      expect(VideoFailure.isCodecError(msg), isFalse, reason: msg);
+    }
+  });
+
+  test('认不出的失败不误判成永久失败（仍走可重试路径）', () {
+    expect(
+      VideoFailure.isUnsupportedFormat('some totally unknown failure'),
+      isFalse,
+    );
   });
 
   test('代理未就绪的文案优先于其它判断', () {
