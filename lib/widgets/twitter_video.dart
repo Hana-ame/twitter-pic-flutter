@@ -14,6 +14,9 @@
 // 缓冲、边下边播；控制栏逻辑保留（自动淡出、拖动进度、全屏），新增下载、分享。
 
 import 'dart:async';
+// Uint8List：封面字节/抓帧缓冲。以前这个类型是跟着 `dart:io` 顺带进来的，
+// 下载逻辑拆到 services/video_downloader.dart 后必须自己显式导入。
+import 'dart:typed_data';
 // 前缀导入：dart:ui 与 material 有同名导出（TextStyle / Image 等）。
 import 'dart:ui' as ui;
 
