@@ -106,12 +106,15 @@ void main() {
       final hidden = _FakeUser(visible: false, poster: true);
       final shown = _FakeUser(visible: true);
       expect(p.request(hidden), isTrue);
-      expect(p.request(shown), isFalse);
-
-      p.nudge();
+      // 抢占就发生在 request() 内部的 pump 里（victim 看不见且没在播 →
+      // 直接收位），所以 shown 当场拿到槽位。
+      expect(p.request(shown), isTrue);
       expect(shown.grantedCount, 1, reason: '可见优先：用户正看着的不用等');
       expect(hidden.revokedCount, 1);
       expect(hidden.grantedCount, 1, reason: '被收走只 revoke，不重复 grant');
+
+      p.nudge();
+      expect(shown.grantedCount, 1, reason: 'nudge 幂等，不重复 grant');
     });
 
     test('自动排队者不许抢占**看得见**的占位卡片（防来回抖动）', () {
