@@ -1,6 +1,6 @@
 # 项目总检清单
 
-> 最后核对：v0.5.11（2026-09-12）。细节见 [README](README.md)、
+> 最后核对：v0.5.14（2026-09-12）。细节见 [README](README.md)、
 > [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
 ## 目标
@@ -69,6 +69,50 @@
       `services/video_downloader.dart`（卡片/全屏曾各有一份逐字拷贝）；黑帧判定 →
       `utils/frame_luma.dart`。顺带删掉 `_capturePoster` 成功路径重复的第二次
       `_becomePosterOnly()` 与两处空转的 `SingleTickerProviderStateMixin`
+
+## v0.5.14 本轮修复（2026-09-12）
+> 主题：**fork 后的效率修正 + 视频侧组件化 + 单测补齐**。
+> 这轮全在 Dart 侧，本地无 Flutter SDK，全部 CI 验证（analyze ✅ + 114 test ✅）。
+
+- [x] **codec 失败 → `failFast`**：软解回退把"撞硬解上限"的报错在 media3 内部消化，
+      旧的下调信号消失。`decoder_policy.dart` 统一裁决：codec 类失败不重试不动预算
+      （不再"降档 + 重排 ×3"，那等于重烧 moov 下载）；网络类仍走一次自动重试
+- [x] **并发上限 1~6 → 1~3**：语义从"防撞硬解报错"变为"约束全软解 CPU 负载"；
+      连击上调 3→4 次
+- [x] **组件拆分**：`_PlayerPool` → `video/video_decoder_pool.dart`（面向
+      `DecoderSlotUser`，`note`/`saveBudget` 可注入 → 可单测）；全屏页 →
+      `widgets/video/fullscreen_video.dart`；进度条 →
+      `widgets/video/video_slider_with_buffer.dart`；下载去重 →
+      `services/video_downloader.dart`（卡片/全屏曾各有一份逐字复制的实现）；
+      黑帧判定 → `utils/frame_luma.dart`。顺带修掉 `_capturePoster` 成功路径重复的
+      第二次 `_becomePosterOnly()`、两处空转的 `SingleTickerProviderStateMixin`；
+      `Uint8List` 显式 `import 'dart:typed_data'`（下载拆走后不再随 `dart:io` 进来）
+- [x] **新增 3 个单测文件**：`decoder_policy_test`（codec→failFast、网络→retryOnce、
+      上限参数）、`video_decoder_pool_test`（分槽/可见优先/urgent 抢占/pump 重入/抓帧
+      不可用兜底）、`frame_luma_test`（全黑/全亮/亮像素占比/质数步长不共振）
+
+## v0.5.13 本轮修复（2026-09-12）
+> 主题：**自适应软解硬解**——fork 上游视频播放器，实现硬解失败自动退软解。
+
+- [x] **fork `video_player_android`**：`pubspec.yaml` 的 `dependency_overrides` 指向
+      `Hana-ame/video_player_android` tag `2.12.2-fallback.1`，唯一改动是在
+      `TextureVideoPlayer` / `PlatformViewVideoPlayer` 里
+      `new DefaultRenderersFactory(context).setEnableDecoderFallback(true)`。
+      优先硬解，硬解解不了规格 / 实例被占满时自动退软解（`c2.android.*`）；
+      Windows（Media Foundation）无此回退
+- [x] **EXCEEDS_CAPABILITIES 判成永久失败**：不再走重试也不降解码器预算
+      （`utils/video_failure.dart` 的 `isUnsupportedFormat` 判 `NO_EXCEEDS_CAPABILITIES`
+      为 true → 旧的重试逻辑跳过这条分支）
+- [x] **图片宽高比探测去重**：`_watchSize` 改用同一个 `ProgressiveImageProvider`
+      量尺寸（原先用 `NetworkImage`，与缓存 key 不同，同一张图会下载两遍）
+
+## v0.5.12 本轮修复（2026-09-12）
+> 主题：**DoH 通配 CN 匹配修复**——阿里兜底 DNS 解析从未真正生效过。
+
+- [x] **通配 CN 写死 `*.dns.alidns.com`**：阿里 DoH 返回的证书 CN 是
+      `dns.alidns.com`（无 `*.dns` 前缀），匹配永远失败。
+      改用 `indexOf` 切前缀后 `startsWith`，修复
+- [x] **补 `host_match_test`**：通配覆盖判定，防回归
 
 ## v0.5.11 本轮修复（2026-09-12）
 > 主题：**ECH 代理的资源泄漏与冻结**、**DoH 解析链的降级**、**元数据缓存的 stale callback**。
@@ -193,7 +237,7 @@
       只在图片完成时移除，所以下载期间 listener 数永远不为 0，取消钩子不会触发。
       真要取消得按 URL 维护引用计数，而 provider 按 URL 共享并被缓存，自己不知道还剩几个使用者。
 
-## 测试（CI `flutter_test` job，14 个文件全跑，不过不发版）
+## 测试（CI `flutter_test` job，17 个文件全跑，不过不发版）
 - [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）
 - [x] `media_url_test.dart` — `MediaUrl.isImage` 预取判定（只认 pbs 图片，视频不预热）
 - [x] `progressive_image_test.dart` — 解码节流三规则 + provider 缓存标识
@@ -208,6 +252,10 @@
 - [x] `storage_service_test.dart` — 落盘重读、并发写不损坏、规则持久化
 - [x] `stable_hash_test.dart` — FNV-1a 已知向量与确定性
 - [x] `tag_display_area_test.dart` — widget 测试
+- [x] `decoder_policy_test.dart` — codec→failFast、网络→retryOnce、上限参数
+- [x] `video_decoder_pool_test.dart` — 分槽/可见优先/urgent 抢占/pump 重入/抓帧不可用兜底
+- [x] `frame_luma_test.dart` — 全黑/全亮/亮像素占比/质数步长不共振
+- [x] `host_match_test.dart` — 通配覆盖判定（防 DoH 通配 CN 回归）
 
 ## 构建 / 发布
 - [x] `.github/workflows/build.yml`（不可删除）：`flutter_test` → `build_android` → `build_windows` → `create_release`

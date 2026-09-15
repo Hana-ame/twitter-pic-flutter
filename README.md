@@ -3,8 +3,7 @@
 > 浏览 Twitter（X）图片与视频的 Flutter 客户端。墙内直连 `*.twimg.com` 必死，
 > 媒体统一经**本机 Go ECH 代理**转发到 `video-cf.twimg.com`；API/JSON 直连自建后端。
 
-当前版本 **v0.5.1**（Android arm64 + Windows x64）。分支上还有一个未发布的
-「媒体一律 origin」重构（`v0.5.1` 之后一个提交，见更新日志）。
+当前版本 **v0.5.14**（Android arm64 + Windows x64）。
 
 | 平台 | 产物 |
 | --- | --- |
@@ -331,11 +330,7 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 
 ## 更新日志
 
-### v0.5.13/v0.5.14
-- **自适应软解硬解**：fork `video_player_android`（`Hana-ame/video_player_android`
-  tag `2.12.2-fallback.1`），在 ExoPlayer 的 `DefaultRenderersFactory` 开
-  `setEnableDecoderFallback(true)` —— 优先硬解，硬解解不了规格 / 实例被占满时自动
-  退软解（`c2.android.*`）；Windows（Media Foundation）无此回退
+### v0.5.14
 - **fork 后的效率修正**：软解回退把"撞硬解上限"的报错在 media3 内部消化掉了，
   旧的自适应因此失去信号 —— `video/decoder_policy.dart` 统一决策：codec 类失败
   判 `failFast`（不再"降档 + 重排 ×3"，那只是在慢链路上重烧 moov 下载），
@@ -344,7 +339,20 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
   `DecoderSlotUser` 接口，可单测）；失败分类 → `video/decoder_policy.dart`；
   全屏页/进度条 → `widgets/video/`；下载去重 → `services/video_downloader.dart`
   （卡片与全屏曾各有一份逐字复制的实现）；黑帧判定 → `utils/frame_luma.dart`。
-  顺带修掉 `_capturePoster` 成功路径里重复调用两次 `_becomePosterOnly()`
+  顺带修掉 `_capturePoster` 成功路径里重复调用两次 `_becomePosterOnly()`、
+  两处空转的 `SingleTickerProviderStateMixin`；补 3 个新单测文件
+
+### v0.5.13
+- **自适应软解硬解**：fork `video_player_android`（`Hana-ame/video_player_android`
+  tag `2.12.2-fallback.1`），在 ExoPlayer 的 `DefaultRenderersFactory` 开
+  `setEnableDecoderFallback(true)` —— 优先硬解，硬解解不了规格 / 实例被占满时自动
+  退软解（`c2.android.*`）；Windows（Media Foundation）无此回退
+- **EXCEEDS_CAPABILITIES 判成永久失败**：不再走重试也不降解码器预算
+- **图片宽高比探测去重**：改用同一个 `ProgressiveImageProvider`，避免同一张图下载两遍
+
+### v0.5.12
+- 修复 DoH 通配 CN 匹配：`*.dns.alidns.com` 写死导致阿里兜底永远失败；
+  通配判定改用 `indexOf` 切前缀
 
 ### v0.5.8
 - 量出"槽位到底被占多久"：日志新增 `decode: 槽位占用 1.8s（init 1.8s + 抓帧 43ms）`
