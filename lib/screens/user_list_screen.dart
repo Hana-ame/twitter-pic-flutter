@@ -1,4 +1,4 @@
-// 用户列表页面：显示所有用户并支持搜索、收藏切换
+// 用户列表页面：显示所有用户并支持搜索（用户名/昵称/`#标签` 三路）、收藏切换
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -9,32 +9,44 @@ import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../widgets/proxy_avatar.dart';
 import '../widgets/search_bar.dart';
+import 'tag_user_list_screen.dart';
 import 'user_detail_screen.dart';
 
 class UserListScreen extends StatefulWidget {
   final ProxyManager proxy;
 
-  const UserListScreen({super.key, required this.proxy});
+  /// 仅供测试注入（配 `TwitterApi(adapter: ...)` 假适配器）；生产调用点
+  /// （main.dart）不传，页面自建实例并负责 dispose。
+  final TwitterApi? api;
+
+  const UserListScreen({super.key, required this.proxy, this.api});
 
   @override
   State<UserListScreen> createState() => UserListScreenState();
 }
 
 class UserListScreenState extends State<UserListScreen> {
-   final TwitterApi _api = TwitterApi();
+  late final TwitterApi _api;
+  bool _ownsApi = false;
   List<TwitterUser> _users = [];
   bool _loading = true;
   String? _error;
   String _search = '';
+  /// true = 搜索词带 `#` 前缀，**只走 tag 路**（"添加此用户"也无意义，隐藏）。
+  bool _searchByTag = false;
   // 搜索防抖 + 结果 future 复用：原实现每次 build（每个按键）都新建
   // FutureBuilder future，狂发请求且乱序返回会显示错误结果。
   Timer? _debounce;
+  /// 当前已生效的搜索键：tag 模式带 `#` 前缀，空串 = 无搜索。
+  /// 用"键"而不是裸文本比较，`#foo` 与 `foo` 文本相同但查询完全不同。
   String _appliedQuery = '';
-  Future<List<TwitterUser>>? _searchFuture;
+  Future<SearchMergeResult>? _searchFuture;
 
   @override
   void initState() {
     super.initState();
+    _api = widget.api ?? TwitterApi();
+    _ownsApi = widget.api == null;
     _load();
   }
 
@@ -42,31 +54,67 @@ class UserListScreenState extends State<UserListScreen> {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 300), () {
       if (!mounted) return;
-      final q = v.trim();
-      if (q == _appliedQuery) return;
-      setState(() => _search = q);
+      final raw = v.trim();
+      final byTag = raw.startsWith('#');
+      // 只去掉一个前导 #（连续 ## 时第二个 '#' 留在搜索词里，行为可预期）。
+      final term = (byTag ? raw.substring(1) : raw).trim();
+      // 键为空（无搜索词 / 只输入了 '#'）→ 退回默认列表，不发请求。
+      final key = term.isEmpty ? '' : (byTag ? '#$term' : term);
+      if (key == _appliedQuery) return;
+      // 状态在这里一次写齐。原实现 _appliedQuery 在 build 里（_ensureSearchFuture）
+      // 才更新，导致"搜 a → 清空 → 再搜 a"被 key 比对短路，输入框有字却停在
+      // 默认列表——一个真实存在的 stale-bug，顺手修掉。
+      setState(() {
+        _appliedQuery = key;
+        _search = term;
+        _searchByTag = byTag;
+        _searchFuture = null;
+      });
     });
   }
 
-  Future<List<TwitterUser>> _ensureSearchFuture(String q) {
-    if (_searchFuture == null || _appliedQuery != q) {
-      _appliedQuery = q;
-      _searchFuture = Future.wait([
-        _api.searchUserList('username', q).catchError((_) => <TwitterUser>[]),
-        _api.searchUserList('nick', q).catchError((_) => <TwitterUser>[]),
-      ]).then((lists) {
-        final seen = <String>{};
-        // seen.add 返回是否新增，一行完成去重。
-        return [...lists[0], ...lists[1]].where((u) => seen.add(u.username)).toList();
-      });
+  /// 懒建当前搜索键对应的合并结果 future（每个键只发一次请求组）。
+  /// 在 build 里调用，只写缓存字段，不 setState。
+  Future<SearchMergeResult> _ensureSearchFuture() {
+    final f = _searchFuture;
+    if (f != null) return f;
+    final Future<SearchMergeResult> next;
+    if (_searchByTag) {
+      // tag 单路：**故意不逐项吞错**。线上旧二进制对 by=tag 返回
+      // 200+null，F1 已把 null 体抛成 UnexpectedResponseException——
+      // 错误必须传到 FutureBuilder 显示"失败/未就绪"，而不是假绿成
+      // "没有用户命中该标签"。
+      next = _api.searchUsersByTag(_search).then(
+        (users) => SearchMergeResult(
+          users: users,
+          totalRoutes: 1,
+          failedRoutes: 0,
+        ),
+      );
+    } else {
+      // 普通三路：优先级固定 username > nick > tag（数组顺序即优先级），
+      // 单项失败只置空该路，不影响其余路（沿用原两路逐项 catchError 语义）。
+      next = runMergedSearch([
+        _api.searchUserList('username', _search),
+        _api.searchUserList('nick', _search),
+        _api.searchUsersByTag(_search),
+      ]);
     }
-    return _searchFuture!;
+    // 换一个搜索词后 FutureBuilder 会退订，此刻仍在飞的 tag 请求若失败就
+    // 变成"无监听者的错误"（zone 里刷 UnhandledException）。ignore() 注册
+    // 一个常驻吞错监听，不影响 FutureBuilder 自己收到 snapshot.error。
+    next.ignore();
+    return _searchFuture = next;
+  }
+
+  void _retrySearch() {
+    setState(() => _searchFuture = null);
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
-    _api.dispose();
+    if (_ownsApi) _api.dispose();
     super.dispose();
   }
 
@@ -120,49 +168,98 @@ class UserListScreenState extends State<UserListScreen> {
           onChanged: _onSearchChanged,
         ),
         Expanded(
-          child: _search.isNotEmpty ? _buildSearchResults() : _buildDefaultList(),
+          child: _appliedQuery.isNotEmpty ? _buildSearchResults() : _buildDefaultList(),
         ),
       ],
     );
   }
 
   Widget _buildSearchResults() {
-    return FutureBuilder<List<TwitterUser>>(
-      future: _ensureSearchFuture(_search),
+    return FutureBuilder<SearchMergeResult>(
+      future: _ensureSearchFuture(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(strokeWidth: 2));
         }
-        final results = snapshot.data ?? [];
+        // 出错态（tag 单路不吞错时可达）：明确说"失败/未就绪"，与真·空结果区分。
+        if (snapshot.hasError) {
+          return _SearchErrorState(
+            error: '${snapshot.error}',
+            byTag: _searchByTag,
+            onRetry: _retrySearch,
+          );
+        }
+        final outcome = snapshot.data;
+        if (outcome == null) {
+          return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+        }
+        if (outcome.allRoutesFailed) {
+          return _SearchErrorState(
+            error: '${outcome.firstError}',
+            byTag: false,
+            onRetry: _retrySearch,
+          );
+        }
+        final results = outcome.users
+            .where((u) => !StorageService.isBlocked(u.username))
+            .toList();
         return ListView(
           children: [
-            _AddUserTile(username: _search, api: _api, onAdded: _load),
+            // tag 模式隐藏"添加此用户"：它把搜索词当用户名（中文标签还会被
+            // _AddUserTile 的 ^[a-zA-Z0-9_]*$ 正则挡掉），对标签查询毫无意义。
+            if (!_searchByTag)
+              _AddUserTile(username: _search, api: _api, onAdded: _load),
+            if (outcome.partialFailure)
+              _PartialFailureBanner(
+                failed: outcome.failedRoutes,
+                total: outcome.totalRoutes,
+              ),
             if (results.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 32),
-                child: Column(
-                  children: [
-                    Icon(Icons.search_off, size: 40, color: Colors.grey),
-                    SizedBox(height: 8),
-                    Text('没有匹配的用户', style: TextStyle(fontSize: 14)),
-                    SizedBox(height: 4),
-                    Text('可点击上方按钮直接添加', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                  ],
-                ),
-              )
+              _buildNoResultHint()
             else
-              ...results
-                  .where((u) => !StorageService.isBlocked(u.username))
-                  .map((u) => _UserTile(
-                    key: ValueKey(u.username),
-                    username: u.username,
-                    api: _api,
-                    proxy: widget.proxy,
-                    onTap: (m) => _openDetail(m),
-                  )),
+              ...results.map((u) => _UserTile(
+                key: ValueKey(u.username),
+                username: u.username,
+                api: _api,
+                proxy: widget.proxy,
+                onTap: (m) => _openDetail(m),
+              )),
+            // tag 路命中如实标注服务端截断（LIMIT 15、无游标），不给"加载更多"。
+            if (_searchByTag && results.isNotEmpty)
+              _TagCapFooter(serverReturned: outcome.users.length),
           ],
         );
       },
+    );
+  }
+
+  Widget _buildNoResultHint() {
+    if (_searchByTag) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 32),
+        child: Column(
+          children: [
+            Icon(Icons.sell_outlined, size: 40, color: Colors.grey),
+            SizedBox(height: 8),
+            Text('该标签下没有用户命中', style: TextStyle(fontSize: 14)),
+            SizedBox(height: 4),
+            Text('服务端按标签名精确匹配（权重降序，上限 15）',
+                style: TextStyle(color: Colors.grey, fontSize: 12)),
+          ],
+        ),
+      );
+    }
+    return const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 32),
+      child: Column(
+        children: [
+          Icon(Icons.search_off, size: 40, color: Colors.grey),
+          SizedBox(height: 8),
+          Text('没有匹配的用户', style: TextStyle(fontSize: 14)),
+          SizedBox(height: 4),
+          Text('可点击上方按钮直接添加', style: TextStyle(color: Colors.grey, fontSize: 12)),
+        ],
+      ),
     );
   }
 
@@ -242,6 +339,189 @@ class UserListScreenState extends State<UserListScreen> {
     );
   }
 
+}
+
+// ─── 搜索合并层（纯逻辑，独立可测，见 test/search_merge_test.dart）─────────
+
+/// 多路搜索的合并产物：结果列表 + 各路成败情况。
+///
+/// UI 靠它区分「出错（全部路失败）/ 部分失败（结果可能不完整）/ 真·空结果」
+/// 三种形态——尤其不能把"路失败"渲染成"没有结果"。
+class SearchMergeResult {
+  const SearchMergeResult({
+    required this.users,
+    required this.totalRoutes,
+    required this.failedRoutes,
+    this.firstError,
+  });
+
+  /// 合并去重后的用户，按路优先级排列（见 [mergeSearchResults]）。
+  final List<TwitterUser> users;
+  final int totalRoutes;
+  final int failedRoutes;
+
+  /// 第一个失败路的异常（按路优先级取最靠前者），用于错误文案。
+  final Object? firstError;
+
+  /// 所有路都失败：UI 必须显示错误态，绝不能显示成"没有匹配的用户"。
+  bool get allRoutesFailed => totalRoutes > 0 && failedRoutes >= totalRoutes;
+
+  /// 部分路失败：照常显示成功路的结果，但要如实提示可能不完整。
+  bool get partialFailure => failedRoutes > 0 && !allRoutesFailed;
+}
+
+/// 纯函数：把多路**已完成**的搜索结果按路优先级顺序拼接，并按 username
+/// 保序去重（首次出现的位置胜出，同一路内部保持服务端返回顺序）。
+///
+/// [lists] 的数组顺序即优先级：现状三路为 `[username 命中, nick 命中, tag 命中]`
+/// ——username 命中永远排在 nick 命中前（原两路实现的语义，保持不变），
+/// tag 命中权重最低垫底（tag 路自身按服务端标签权重降序，不重排）。
+List<TwitterUser> mergeSearchResults(List<List<TwitterUser>> lists) {
+  final seen = <String>{};
+  return [for (final l in lists) ...l]
+      // seen.add 返回是否新增，一行完成"保序 + 按 username 去重"。
+      .where((u) => seen.add(u.username))
+      .toList();
+}
+
+class _SettledRoute {
+  const _SettledRoute(this.users, this.error);
+  final List<TwitterUser> users;
+  final Object? error;
+}
+
+Future<_SettledRoute> _settleRoute(Future<List<TwitterUser>> route) async {
+  try {
+    return _SettledRoute(await route, null);
+  } catch (e) {
+    // 逐项"吞错"：单路失败只把该路置空，不影响其它路——原实现
+    // `f.catchError((_) => [])` 的语义，换成 try/catch 是为了同时记录
+    // 失败数与异常本身，供 UI 区分三态。
+    return _SettledRoute(const <TwitterUser>[], e);
+  }
+}
+
+/// 并发等待各路搜索 future（逐项吞错），再用 [mergeSearchResults] 合并。
+Future<SearchMergeResult> runMergedSearch(
+  List<Future<List<TwitterUser>>> routes,
+) async {
+  final settled = await Future.wait(routes.map(_settleRoute));
+  final errors = <Object>[for (final s in settled) if (s.error != null) s.error!];
+  return SearchMergeResult(
+    users: mergeSearchResults([for (final s in settled) s.users]),
+    totalRoutes: routes.length,
+    failedRoutes: errors.length,
+    firstError: errors.isEmpty ? null : errors.first,
+  );
+}
+
+// ─── 搜索结果辅助展示组件 ────────────────────────────────────────────────────
+
+/// 搜索出错态：与"真·空结果"严格区分。tag 模式下额外提示
+/// "服务端可能尚未支持标签搜索（旧版对 by=tag 返回 200 null）"。
+class _SearchErrorState extends StatelessWidget {
+  final String error;
+  final bool byTag;
+  final VoidCallback onRetry;
+
+  const _SearchErrorState({
+    required this.error,
+    required this.byTag,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.cloud_off_outlined, size: 48, color: Colors.red),
+            const SizedBox(height: 12),
+            Text(
+              byTag ? '标签搜索失败：服务端可能未就绪' : '搜索失败',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            if (byTag)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 4),
+                child: Text(
+                  '（线上旧版对未知 by 会返回 200 空响应，这不代表该标签没有用户）',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            SelectableText(
+              error,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 部分搜索路失败的提示条：结果照常展示，但如实标注可能不完整。
+class _PartialFailureBanner extends StatelessWidget {
+  final int failed;
+  final int total;
+
+  const _PartialFailureBanner({required this.failed, required this.total});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '部分搜索失败（$failed/$total 路），结果可能不完整',
+              style: const TextStyle(fontSize: 12, color: Colors.orange),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// tag 搜索命中非空时的截断说明：服务端 LIMIT 15、无游标，
+/// 所以这里只有说明文字，没有"加载更多"。
+class _TagCapFooter extends StatelessWidget {
+  /// 服务端（合并去重**前**）返回的条数，用于判断是否触顶。
+  final int serverReturned;
+
+  const _TagCapFooter({required this.serverReturned});
+
+  @override
+  Widget build(BuildContext context) {
+    final truncated = serverReturned >= kTagSearchLimit;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Text(
+        truncated
+            ? '已达服务端返回上限（$kTagSearchLimit 个，按标签权重降序），'
+              '其余命中已被截断——该接口无分页'
+            : '共 $serverReturned 个命中（服务端按标签权重降序，上限 $kTagSearchLimit）',
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontSize: 12, color: Colors.grey),
+      ),
+    );
+  }
 }
 
 class _UserTile extends StatefulWidget {

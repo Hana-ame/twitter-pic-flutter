@@ -76,6 +76,65 @@ void main() {
       final minimal = TwitterUser.fromJson({'username': 'x'});
       expect(minimal.nick, isNull);
       expect(minimal.totalUrls, isNull);
+      // tags 是后加字段：老响应没有它时必须回空 Map，不能是 null。
+      expect(minimal.tags, isEmpty);
+    });
+
+    test('tags 正常解析（[]User 同构响应，含新版 by=tag 携带的权重）', () {
+      final u = TwitterUser.fromJson({
+        'username': 'alice',
+        'tags': {'女性': 5, '自拍': 3},
+      });
+      expect(u.tags, {'女性': 5, '自拍': 3});
+    });
+
+    test('tags 缺失 / null / 默认构造均为空 Map', () {
+      expect(TwitterUser.fromJson({'username': 'x'}).tags, isEmpty);
+      expect(TwitterUser.fromJson({'username': 'x', 'tags': null}).tags,
+          isEmpty);
+      expect(TwitterUser(username: 'x').tags, isEmpty);
+    });
+
+    test('tags 非 Map 类型一律回退空 Map，不抛异常', () {
+      for (final bad in <dynamic>['女性', 5, 1.5, ['女性'], <String>[], true]) {
+        expect(
+          TwitterUser.fromJson({'username': 'x', 'tags': bad}).tags,
+          isEmpty,
+          reason: 'tags=$bad (${bad.runtimeType}) 不应崩溃',
+        );
+      }
+    });
+
+    test('tags 值：字符串数兼容、负数与 0 保留、解析失败兜 0、键不丢', () {
+      // 契约：服务端把权重归一到 ±1 累加，库里可能存负值，且目前不过滤 0；
+      // Dio/JSON 数字形态不完全可信（int/double/字符串都出现过）。
+      final u = TwitterUser.fromJson({
+        'username': 'x',
+        'tags': {
+          '自拍': '3',
+          'COS': -1,
+          '零': 0,
+          '浮点': 2.7,
+          '坏值': 'x',
+          '空值': null,
+        },
+      });
+      expect(u.tags['自拍'], 3, reason: '字符串数字要能解析');
+      expect(u.tags['COS'], -1, reason: '负权重合法，必须原样保留');
+      expect(u.tags['零'], 0, reason: '服务端不过滤 0，客户端也不丢');
+      expect(u.tags['浮点'], 2, reason: 'num 走 toInt 容错');
+      expect(u.tags['坏值'], 0, reason: '解析不出的值兜底 0 而非崩溃/丢键');
+      expect(u.tags['空值'], 0);
+      expect(u.tags.length, 6);
+    });
+
+    test('UserMetaData.accountInfo 无 tags 字段，保持默认空 Map', () {
+      // account_info 是 Twitter 侧资料（name/nick/profile_image），标签不在
+      // 其中；确认手动构造路径吃到 tags 的默认值。
+      final meta = UserMetaData.fromJson({
+        'account_info': {'name': 'u1'},
+      });
+      expect(meta.accountInfo.tags, isEmpty);
     });
   });
 

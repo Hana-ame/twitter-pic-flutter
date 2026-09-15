@@ -10,7 +10,7 @@ class SearchBarWidget extends StatefulWidget {
   const SearchBarWidget({
     super.key,
     required this.onChanged,
-    this.placeholder = '搜索用户名或昵称...',
+    this.placeholder = '搜索用户名、昵称，或 #标签...',
   });
 
   @override

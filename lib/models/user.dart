@@ -27,6 +27,17 @@ List<dynamic> _list(dynamic v) => v is List ? v : const <dynamic>[];
 Map<String, dynamic> _map(dynamic v) =>
     v is Map ? Map<String, dynamic>.from(v) : const <String, dynamic>{};
 
+/// 解析 JSON 的 tags 值为 `Map<String, int>`。
+///
+/// 公开：模型层与 API 层（TwitterApi.getTagWeights）共用同一套口径。
+/// 契约：tags 形如 `{"女性":5,"自拍":3}`，权重**可为负**且服务端目前不过滤 0，
+/// 客户端不丢任何键。容错与上面的解析族一致：
+/// - null / 非 Map → 空 Map（不崩）；
+/// - 值走 [_int]：兼容字符串数字（"3" → 3）、负数原样保留、
+///   解析不出 int 的值（乱码串 / null）兜底为 0。
+Map<String, int> parseTagWeights(dynamic v) =>
+    _map(v).map((k, val) => MapEntry(k, _int(val) ?? 0));
+
 // ─── 模型 ──────────────────────────────────────────────────────────────────
 
 class TwitterUser {
@@ -35,11 +46,18 @@ class TwitterUser {
   final String? avatar;
   final int? totalUrls;
 
+  /// 随用户对象附带的标签权重。新版列表/搜索接口（by=username|nick|tag 的
+  /// `[]User`，尤其 by=tag 的命中结果）每项带 `tags` 字段；缺失或类型不符
+  /// 回退为空 Map（见 [parseTagWeights]）。注意 UserMetaData 的
+  /// account_info（Twitter 侧资料）不含此字段，保持默认空。
+  final Map<String, int> tags;
+
   TwitterUser({
     required this.username,
     this.nick,
     this.avatar,
     this.totalUrls,
+    this.tags = const <String, int>{},
   });
 
   factory TwitterUser.fromJson(Map<String, dynamic> json) {
@@ -48,6 +66,7 @@ class TwitterUser {
       nick: _strOrNone(json['nick']),
       avatar: _strOrNone(json['avatar']),
       totalUrls: _int(json['total_urls']),
+      tags: parseTagWeights(json['tags']),
     );
   }
 }

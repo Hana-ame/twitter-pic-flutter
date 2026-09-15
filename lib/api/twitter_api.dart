@@ -40,6 +40,17 @@ class UnknownException extends ApiException {
   const UnknownException(super.message);
 }
 
+/// 服务端返回了 200，但响应体形态不符合契约（期望 JSON 数组却拿到 `null` 等）。
+///
+/// 关键背景：**线上（未升级到 6261e29 的）旧二进制不认识 `by=tag` 这类未知
+/// `by` 值，会静默返回 `200 + body null`，而不是 400/404。** 若把"非列表"
+/// 一律读成空列表，服务端没升级就表现为"这个标签没人"——静默假绿。
+/// 因此列表类解码点必须区分 `null` 与 `[]`：`[]` 才是"确实没有结果"，
+/// `null` 抛本异常，让 UI 至少能说"服务端未就绪"。
+class UnexpectedResponseException extends ApiException {
+  const UnexpectedResponseException(super.message);
+}
+
 class TwitterApi {
   // 缓存存 Future<UserMetaData> 而非结果：同一用户并发 getMetaData 复用
   // 同一个 in-flight 请求，避免并发 miss 全部各自拉取（重复流量）。
@@ -119,26 +130,34 @@ class TwitterApi {
         if (after != null) 'after': after,
       },
     );
-    final decoded = resp.data;
-    if (decoded is! List) return [];
-    return decoded
-        .whereType<Map>()
-        .map((e) => TwitterUser.fromJson(_asJsonMap(e, 'getUserList entry')))
-        .toList();
+    return _decodeUserList(resp.data, 'getUserList');
   }
 
+  /// 搜索用户：`GET /?by=<by>&search=<search>`（by 现有取值：username / nick / tag）。
   Future<List<TwitterUser>> searchUserList(String by, String search) async {
     if (search.isEmpty) return [];
     final resp = await _dio.get(
       '/',
       queryParameters: {'by': by, 'search': search},
     );
-    final decoded = resp.data;
-    if (decoded is! List) return [];
-    return decoded
-        .whereType<Map>()
-        .map((e) => TwitterUser.fromJson(_asJsonMap(e, 'getUserList entry')))
-        .toList();
+    return _decodeUserList(resp.data, 'searchUserList($by)');
+  }
+
+  /// 按标签查用户：`GET /?by=tag&search=<tag>`，响应与 by=username|nick 完全同构
+  /// （`[]User`，每项带 `tags: {标签: 权重}`）。
+  ///
+  /// 新版服务端契约：精确匹配标签、权重降序、同权重按 username 升序、只回
+  /// status='SUCCESS'、LIMIT 15 且**无游标**；空结果回 `[]`。
+  /// 线上旧二进制不认识 by=tag，会返回 `200 + body null`——经 [_decodeUserList]
+  /// 抛 [UnexpectedResponseException]，调用方（UI）据此提示"服务端未就绪"，
+  /// 而不是误报"这个标签下没人"。
+  Future<List<TwitterUser>> searchUsersByTag(String tag) async {
+    if (tag.isEmpty) return [];
+    final resp = await _dio.get(
+      '/',
+      queryParameters: {'by': 'tag', 'search': tag},
+    );
+    return _decodeUserList(resp.data, 'searchUsersByTag($tag)');
   }
 
   Future<UserMetaData> getMetaData(String username, {String? t, bool forceRefresh = false}) async {
@@ -180,8 +199,9 @@ class TwitterApi {
   /// `Map<dynamic, dynamic>` 或（content-type 未识别时）未解码的 String。
   /// Dart 的泛型判定是严格的：`Map<dynamic, dynamic> is Map<String, dynamic>`
   /// 为 false，所以 `is! Map<String, dynamic>` 会把前两类误判成"非 JSON 响应"，
-  /// 导致 metadata 全部失败——详情页显示"暂无内容"且头像全缺，
-  /// 而 getUserList 用宽松的 `is! List` 判定不受影响。
+  /// 导致 metadata 全部失败——详情页显示"暂无内容"且头像全缺。
+  /// （列表接口历史上用宽松的 `is! List` 判定不受该坑影响，但会把 200 null
+  /// 吞成空列表，现已收紧，见 [_decodeUserList]。）
   static Map<String, dynamic> _asJsonMap(dynamic raw, String context) {
     if (raw is Map<String, dynamic>) return raw;
     if (raw is Map) return Map<String, dynamic>.from(raw);
@@ -193,6 +213,30 @@ class TwitterApi {
     }
     throw UnknownException(
       '$context 返回非 JSON 响应（实际类型 ${raw.runtimeType}）',
+    );
+  }
+
+  /// 解析用户列表类响应（getUserList / searchUserList / searchUsersByTag 共用）。
+  ///
+  /// 只有 JSON 数组才是合法结果，`[]` 表示"确实没有结果"；`null` 或非数组
+  /// 抛 [UnexpectedResponseException]——线上旧二进制对未知 by（如尚未上线的
+  /// by=tag）静默返回 `200 + body null`，绝不能被吞成空列表造成"服务端未就绪"
+  /// 被显示成"查无此人/这个标签没人"的假绿。
+  static List<TwitterUser> _decodeUserList(dynamic decoded, String context) {
+    if (decoded is List) {
+      return decoded
+          .whereType<Map>()
+          .map((e) => TwitterUser.fromJson(_asJsonMap(e, '$context entry')))
+          .toList();
+    }
+    if (decoded == null) {
+      throw UnexpectedResponseException(
+        '$context 返回 body null：服务端可能不认识该查询'
+        '（线上旧二进制对未知 by 静默返回 200 null），这不代表"没有结果"',
+      );
+    }
+    throw UnexpectedResponseException(
+      '$context 返回非数组 JSON 响应（实际类型 ${decoded.runtimeType}）',
     );
   }
 
@@ -228,6 +272,17 @@ class TwitterApi {
   Future<Map<String, dynamic>> getTags(String username) async {
     final resp = await _dio.get('/tags/$username');
     return _asJsonMap(resp.data, 'getTags($username)');
+  }
+
+  /// [getTags] 的 typed 读法：取 `GET /tags/<username>` 响应里的 `tags` 字段
+  /// 解析成 `Map<String, int>`。
+  ///
+  /// 契约要点：端点形态不变；权重**可为负**且服务端目前不过滤 0，客户端原样
+  /// 保留键；**不存在的用户返回 500（HttpException），不是 404**——别按 404
+  /// 判"无此人"。[getTags] 原样透传裸 Map 的旧签名保持不变，调用点按需迁移。
+  Future<Map<String, int>> getTagWeights(String username) async {
+    final data = await getTags(username);
+    return parseTagWeights(data['tags']);
   }
 
   Future<Map<String, dynamic>> getEmojis(String username) async {
