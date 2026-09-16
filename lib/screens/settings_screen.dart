@@ -39,6 +39,13 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _restarting = false;
+  bool _gayMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _gayMode = StorageService.isGayMode();
+  }
 
   // ─── 网络诊断 ─────────────────────────────────────────────────────────────
   bool _diagRunning = false;
@@ -511,6 +518,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // 封面缓存也一起清：它在磁盘上（应用支持目录的 posters/），不清会越攒越多。
     await PosterService.clearAll();
     if (mounted) {
+      setState(() {
+        _gayMode = StorageService.isGayMode();
+      });
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('数据已清除')));
     }
   }
@@ -596,6 +606,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           // ─── 操作 ───────────────────────────────────────────────────────────
           _SectionTitle(title: '操作', icon: Icons.settings, color: Colors.orange),
+          SwitchListTile(
+            secondary: const Icon(Icons.palette_outlined, color: Colors.purple),
+            title: const Text('Gay 模式'),
+            subtitle: Text(_gayMode ? '已开启（显示男同/男性/露屌）' : '已关闭（隐藏男同/男性/露屌）'),
+            value: _gayMode,
+            activeColor: Colors.purple,
+            onChanged: (val) {
+              setState(() {
+                _gayMode = val;
+                StorageService.setGayMode(val);
+              });
+            },
+          ),
           ListTile(
             leading: const Icon(Icons.restart_alt, color: Colors.blue),
             title: const Text('重启代理'),

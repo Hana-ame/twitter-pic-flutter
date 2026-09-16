@@ -292,12 +292,18 @@ class _TagChips extends StatelessWidget {
         // 避免 Map 迭代顺序导致渲染抖动。
         return byWeight != 0 ? byWeight : a.key.compareTo(b.key);
       });
+    final isGay = StorageService.isGayMode();
+    final visibleEntries = entries
+        .where((e) => isGay || !kGayTags.contains(e.key))
+        .toList();
+    if (visibleEntries.isEmpty) return const SizedBox.shrink();
+
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: Wrap(
         spacing: 6,
         runSpacing: 4,
-        children: entries.map((e) {
+        children: visibleEntries.map((e) {
           final color = e.value > 0
               ? Colors.blue
               : e.value < 0

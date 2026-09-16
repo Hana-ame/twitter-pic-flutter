@@ -10,6 +10,7 @@ class StorageService {
   static const _kCustomTags = 'user_custom_tags';
   static const _kSearchHistory = 'search-history';
   static const _kDecodeBudget = 'decode-budget';
+  static const _kGayMode = 'gay-mode';
 
   static bool _loaded = false;
   static Map<String, String> _memory = {};
@@ -193,4 +194,24 @@ class StorageService {
   static void saveSearchHistory(List<String> history) {
     _write(_kSearchHistory, jsonEncode(history));
   }
+
+  // --- gay-mode ---
+  static bool isGayMode() {
+    final v = _read(_kGayMode);
+    if (v.isEmpty) return false;
+    return v == 'true' || v == '1';
+  }
+
+  static void setGayMode(bool enabled) {
+    _write(_kGayMode, enabled ? 'true' : 'false');
+  }
+
+  static bool toggleGayMode() {
+    final next = !isGayMode();
+    setGayMode(next);
+    return next;
+  }
 }
+
+/// Gay 模式控制的核心标签集合（男同 / 男性 / 露屌）
+const Set<String> kGayTags = {'男同', '男性', '露屌'};

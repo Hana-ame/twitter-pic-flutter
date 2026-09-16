@@ -31,4 +31,31 @@ void main() {
       expect(find.text('二次元'), findsNothing);
     });
   });
+
+  group('TagDisplayArea Gay 模式过滤', () {
+    testWidgets('默认/关闭 Gay 模式时过滤男同/男性/露屌', (tester) async {
+      await tester.pumpWidget(wrap(const TagDisplayArea(
+        tags: {'二次元': 1, '男同': 1, '男性': 1, '露屌': 1, '自拍': -1},
+        gayMode: false,
+      )));
+
+      expect(find.text('二次元'), findsOneWidget);
+      expect(find.text('自拍'), findsOneWidget);
+      expect(find.text('男同'), findsNothing);
+      expect(find.text('男性'), findsNothing);
+      expect(find.text('露屌'), findsNothing);
+    });
+
+    testWidgets('开启 Gay 模式时正常显示男同/男性/露屌', (tester) async {
+      await tester.pumpWidget(wrap(const TagDisplayArea(
+        tags: {'二次元': 1, '男同': 1, '男性': 1, '露屌': 1},
+        gayMode: true,
+      )));
+
+      expect(find.text('二次元'), findsOneWidget);
+      expect(find.text('男同'), findsOneWidget);
+      expect(find.text('男性'), findsOneWidget);
+      expect(find.text('露屌'), findsOneWidget);
+    });
+  });
 }

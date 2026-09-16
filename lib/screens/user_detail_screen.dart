@@ -363,8 +363,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     final hasMore = !_showAll && timeline.length > _mediaLimit;
     // 屏蔽规则生效：用户标签命中“标签管理→屏蔽”列表时给提示条。
     // 标签挂在用户级别（timeline 条目无 tag），故只提示、不自动藏内容。
-    final blockedHits =
-        StorageService.getBlockTags().where(_userTags.containsKey).toList();
+    // Gay 模式下，男同/男性/露屌不触发屏蔽提示条。
+    final isGay = StorageService.isGayMode();
+    final blockedHits = StorageService.getBlockTags()
+        .where((t) => _userTags.containsKey(t) && (!isGay || !kGayTags.contains(t)))
+        .toList();
     final showBlockBanner = blockedHits.isNotEmpty;
 
     return Scaffold(

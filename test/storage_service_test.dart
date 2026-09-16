@@ -111,5 +111,40 @@ void main() {
 
       expect(StorageService.getCustomTags(), ['我的自定义tag']);
     });
+
+    test('Gay 模式：默认关闭、持久化与切换', () async {
+      expect(StorageService.isGayMode(), isFalse);
+
+      final next = StorageService.toggleGayMode();
+      expect(next, isTrue);
+      expect(StorageService.isGayMode(), isTrue);
+
+      await StorageService.debugFlushPending();
+
+      // 模拟进程重启
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+      expect(StorageService.isGayMode(), isTrue);
+
+      StorageService.setGayMode(false);
+      expect(StorageService.isGayMode(), isFalse);
+
+      await StorageService.debugFlushPending();
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+      expect(StorageService.isGayMode(), isFalse);
+    });
+
+    test('clearAll 重置 Gay 模式为默认关闭', () async {
+      StorageService.setGayMode(true);
+      expect(StorageService.isGayMode(), isTrue);
+
+      await StorageService.clearAll();
+      expect(StorageService.isGayMode(), isFalse);
+
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+      expect(StorageService.isGayMode(), isFalse);
+    });
   });
 }

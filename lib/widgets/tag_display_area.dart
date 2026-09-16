@@ -10,18 +10,33 @@ class TagDisplayArea extends StatelessWidget {
   /// 可注入以便测试（避免依赖本地存储）。
   final Set<String>? highlights;
 
-  const TagDisplayArea({super.key, required this.tags, this.highlights});
+  /// Gay 模式开关；null 时从 StorageService.isGayMode() 读取。
+  /// 可注入以便测试。
+  final bool? gayMode;
+
+  const TagDisplayArea({
+    super.key,
+    required this.tags,
+    this.highlights,
+    this.gayMode,
+  });
 
   @override
   Widget build(BuildContext context) {
     if (tags.isEmpty) return const SizedBox.shrink();
+    final isGay = gayMode ?? StorageService.isGayMode();
+    final visibleEntries = tags.entries
+        .where((e) => isGay || !kGayTags.contains(e.key))
+        .toList();
+    if (visibleEntries.isEmpty) return const SizedBox.shrink();
+
     // 命中“标签管理→高亮”的 tag 加星标强调（规则原先存了但从不生效）。
     final hits = highlights ?? StorageService.getHighlightTags().toSet();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Wrap(
         spacing: 6, runSpacing: 4,
-        children: tags.entries.map((e) {
+        children: visibleEntries.map((e) {
           // e.value 声明是 dynamic：API 返回字符串型 score（"3"）时 `as num`
           // 会抛 TypeError 直接崩掉整个标签条。字符串也能解析就解析，解析不了
           // 当 0 处理。

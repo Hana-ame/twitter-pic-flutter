@@ -18,6 +18,7 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   final _inputCtrl = TextEditingController();
   List<String> _highlight = [];
   List<String> _block = [];
+  bool _gayMode = false;
 
   @override
   void initState() {
@@ -33,6 +34,7 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   }
 
   void _load() {
+    _gayMode = StorageService.isGayMode();
     final rules = StorageService.getTagRules();
     _highlight = (rules['highlight'] as List?)?.cast<String>() ?? [];
     final storedBlock = (rules['block'] as List?)?.cast<String>() ?? [];
@@ -94,6 +96,37 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            Card(
+              margin: const EdgeInsets.only(bottom: 16),
+              color: Colors.purple.shade50,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                side: BorderSide(color: Colors.purple.shade200),
+              ),
+              child: SwitchListTile(
+                title: const Row(
+                  children: [
+                    Text('🌈 ', style: TextStyle(fontSize: 16)),
+                    Text('Gay 模式', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                  ],
+                ),
+                subtitle: Text(
+                  _gayMode
+                      ? '已开启：显示男同、男性、露屌等标签'
+                      : '已关闭：隐藏男同、男性、露屌等标签',
+                  style: TextStyle(fontSize: 11, color: Colors.purple.shade800),
+                ),
+                value: _gayMode,
+                activeColor: Colors.purple,
+                onChanged: (val) {
+                  setState(() {
+                    _gayMode = val;
+                    StorageService.setGayMode(val);
+                  });
+                },
+              ),
+            ),
             TextField(
               controller: _inputCtrl,
               decoration: InputDecoration(
