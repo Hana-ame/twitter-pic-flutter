@@ -3,7 +3,7 @@
 > 浏览 Twitter（X）图片与视频的 Flutter 客户端。墙内直连 `*.twimg.com` 必死，
 > 媒体统一经**本机 Go ECH 代理**转发到 `video-cf.twimg.com`；API/JSON 直连自建后端。
 
-当前版本 **v0.5.14**（Android arm64 + Windows x64）。
+当前版本 **v0.5.15**（Android arm64 + Windows x64）。
 
 | 平台 | 产物 |
 | --- | --- |
