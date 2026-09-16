@@ -146,5 +146,31 @@ void main() {
       await StorageService.ensureInitialized();
       expect(StorageService.isGayMode(), isFalse);
     });
+
+    test('hasGayTag 与 matchesGayMode（正好取反）', () {
+      expect(StorageService.hasGayTag({'男同': 1, '二次元': 2}), isTrue);
+      expect(StorageService.hasGayTag({'男性': 2}), isTrue);
+      expect(StorageService.hasGayTag({'露屌': 1}), isTrue);
+      expect(StorageService.hasGayTag({'二次元': 2, '自拍': 1}), isFalse);
+      expect(StorageService.hasGayTag({}), isFalse);
+
+      // 非 Gay 模式下（默认关闭）：
+      // 包含 Gay 标签的用户被过滤（false）；不包含的保留（true）
+      StorageService.setGayMode(false);
+      expect(StorageService.matchesGayMode({'男同': 1}), isFalse);
+      expect(StorageService.matchesGayMode({'男性': 1, '自拍': 2}), isFalse);
+      expect(StorageService.matchesGayMode({'露屌': 1}), isFalse);
+      expect(StorageService.matchesGayMode({'二次元': 1}), isTrue);
+      expect(StorageService.matchesGayMode({}), isTrue);
+
+      // Gay 模式下（开启）：
+      // 包含 Gay 标签的用户保留（true）；不包含的被过滤（false，正好取反）
+      StorageService.setGayMode(true);
+      expect(StorageService.matchesGayMode({'男同': 1}), isTrue);
+      expect(StorageService.matchesGayMode({'男性': 1, '自拍': 2}), isTrue);
+      expect(StorageService.matchesGayMode({'露屌': 1}), isTrue);
+      expect(StorageService.matchesGayMode({'二次元': 1}), isFalse);
+      expect(StorageService.matchesGayMode({}), isFalse);
+    });
   });
 }

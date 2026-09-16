@@ -211,6 +211,20 @@ class StorageService {
     setGayMode(next);
     return next;
   }
+
+  /// 判断标签字典中是否包含任一 Gay 标签（男同 / 男性 / 露屌）
+  static bool hasGayTag(Map<String, int> tags) {
+    return tags.entries.any((e) => kGayTags.contains(e.key) && e.value > 0);
+  }
+
+  /// 判断用户标签是否符合当前 Gay 模式筛选（正好取反）：
+  /// - Gay 模式开启：只显示包含男同/男性/露屌的用户
+  /// - Gay 模式关闭：只显示不包含男同/男性/露屌的用户
+  static bool matchesGayMode(Map<String, int> tags) {
+    final isGay = isGayMode();
+    final has = hasGayTag(tags);
+    return isGay ? has : !has;
+  }
 }
 
 /// Gay 模式控制的核心标签集合（男同 / 男性 / 露屌）

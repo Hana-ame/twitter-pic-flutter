@@ -202,6 +202,7 @@ class UserListScreenState extends State<UserListScreen> {
         }
         final results = outcome.users
             .where((u) => !StorageService.isBlocked(u.username))
+            .where((u) => StorageService.matchesGayMode(u.tags))
             .toList();
         return ListView(
           children: [
@@ -327,6 +328,7 @@ class UserListScreenState extends State<UserListScreen> {
           }
           final u = _users[i];
           if (StorageService.isBlocked(u.username)) return const SizedBox.shrink();
+          if (!StorageService.matchesGayMode(u.tags)) return const SizedBox.shrink();
           return _UserTile(
             key: ValueKey(u.username),
             username: u.username,
