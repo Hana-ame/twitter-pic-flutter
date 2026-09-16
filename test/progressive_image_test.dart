@@ -54,4 +54,20 @@ void main() {
       isNot(equals(ProgressiveImageProvider('$url&x=1'))),
     );
   });
+
+  test('重试代号参与判等，否则重试会拿回已失败的缓存 completer', () {
+    const url =
+        'http://127.0.0.1:8443/media/HRHinAZa8AA7G2D?format=jpg&name=orig';
+    // 同一 URL、不同 retry → 必须是不同的缓存 key，ImageCache 才会重新下载。
+    expect(
+      ProgressiveImageProvider(url),
+      isNot(equals(ProgressiveImageProvider(url, retry: 1))),
+    );
+    expect(
+      ProgressiveImageProvider(url).hashCode,
+      isNot(equals(ProgressiveImageProvider(url, retry: 1).hashCode)),
+    );
+    // 但请求 URL 不变：重试的是同一个地址。
+    expect(ProgressiveImageProvider(url, retry: 3).url, equals(url));
+  });
 }

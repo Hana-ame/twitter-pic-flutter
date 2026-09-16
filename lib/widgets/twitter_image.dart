@@ -68,6 +68,11 @@ class _TwitterImageState extends State<TwitterImage> {
   int _retryCount = 0;
   bool _autoRetried = false;
 
+  /// 上次失败的原因；非空即表示当前处于错误态，此时把「重试」按钮画在
+  /// Stack 顶层（独立于图片本体），保证它一定接得到点击。
+  Object? _lastError;
+  bool get _failed => _lastError != null;
+
   ImageStream? _sizeStream;
   ImageStreamListener? _sizeListener;
   String? _sizeUrl;
@@ -94,6 +99,7 @@ class _TwitterImageState extends State<TwitterImage> {
       _retryCount = 0;
       _autoRetried = false;
       _sizeUrl = null;
+      _lastError = null;
       _watchSize();
     }
   }
@@ -109,6 +115,7 @@ class _TwitterImageState extends State<TwitterImage> {
     if (!mounted) return;
     _sizeUrl = null;
     _autoRetried = false;
+    _lastError = null;
     _watchSize();
     setState(() {});
   }
@@ -138,7 +145,8 @@ class _TwitterImageState extends State<TwitterImage> {
     if (url == null || url == _sizeUrl) return;
     _sizeUrl = url;
     _detachSizeListener();
-    final stream = ProgressiveImageProvider(url).resolve(createLocalImageConfiguration(context));
+    final stream = ProgressiveImageProvider(url, retry: _retryCount)
+        .resolve(createLocalImageConfiguration(context));
     final listener = ImageStreamListener(
       (info, _) {
         if (!mounted) return;
@@ -162,6 +170,7 @@ class _TwitterImageState extends State<TwitterImage> {
       _retryCount++;
       _autoRetried = true;
       _sizeUrl = null;
+      _lastError = null;
     });
     _watchSize();
   }
@@ -201,16 +210,22 @@ class _TwitterImageState extends State<TwitterImage> {
     }
 
     return _frame(
-      child: GestureDetector(
-        onTap: _showPreview,
-        onLongPress: () => _showContextMenu(context),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Hero(
-              tag: 'img_${widget.url}',
+      // 手势只挂在"图片本体"上，不挂在整块区域上：错误态的「重试」按钮在
+      // 这块区域内部，而外层 onLongPress 会让长按识别器一直占着手势竞技场
+      // （要等到 ~500ms 超时才结算），嵌套按钮的 tap 因此在点击判定窗口内
+      // 永远拿不到胜出权——表现就是"按钮看得见、按下去毫无反应"（不高亮、
+      // 不回调）。把打开预览/长按菜单下移到 Stack 的图片层，按钮就不再与
+      // 任何祖先手势竞争。
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Hero(
+            tag: 'img_${widget.url}',
+            child: GestureDetector(
+              onTap: _showPreview,
+              onLongPress: () => _showContextMenu(context),
               child: Image(
-                image: ProgressiveImageProvider(url),
+                image: ProgressiveImageProvider(url, retry: _retryCount),
                 key: ValueKey('$url#$_retryCount'),
                 fit: widget.fit,
                 width: widget.width,
@@ -243,12 +258,37 @@ class _TwitterImageState extends State<TwitterImage> {
                     });
                     return const _StatusBox();
                   }
-                  return _StatusBox(message: '加载失败：$error', onRetry: _retry);
+                  // 图片层在错误态下画一个空的撑满块：真正的「加载失败 + 重试」
+                  // 界面由上面 Stack 顶层那个 _StatusBox 负责（它不被任何手势
+                  // 识别器包着，按钮才按得动）。这里用 postFrame 回调把错误记进
+                  // state，避免在 build 期间直接 setState。
+                  if (_lastError == null) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted && _lastError == null) {
+                        setState(() => _lastError = error);
+                      }
+                    });
+                  }
+                  return const SizedBox.expand();
                 },
               ),
             ),
-          ],
-        ),
+          ),
+          if (_failed)
+            // 顶层错误态：不透明地盖住图片层。
+            //
+            // 这里**绝不能**再套任何带 onTap/onLongPress 的祖先——哪怕只挂
+            // onLongPress 也不行：长按识别器会一直占着手势竞技场直到 ~500ms
+            // 超时，嵌套的重试按钮就永远等不到 tap 胜出（这正是原来"按钮看
+            // 得见按不到"的成因）。错误态下预览/长按菜单暂时不可用，等重试
+            // 成功回到图片层即可恢复。
+            Positioned.fill(
+              child: _StatusBox(
+                message: '加载失败：$_lastError',
+                onRetry: _retry,
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -619,6 +659,18 @@ class _GalleryPageState extends State<_GalleryPage> {
   int _retryCount = 0;
   bool _zoomed = false;
 
+  /// 非空即处于错误态：此时改为渲染独立的错误块，双击缩放的手势整体摘掉，
+  /// 「重试」按钮才按得动（成因见 build 末尾注释）。
+  Object? _lastError;
+  bool get _failed => _lastError != null;
+
+  void _retry() {
+    setState(() {
+      _retryCount++;
+      _lastError = null;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final port = widget.proxy.port;
@@ -630,7 +682,7 @@ class _GalleryPageState extends State<_GalleryPage> {
     final url = EchUrl.rewrite(widget.url, port);
 
     Widget image = Image(
-      image: ProgressiveImageProvider(url),
+      image: ProgressiveImageProvider(url, retry: _retryCount),
       key: ValueKey('$url#$_retryCount'),
       fit: BoxFit.contain,
       loadingBuilder: (context, child, progress) {
@@ -650,46 +702,82 @@ class _GalleryPageState extends State<_GalleryPage> {
           ],
         );
       },
-      errorBuilder: (context, error, stackTrace) => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.broken_image, size: 48, color: Colors.white54),
-            const SizedBox(height: 12),
-            const Text('加载失败',
-                style: TextStyle(color: Colors.white70, fontSize: 14)),
-            const SizedBox(height: 4),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: SelectableText(
-                error.toString(),
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white54, fontSize: 11),
-              ),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => setState(() => _retryCount++),
-              icon: const Icon(Icons.refresh),
-              label: const Text('重试'),
-            ),
-          ],
-        ),
-      ),
+      errorBuilder: (context, error, stackTrace) {
+        // 记进 state，交给下面独立的错误块渲染；这里只占住图片的槽位。
+        // 不在 build 期间 setState，所以走 postFrame。
+        if (_lastError == null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _lastError == null) {
+              setState(() => _lastError = error);
+            }
+          });
+        }
+        return const SizedBox.expand();
+      },
     );
 
     if (widget.heroTag != null) {
       image = Hero(tag: widget.heroTag!, child: image);
     }
 
+    // 双击缩放的手势**只包住图片本身**，不能包住上面 errorBuilder 里的
+    // 「重试」按钮：双击识别器要等一个"可能的第二下"，期间一直占着手势
+    // 竞技场，嵌套按钮的 tap 因此永远胜不出——和列表卡片里那个"看得到按
+    // 不到"是同一个成因。错误态下双击缩放本来也没意义。
+    final hasError = _failed;
     return GestureDetector(
-      onDoubleTap: () => setState(() => _zoomed = !_zoomed),
+      onDoubleTap: hasError ? null : () => setState(() => _zoomed = !_zoomed),
       // ClipRect：放大后画面超出屏幕的部分不要盖到顶栏上。
       child: ClipRect(
         child: Center(
-          child: Transform.scale(scale: _zoomed ? 2.5 : 1.0, child: image),
+          child: hasError
+              ? _GalleryError(
+                  error: _lastError!,
+                  onRetry: _retry,
+                )
+              : Transform.scale(scale: _zoomed ? 2.5 : 1.0, child: image),
         ),
       ),
+    );
+  }
+}
+
+/// 全屏画廊的错误态：黑底 + 错误详情 + 一定能按动的「重试」。
+///
+/// 独立成一个 widget 是为了保证它**不在任何 GestureDetector 里面**——原来
+/// 它画在 `Image.errorBuilder` 里，而外面套着 `onDoubleTap` 的识别器，按钮
+/// 因此和列表卡片里一样"看得见按不到"。
+class _GalleryError extends StatelessWidget {
+  final Object error;
+  final VoidCallback onRetry;
+
+  const _GalleryError({required this.error, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.broken_image, size: 48, color: Colors.white54),
+        const SizedBox(height: 12),
+        const Text('加载失败',
+            style: TextStyle(color: Colors.white70, fontSize: 14)),
+        const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: SelectableText(
+            error.toString(),
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white54, fontSize: 11),
+          ),
+        ),
+        const SizedBox(height: 16),
+        ElevatedButton.icon(
+          onPressed: onRetry,
+          icon: const Icon(Icons.refresh),
+          label: const Text('重试'),
+        ),
+      ],
     );
   }
 }

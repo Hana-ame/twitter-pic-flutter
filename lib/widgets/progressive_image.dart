@@ -79,14 +79,25 @@ class ProgressiveDecodeThrottle {
 ///
 /// 相等性按 URL 判定，因此仍然命中 Flutter 的 ImageCache：滚回来时直接复用
 /// 已经解码好的完整图，不会重新下载。
+///
+/// [retry] 是"第几次尝试"的代号，默认 0。它只参与相等性判定，**不改请求
+/// URL**：点「重试」时把代号加一，等于换了一个缓存 key，于是 ImageCache
+/// 不会再把上一次那个已经 `reportError` 过的 completer 交回来（按 URL 判等
+/// 时就会，那样按钮点了也没反应——重试了个寂寞），而是重新走一遍 `loadImage`
+/// 真正再下 一次。
 class ProgressiveImageProvider extends ImageProvider<ProgressiveImageProvider> {
   ProgressiveImageProvider(
     this.url, {
+    this.retry = 0,
     this.throttle,
     this.timeout = const Duration(seconds: 20),
   });
 
   final String url;
+
+  /// 第几次尝试（重试次数），只用于参与缓存 key 的判定。
+  final int retry;
+
   final ProgressiveDecodeThrottle? throttle;
   final Duration timeout;
 
@@ -109,13 +120,15 @@ class ProgressiveImageProvider extends ImageProvider<ProgressiveImageProvider> {
 
   @override
   bool operator ==(Object other) =>
-      other is ProgressiveImageProvider && other.url == url;
+      other is ProgressiveImageProvider &&
+      other.url == url &&
+      other.retry == retry;
 
   @override
-  int get hashCode => Object.hash(ProgressiveImageProvider, url);
+  int get hashCode => Object.hash(ProgressiveImageProvider, url, retry);
 
   @override
-  String toString() => 'ProgressiveImageProvider("$url")';
+  String toString() => 'ProgressiveImageProvider("$url", retry: $retry)';
 }
 
 class _ProgressiveImageCompleter extends ImageStreamCompleter {
