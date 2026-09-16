@@ -11,6 +11,8 @@ class StorageService {
   static const _kSearchHistory = 'search-history';
   static const _kDecodeBudget = 'decode-budget';
   static const _kGayMode = 'gay-mode';
+  static const _kGayTags = 'gay-tags';
+  static const List<String> kDefaultGayTags = ['男同', '男性', '露屌'];
 
   static bool _loaded = false;
   static Map<String, String> _memory = {};
@@ -212,20 +214,72 @@ class StorageService {
     return next;
   }
 
-  /// 判断标签字典中是否包含任一 Gay 标签（男同 / 男性 / 露屌）
-  static bool hasGayTag(Map<String, int> tags) {
-    return tags.entries.any((e) => kGayTags.contains(e.key) && e.value > 0);
+  // --- gay-tags configuration ---
+  static List<String> getGayTags() {
+    final v = _read(_kGayTags);
+    if (v.isEmpty) return List.of(kDefaultGayTags);
+    try {
+      final decoded = jsonDecode(v);
+      if (decoded is List) {
+        final list = decoded
+            .map((e) => e.toString().trim().replaceFirst(RegExp(r'^#+'), ''))
+            .where((s) => s.isNotEmpty)
+            .toSet()
+            .toList();
+        if (list.isNotEmpty) return list;
+      }
+    } catch (_) {}
+    return List.of(kDefaultGayTags);
+  }
+
+  static void setGayTags(List<String> tags) {
+    final clean = tags
+        .map((e) => e.trim().replaceFirst(RegExp(r'^#+'), ''))
+        .where((s) => s.isNotEmpty)
+        .toSet()
+        .toList();
+    _write(_kGayTags, jsonEncode(clean));
+  }
+
+  static void addGayTag(String tag) {
+    final clean = tag.trim().replaceFirst(RegExp(r'^#+'), '');
+    if (clean.isEmpty) return;
+    final current = getGayTags();
+    if (!current.contains(clean)) {
+      current.add(clean);
+      setGayTags(current);
+    }
+  }
+
+  static void removeGayTag(String tag) {
+    final clean = tag.trim().replaceFirst(RegExp(r'^#+'), '');
+    final current = getGayTags();
+    current.remove(clean);
+    setGayTags(current);
+  }
+
+  static void resetGayTags() {
+    setGayTags(List.of(kDefaultGayTags));
+  }
+
+  /// 判断标签字典中是否包含任一 Gay 标签
+  static bool hasGayTag(Map<String, int> tags, [Set<String>? customGayTags]) {
+    final set = customGayTags ?? kGayTags;
+    return tags.entries.any((e) => set.contains(e.key) && e.value > 0);
   }
 
   /// 判断用户标签是否符合当前 Gay 模式筛选（正好取反）：
-  /// - Gay 模式开启：只显示包含男同/男性/露屌的用户
-  /// - Gay 模式关闭：只显示不包含男同/男性/露屌的用户
-  static bool matchesGayMode(Map<String, int> tags) {
+  /// - Gay 模式开启：只显示包含 Gay 标签的用户
+  /// - Gay 模式关闭：只显示不包含 Gay 标签的用户
+  static bool matchesGayMode(Map<String, int> tags, [Set<String>? customGayTags]) {
     final isGay = isGayMode();
-    final has = hasGayTag(tags);
+    final has = hasGayTag(tags, customGayTags);
     return isGay ? has : !has;
   }
 }
 
-/// Gay 模式控制的核心标签集合（男同 / 男性 / 露屌）
-const Set<String> kGayTags = {'男同', '男性', '露屌'};
+/// 当前生效的 Gay 模式标签集合（动态读取 StorageService.getGayTags）
+Set<String> get kGayTags => StorageService.getGayTags().toSet();
+
+/// 默认的 Gay 模式核心标签常量集合
+const Set<String> kDefaultGayTagsSet = {'男同', '男性', '露屌'};

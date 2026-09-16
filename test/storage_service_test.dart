@@ -172,5 +172,31 @@ void main() {
       expect(StorageService.matchesGayMode({'二次元': 1}), isFalse);
       expect(StorageService.matchesGayMode({}), isFalse);
     });
+
+    test('Gay 标签列表可配置性、持久化与复位', () async {
+      expect(StorageService.getGayTags(), ['男同', '男性', '露屌']);
+
+      StorageService.addGayTag('男娘');
+      expect(StorageService.getGayTags(), ['男同', '男性', '露屌', '男娘']);
+
+      StorageService.removeGayTag('男性');
+      expect(StorageService.getGayTags(), ['男同', '露屌', '男娘']);
+
+      await StorageService.debugFlushPending();
+
+      // 模拟进程重启
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+      expect(StorageService.getGayTags(), ['男同', '露屌', '男娘']);
+
+      // 动态过滤也随之生效
+      StorageService.setGayMode(true);
+      expect(StorageService.matchesGayMode({'男娘': 1}), isTrue);
+      expect(StorageService.matchesGayMode({'男性': 1}), isFalse);
+
+      // 重置回默认
+      StorageService.resetGayTags();
+      expect(StorageService.getGayTags(), ['男同', '男性', '露屌']);
+    });
   });
 }

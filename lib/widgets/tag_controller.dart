@@ -18,6 +18,7 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   final _inputCtrl = TextEditingController();
   List<String> _highlight = [];
   List<String> _block = [];
+  List<String> _gayTags = [];
   bool _gayMode = false;
 
   @override
@@ -35,6 +36,7 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
 
   void _load() {
     _gayMode = StorageService.isGayMode();
+    _gayTags = StorageService.getGayTags();
     final rules = StorageService.getTagRules();
     _highlight = (rules['highlight'] as List?)?.cast<String>() ?? [];
     final storedBlock = (rules['block'] as List?)?.cast<String>() ?? [];
@@ -46,7 +48,6 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
     } else {
       _block = storedBlock;
     }
-    _save();
   }
 
   void _save() {
@@ -57,26 +58,44 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   }
 
   void _addTag(String type) {
-    final tag = _inputCtrl.text.trim();
+    final tag = _inputCtrl.text.trim().replaceFirst(RegExp(r'^#+'), '');
     if (tag.isEmpty) return;
     setState(() {
       if (type == 'highlight') {
         _block.remove(tag);
         if (!_highlight.contains(tag)) _highlight.add(tag);
-      } else {
+        _save();
+      } else if (type == 'block') {
         _highlight.remove(tag);
         if (!_block.contains(tag)) _block.add(tag);
+        _save();
+      } else if (type == 'gay') {
+        StorageService.addGayTag(tag);
+        _gayTags = StorageService.getGayTags();
       }
       _inputCtrl.clear();
-      _save();
     });
   }
 
   void _removeTag(String tag, String type) {
     setState(() {
-      if (type == 'highlight') _highlight.remove(tag);
-      else _block.remove(tag);
-      _save();
+      if (type == 'highlight') {
+        _highlight.remove(tag);
+        _save();
+      } else if (type == 'block') {
+        _block.remove(tag);
+        _save();
+      } else if (type == 'gay') {
+        StorageService.removeGayTag(tag);
+        _gayTags = StorageService.getGayTags();
+      }
+    });
+  }
+
+  void _resetGayTags() {
+    setState(() {
+      StorageService.resetGayTags();
+      _gayTags = StorageService.getGayTags();
     });
   }
 
@@ -104,27 +123,72 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
                 borderRadius: BorderRadius.circular(10),
                 side: BorderSide(color: Colors.purple.shade200),
               ),
-              child: SwitchListTile(
-                title: const Row(
-                  children: [
-                    Text('🌈 ', style: TextStyle(fontSize: 16)),
-                    Text('Gay 模式', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                  ],
-                ),
-                subtitle: Text(
-                  _gayMode
-                      ? '已开启：显示男同、男性、露屌等标签'
-                      : '已关闭：隐藏男同、男性、露屌等标签',
-                  style: TextStyle(fontSize: 11, color: Colors.purple.shade800),
-                ),
-                value: _gayMode,
-                activeColor: Colors.purple,
-                onChanged: (val) {
-                  setState(() {
-                    _gayMode = val;
-                    StorageService.setGayMode(val);
-                  });
-                },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SwitchListTile(
+                    title: const Row(
+                      children: [
+                        Text('🌈 ', style: TextStyle(fontSize: 16)),
+                        Text('Gay 模式', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                      ],
+                    ),
+                    subtitle: Text(
+                      _gayMode
+                          ? '已开启：只显示包含【${_gayTags.join(" / ")}】的账号'
+                          : '已关闭：隐藏包含【${_gayTags.join(" / ")}】的账号',
+                      style: TextStyle(fontSize: 11, color: Colors.purple.shade800),
+                    ),
+                    value: _gayMode,
+                    activeColor: Colors.purple,
+                    onChanged: (val) {
+                      setState(() {
+                        _gayMode = val;
+                        StorageService.setGayMode(val);
+                      });
+                    },
+                  ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Gay 专属标签 (${_gayTags.length})',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.purple.shade900),
+                            ),
+                            TextButton(
+                              onPressed: _resetGayTags,
+                              style: TextButton.styleFrom(visualDensity: VisualDensity.compact, padding: EdgeInsets.zero),
+                              child: const Text('恢复默认', style: TextStyle(fontSize: 11)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        if (_gayTags.isEmpty)
+                          const Text('无 Gay 标签', style: TextStyle(color: Colors.grey, fontSize: 12))
+                        else
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children: _gayTags.map((t) => ActionChip(
+                              label: Text(t, style: const TextStyle(fontSize: 12)),
+                              avatar: Icon(Icons.close, size: 14, color: Colors.purple.shade700),
+                              onPressed: () => _removeTag(t, 'gay'),
+                              backgroundColor: Colors.purple.shade100,
+                              side: BorderSide(color: Colors.purple.shade300),
+                              visualDensity: VisualDensity.compact,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            )).toList(),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
             TextField(
@@ -161,6 +225,18 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
                     style: FilledButton.styleFrom(
                       backgroundColor: Colors.red.shade50,
                       foregroundColor: Colors.red.shade700,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: hasInput ? () => _addTag('gay') : null,
+                    icon: const Text('🌈', style: TextStyle(fontSize: 12)),
+                    label: const Text('设为Gay'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.purple.shade50,
+                      foregroundColor: Colors.purple.shade800,
                     ),
                   ),
                 ),
