@@ -14,7 +14,7 @@ patch="${rest#*.}"
 patch="${patch%%+*}"  # strip build number
 
 new_patch=$((patch + 1))
-new_ver="${major}.${minor}.${new_patch}+1"
+new_ver="${major}.${minor}.${new_patch}"
 
 # macOS vs Linux sed
 if [[ "$(uname)" == "Darwin" ]]; then
