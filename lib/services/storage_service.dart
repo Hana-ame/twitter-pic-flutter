@@ -12,7 +12,7 @@ class StorageService {
   static const _kDecodeBudget = 'decode-budget';
   static const _kGayMode = 'gay-mode';
   static const _kGayTags = 'gay-tags';
-  static const List<String> kDefaultGayTags = ['男同', '男性', '露屌'];
+  static const List<String> kDefaultGayTags = ['男性', '男娘', '人妖', '露屌', '阳痿', '男同'];
 
   static bool _loaded = false;
   static Map<String, String> _memory = {};
@@ -282,4 +282,4 @@ class StorageService {
 Set<String> get kGayTags => StorageService.getGayTags().toSet();
 
 /// 默认的 Gay 模式核心标签常量集合
-const Set<String> kDefaultGayTagsSet = {'男同', '男性', '露屌'};
+const Set<String> kDefaultGayTagsSet = {'男性', '男娘', '人妖', '露屌', '阳痿', '男同'};

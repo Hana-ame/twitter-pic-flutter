@@ -174,29 +174,29 @@ void main() {
     });
 
     test('Gay 标签列表可配置性、持久化与复位', () async {
-      expect(StorageService.getGayTags(), ['男同', '男性', '露屌']);
+      expect(StorageService.getGayTags(), ['男性', '男娘', '人妖', '露屌', '阳痿', '男同']);
 
-      StorageService.addGayTag('男娘');
-      expect(StorageService.getGayTags(), ['男同', '男性', '露屌', '男娘']);
+      StorageService.addGayTag('伪娘');
+      expect(StorageService.getGayTags(), ['男性', '男娘', '人妖', '露屌', '阳痿', '男同', '伪娘']);
 
       StorageService.removeGayTag('男性');
-      expect(StorageService.getGayTags(), ['男同', '露屌', '男娘']);
+      expect(StorageService.getGayTags(), ['男娘', '人妖', '露屌', '阳痿', '男同', '伪娘']);
 
       await StorageService.debugFlushPending();
 
       // 模拟进程重启
       StorageService.resetForTests();
       await StorageService.ensureInitialized();
-      expect(StorageService.getGayTags(), ['男同', '露屌', '男娘']);
+      expect(StorageService.getGayTags(), ['男娘', '人妖', '露屌', '阳痿', '男同', '伪娘']);
 
       // 动态过滤也随之生效
       StorageService.setGayMode(true);
-      expect(StorageService.matchesGayMode({'男娘': 1}), isTrue);
+      expect(StorageService.matchesGayMode({'伪娘': 1}), isTrue);
       expect(StorageService.matchesGayMode({'男性': 1}), isFalse);
 
       // 重置回默认
       StorageService.resetGayTags();
-      expect(StorageService.getGayTags(), ['男同', '男性', '露屌']);
+      expect(StorageService.getGayTags(), ['男性', '男娘', '人妖', '露屌', '阳痿', '男同']);
     });
   });
 }

@@ -609,7 +609,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           SwitchListTile(
             secondary: const Icon(Icons.palette_outlined, color: Colors.purple),
             title: const Text('Gay 模式'),
-            subtitle: Text(_gayMode ? '已开启（显示男同/男性/露屌）' : '已关闭（隐藏男同/男性/露屌）'),
+            subtitle: Text(_gayMode ? '已开启（仅显示 Gay 专属标签内容）' : '已关闭（隐藏 Gay 专属标签内容）'),
             value: _gayMode,
             activeColor: Colors.purple,
             onChanged: (val) {

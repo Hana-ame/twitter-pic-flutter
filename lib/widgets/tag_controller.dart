@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import '../services/storage_service.dart';
 
 const _kDefaultBlockTags = [
-  '无关内容', '男性', '男娘', '人妖', '露屌', '阳痿', '男同',
+  '无关内容',
 ];
 
 class TagControllerScreen extends StatefulWidget {
