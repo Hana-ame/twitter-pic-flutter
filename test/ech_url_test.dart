@@ -31,6 +31,12 @@ void main() {
       expect(result, equals('http://127.0.0.1:12345/media/photo.jpg?name=value&x=1'));
     });
 
+    test('rewrites twitter URL with format and name=orig without touching path or query', () {
+      final input = 'https://pbs.twimg.com/media/G3SXX_vWwAASvYp?format=jpg&name=orig';
+      final result = EchUrl.rewrite(input, 12345);
+      expect(result, equals('http://127.0.0.1:12345/media/G3SXX_vWwAASvYp?format=jpg&name=orig'));
+    });
+
     test('rewrites URL with custom host', () {
       final input = 'https://pbs.twimg.com/media/photo.jpg';
       final result = EchUrl.rewrite(input, 12345, host: '192.168.1.100');
@@ -67,6 +73,12 @@ void main() {
       final proxyUrl = 'http://127.0.0.1:12345/media/photo.jpg';
       final target = EchUrl.extractTarget(proxyUrl);
       expect(target, equals('https://video-cf.twimg.com/media/photo.jpg'));
+    });
+
+    test('extracts target preserving format and name=orig without touching path or query', () {
+      final proxyUrl = 'http://127.0.0.1:12345/media/G3SXX_vWwAASvYp?format=jpg&name=orig';
+      final target = EchUrl.extractTarget(proxyUrl);
+      expect(target, equals('https://video-cf.twimg.com/media/G3SXX_vWwAASvYp?format=jpg&name=orig'));
     });
   });
 
