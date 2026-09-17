@@ -1,6 +1,6 @@
 # 项目总检清单
 
-> 最后核对：v0.5.15（2026-09-16）。细节见 [README](README.md)、
+> 最后核对：v0.6.0（2026-09-17）。细节见 [README](README.md)、
 > [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
 ## 目标
