@@ -35,6 +35,17 @@ void main() {
       expect(find.text('无关内容'), findsNothing);
     });
 
+    testWidgets('点击标签触发 onTapTag 回调进行反查', (tester) async {
+      String? clickedTag;
+      await tester.pumpWidget(wrap(TagDisplayArea(
+        tags: {'二次元': 1},
+        onTapTag: (t) => clickedTag = t,
+      )));
+
+      await tester.tap(find.text('二次元'));
+      expect(clickedTag, '二次元');
+    });
+
     testWidgets('空标签渲染为空', (tester) async {
       await tester.pumpWidget(wrap(const TagDisplayArea(tags: {})));
       expect(find.text('二次元'), findsNothing);

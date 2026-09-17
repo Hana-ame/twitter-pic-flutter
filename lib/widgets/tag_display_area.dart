@@ -13,12 +13,14 @@ class TagDisplayArea extends StatelessWidget {
   /// Gay 模式开关；null 时从 StorageService.isGayMode() 读取。
   /// 可注入以便测试。
   final bool? gayMode;
+  final void Function(String tag)? onTapTag;
 
   const TagDisplayArea({
     super.key,
     required this.tags,
     this.highlights,
     this.gayMode,
+    this.onTapTag,
   });
 
   @override
@@ -51,7 +53,7 @@ class TagDisplayArea extends StatelessWidget {
               : (int.tryParse('${e.value}') ?? 0);
           final color = score > 0 ? Colors.blue : Colors.red;
           final isHighlighted = hits.contains(e.key);
-          return Container(
+          final chip = Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
               color: color.withValues(alpha: isHighlighted ? 0.18 : 0.1),
@@ -77,6 +79,14 @@ class TagDisplayArea extends StatelessWidget {
               ],
             ),
           );
+          if (onTapTag != null) {
+            return InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => onTapTag!(e.key),
+              child: chip,
+            );
+          }
+          return chip;
         }).toList(),
       ),
     );

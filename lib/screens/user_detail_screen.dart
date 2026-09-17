@@ -18,6 +18,7 @@ import '../widgets/twitter_video.dart';
 import '../widgets/tag_display_area.dart';
 import '../widgets/tag_selector_modal.dart';
 import '../widgets/horizontal_button_row.dart';
+import 'tag_user_list_screen.dart';
 
 class UserDetailScreen extends StatefulWidget {
   final UserMetaData profile;
@@ -653,7 +654,29 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       case 7:
         return const SizedBox(height: 4);
       case 8:
-        return TagDisplayArea(tags: _userTags);
+        return TagDisplayArea(
+          tags: _userTags,
+          onTapTag: (tag) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => TagUserListScreen(
+                  tag: tag,
+                  api: _api,
+                  proxy: widget.proxy,
+                  onSelectUser: (userMeta) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => UserDetailScreen(profile: userMeta, proxy: widget.proxy),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            );
+          },
+        );
       default:
         return const SizedBox(height: 4);
     }
