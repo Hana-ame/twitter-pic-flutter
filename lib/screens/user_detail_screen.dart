@@ -366,7 +366,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     // Gay 模式下，男同/男性/露屌不触发屏蔽提示条。
     final isGay = StorageService.isGayMode();
     final blockedHits = StorageService.getBlockTags()
-        .where((t) => _userTags.containsKey(t) && (!isGay || !kGayTags.contains(t)))
+        .where((t) {
+          if (!_userTags.containsKey(t)) return false;
+          final score = _userTags[t] is num
+              ? (_userTags[t] as num).toInt()
+              : (int.tryParse('${_userTags[t]}') ?? 0);
+          if (score < 0) return false;
+          return !isGay || !kGayTags.contains(t);
+        })
         .toList();
     final showBlockBanner = blockedHits.isNotEmpty;
 

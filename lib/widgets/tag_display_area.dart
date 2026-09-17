@@ -26,7 +26,13 @@ class TagDisplayArea extends StatelessWidget {
     if (tags.isEmpty) return const SizedBox.shrink();
     final isGay = gayMode ?? StorageService.isGayMode();
     final visibleEntries = tags.entries
-        .where((e) => isGay || !kGayTags.contains(e.key))
+        .where((e) {
+          final score = e.value is num
+              ? e.value.toInt()
+              : (int.tryParse('${e.value}') ?? 0);
+          if (score < 0) return false;
+          return isGay || !kGayTags.contains(e.key);
+        })
         .toList();
     if (visibleEntries.isEmpty) return const SizedBox.shrink();
 

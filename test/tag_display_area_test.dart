@@ -14,16 +14,25 @@ void main() {
 
       expect(find.byIcon(Icons.star), findsOneWidget);
       expect(find.text('二次元'), findsOneWidget);
-      expect(find.text('自拍'), findsOneWidget);
+      expect(find.text('自拍'), findsNothing);
     });
 
     testWidgets('未命中高亮集则无星标', (tester) async {
       await tester.pumpWidget(wrap(TagDisplayArea(
         highlights: {},
-        tags: {'自拍': -1},
+        tags: {'二次元': 1},
       )));
 
       expect(find.byIcon(Icons.star), findsNothing);
+      expect(find.text('二次元'), findsOneWidget);
+    });
+
+    testWidgets('score < 0 的标签不作为标签展示', (tester) async {
+      await tester.pumpWidget(wrap(const TagDisplayArea(
+        tags: {'自拍': -1, '无关内容': -2},
+      )));
+      expect(find.text('自拍'), findsNothing);
+      expect(find.text('无关内容'), findsNothing);
     });
 
     testWidgets('空标签渲染为空', (tester) async {
@@ -33,14 +42,14 @@ void main() {
   });
 
   group('TagDisplayArea Gay 模式过滤', () {
-    testWidgets('默认/关闭 Gay 模式时过滤男同/男性/露屌', (tester) async {
+    testWidgets('默认/关闭 Gay 模式时过滤男同/男性/露屌，且过滤 score < 0', (tester) async {
       await tester.pumpWidget(wrap(const TagDisplayArea(
         tags: {'二次元': 1, '男同': 1, '男性': 1, '露屌': 1, '自拍': -1},
         gayMode: false,
       )));
 
       expect(find.text('二次元'), findsOneWidget);
-      expect(find.text('自拍'), findsOneWidget);
+      expect(find.text('自拍'), findsNothing);
       expect(find.text('男同'), findsNothing);
       expect(find.text('男性'), findsNothing);
       expect(find.text('露屌'), findsNothing);
