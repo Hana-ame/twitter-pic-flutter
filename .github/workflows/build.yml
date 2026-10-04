@@ -6,6 +6,21 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# ECH 共享库的来源仓库与版本钉子。
+#
+# 原来这里没有依赖源的概念：ECH 代码是仓库内 ech-proxy/ 的一份源码副本
+# （2026-09-10 的快照），与上游 ech-proxy 仓库没有任何 git 关系。现改为
+# 直接 checkout 上游仓库，从它的 flutter/ 入口编译。
+#
+# 钉子用 commit SHA 而不是 branch 或 tag：
+#   - branch 会随时间漂移，发出去的 APK 无法复现；
+#   - ech-proxy 侧的 flutter/ 入口目前只存在于 feat/flutter-c-shared-entry
+#     分支，还没合并、也还没有 tag，用分支名会随那边 rebase 失效；
+#   - SHA 精确指向「谁在什么时候构建了什么」。等 ech-proxy 那边给 flutter/ 入口
+#     发了 tag，把这一行换成 tag 名即可（tag 同样是固定 SHA，只是更可读）。
+env:
+  ECH_PROXY_REF: 3ae5c1c98b5aebade394307d41a89812e38d77b1
+
 # 同一个 ref 的新一轮构建取消上一轮：连续推 tag 曾让两个 7 分钟的构建并行
 # 跑完（v0.5.6 有两次 cancelled 记录）。不同 ref 之间互不影响，所以不会
 # 因为推了 v0.5.10 就打断正在跑的 v0.5.9。
@@ -89,17 +104,39 @@ jobs:
         with:
           go-version: stable
 
+      # ECH 共享库不再用仓库内的 ech-proxy/ 源码副本（那是 2026-09-10 的快照，
+      # 与上游 ech-proxy 仓库没有任何 git 关系，两边各自演化），改为直接
+      # checkout ech-proxy 仓库并从它的 flutter/ 入口编译。
+      #
+      # 版本钉在 ECH_PROXY_REF 上：默认用主干的 tag v1.2.1（可读、可回退），
+      # 需要试新东西时改成 commit SHA。锁文件里记着 SHAs，若 ref 是 SHA 则
+      # 这里一并覆盖，保证「谁在什么时候构建了什么」可追溯。
+      - name: Checkout ech-proxy
+        uses: actions/checkout@v4
+        with:
+          repository: Hana-ame/ech-proxy
+          ref: ${{ env.ECH_PROXY_REF }}
+          path: ech-proxy-src
+
       - name: Build ECH shared library (arm64)
         run: |
           NDK_VERSION="r27"
-          cd ech-proxy
+          cd ech-proxy-src
+          # 契约先跑：缺导出符号时编译照样成功，但真机上 Dart 侧
+          # lookupFunction 会抛 ArgumentError，App 启动即崩且看不出是 Go 侧问题。
+          go test ./flutter/
           CGO_ENABLED=1 \
           GOOS=android \
           GOARCH=arm64 \
           CC=aarch64-linux-android21-clang \
           go build -buildmode=c-shared -ldflags="-s -w" \
-          -o /tmp/libechproxy.so ./cmd/ech-flutter-shared/
+          -o /tmp/libechproxy.so ./flutter/
           /tmp/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy --strip-unneeded /tmp/libechproxy.so
+          # 编译完再验一次符号：go test 是静态检查，这里验的是真正产出的二进制。
+          for s in ECHInitWithBootstrap ECHSetDohURL StartProxy StopProxy GetProxyPort IsEchReady FreeCString ECHInitReady ECHInitLastError ECHGetLogCount ECHGetLog ECHInit; do
+            nm -D --defined-only /tmp/libechproxy.so | grep -qw "$s" || { echo "::error::产物缺少 FFI 导出符号 $s"; exit 1; }
+          done
+          echo "12/12 FFI 符号齐全"
           ls -lh /tmp/libechproxy.so
 
       - name: Setup Flutter
@@ -239,10 +276,18 @@ jobs:
         with:
           go-version: stable
 
+      - name: Checkout ech-proxy
+        uses: actions/checkout@v4
+        with:
+          repository: Hana-ame/ech-proxy
+          ref: ${{ env.ECH_PROXY_REF }}
+          path: ech-proxy-src
+
       - name: Build ECH shared library (windows)
         run: |
-          Push-Location ech-proxy
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll ./cmd/ech-flutter-shared/
+          Push-Location ech-proxy-src
+          go test ./flutter/
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll ./flutter/
           Pop-Location
 
       - name: Setup Flutter
