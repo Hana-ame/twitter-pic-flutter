@@ -135,6 +135,9 @@ class ProgressiveDiskCache {
     if (_initializing) return;
     _initializing = true;
     try {
+      // getApplicationSupportDirectory 依赖 binding。单测里没起 binding 时它
+      // 会抛，那正好落进下面的 catch 降级成纯内存——不额外判，免得为了测试
+      // 引入一条与真实运行不同的分支。
       final base = _dirOverride ?? await getApplicationSupportDirectory();
       final dir = Directory('${base.path}/$dirName');
       if (!await dir.exists()) {

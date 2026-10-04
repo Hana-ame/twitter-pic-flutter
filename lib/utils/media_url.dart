@@ -69,35 +69,29 @@ class MediaUrl {
 
   /// 把 URL 的 `name=` 参数换成 [name]。**只动这一个参数**，其余原样保留。
   ///
-  /// 返回 null 表示这个 URL 改不动（解析失败、或没有 `name=` 参数需要替换），
-  /// 调用方应回退到原 URL —— 不要退化成"整条 query 重写"，那会连 `token=`
-  /// 一起弄丢，而 token 丢了 CDN 会 403（表现是"所有图都加载失败"）。
+  /// 返回 null 表示这个 URL 改不动（解析失败、或 query 里有重复键），调用方应
+  /// 回退到原 URL —— 不要退化成"整条 query 重写"，那会连 `token=` 一起弄丢，
+  /// 而 token 丢了 CDN 会 403（表现是"所有图都加载失败"）。
   ///
   /// 刻意**不**自己拼 `?name=xxx`：现有 URL 可能带 `?format=jpg&name=orig`
-  /// （无 `?` 只有 `&`）、或什么都不带。三个分支分别处理，且都不动其他参数。
+  /// （无 `?` 只有 `&`）、或什么都不带。三种形态分别处理，且都不动其他参数。
   static String? rewriteName(String url, String name) {
     final uri = Uri.tryParse(url);
     if (uri == null) return null;
 
-    final hadName = uri.queryParameters.containsKey('name');
-    final params = <String, String>{
-      ...uri.queryParameters,
-      'name': name,
-    };
-    // queryParameters 会把重复参数压成一个（取最后一个）。twimg 的 URL 里
+    // queryParameters 会把重复键压成一个（取最后一个）。twimg 的 URL 里
     // 重复键只可能出现在 token 这类签名参数上，丢掉前一个会直接 403，
     // 所以碰到重复键就不改这个 URL —— 宁可继续用原图，也不要弄出坏签名。
     if (_hasDuplicateQueryKey(uri)) return null;
 
-    final query = Uri(queryParameters: params).query;
-    // 没有 query 段时不能拼出裸的 `?`：Uri(queryParameters:) 对空 map 会
-    // 产出空串，这里显式判一次，避免得到 `...jpg?` 这种畸形 URL。
-    if (query.isEmpty) return null;
-
-    final rebuilt = uri.replace(query: query);
-    // name 原本就没有、且这个 URL 是纯 path（无 query）时，rewriteName 会
-    // 凭空加一段 query。这类 URL（极少见）交给调用方回退原图。
-    if (!hadName && uri.query.isEmpty) return null;
+    final params = <String, String>{
+      ...uri.queryParameters,
+      'name': name,
+    };
+    final rebuilt = uri.replace(queryParameters: params);
+    // params 里一定含 name，所以 query 段不会为空；这里仍判一次是为了防止
+    // 未来有人改动 params 后产出 `...jpg?` 这种畸形 URL 而没人发现。
+    if (rebuilt.query.isEmpty) return null;
     return rebuilt.toString();
   }
 
