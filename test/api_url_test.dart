@@ -97,7 +97,7 @@ void main() {
     await api.getEmojis('alice');
     await api.voteUpEmoji('alice', 'x');
     await api.getRanking();
-    await api.createMetaData('alice');
+    await api.createMetaData('alice', tags: const {'原创': 1});
 
     expect(
       adapter.seen.map((o) => '${o.method} ${o.uri.path}').toList(),
@@ -196,7 +196,7 @@ void main() {
     await api.getTags('alice');
     await api.getEmojis('alice');
     await api.getRanking();
-    await api.createMetaData('alice');
+    await api.createMetaData('alice', tags: const {'原创': 1});
 
     for (final o in adapter.seen) {
       // 少了斜杠会变成 'https://x.moonchan.xyz/api/twitteralice.json.gz'。
@@ -236,5 +236,69 @@ void main() {
 
     a.dispose();
     b.dispose();
+  });
+
+  // ─── 添加用户必须带标签（v0.6.3）────────────────────────────────────────
+  //
+  // 服务端 `POST /api/twitter/:username` 的「首次添加」分支（两个 flag 都不传）
+  // 会解 body：解不出 → 400，解出空 map → 400「你没加tag，这是不行的」。
+  // 实测生产：无 body 直接 POST → 400 {"error":"EOF"}。
+  //
+  // 所以这条约束由**必填命名参数**在编译期保证，并额外在本地拦一次空标签，
+  // 不白跑一次往返。
+
+  group('createMetaData：标签必填契约', () {
+    test('首次添加带标签：POST 到 :username 且不传任何 flag', () async {
+      await api.createMetaData('alice', tags: const {'原创': 1});
+      final o = adapter.seen.last;
+      expect(o.method, 'POST');
+      expect(o.uri.path, '/api/twitter/alice');
+      // 两个 flag 都不能带：带了会走另外的分支（do_not_tag / do_not_renew）
+      expect(o.uri.queryParameters, isEmpty,
+          reason: '首次添加不能带 flag：${o.uri.query}');
+    });
+
+    test('首次添加带空标签：本地就抛 ArgumentError，不发请求', () async {
+      final before = adapter.seen.length;
+      await expectLater(
+        api.createMetaData('alice', tags: const {}),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(adapter.seen.length, before,
+          reason: '空标签服务端必然 400，不该浪费一次网络往返');
+    });
+
+    test('do_not_tag 分支允许空标签（只重抓数据，与标签无关）', () async {
+      await api.createMetaData('alice', tags: const {}, doNotTag: true);
+      final o = adapter.seen.last;
+      expect(o.method, 'POST');
+      expect(o.uri.queryParameters['do_not_tag'], 'true');
+    });
+
+    test('do_not_renew 分支：带标签补标签，不重抓', () async {
+      await api.createMetaData('alice',
+          tags: const {'女性': 1}, doNotRenew: true);
+      final o = adapter.seen.last;
+      expect(o.uri.path, '/api/twitter/alice');
+      expect(o.uri.queryParameters['do_not_renew'], 'true');
+      expect(o.uri.queryParameters.containsKey('do_not_tag'), isFalse);
+    });
+
+    test('带标签时 body 真的发出去了（不是空 body）', () async {
+      await api.createMetaData('alice', tags: const {'女性': 1});
+      // Dio 会把 Map 序列化成 JSON 字符串放进 data。
+      expect(adapter.seen.last.data, isNotNull,
+          reason: '标签必须真发出去，否则服务端拿到空 map 照样 400');
+    });
+
+    test('写入成功后清掉该用户的元数据缓存', () async {
+      await api.getMetaData('carol', forceRefresh: true);
+      final before = adapter.seen.length;
+      await api.createMetaData('carol', tags: const {'原创': 1});
+      // 缓存被清了，所以再读一次必须真的发请求。
+      await api.getMetaData('carol');
+      expect(adapter.seen.length, before + 2,
+          reason: '写操作后缓存应失效，重新读要发新请求');
+    });
   });
 }

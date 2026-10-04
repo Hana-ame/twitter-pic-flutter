@@ -9,6 +9,7 @@ import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../widgets/proxy_avatar.dart';
 import '../widgets/search_bar.dart';
+import '../widgets/tag_selector_modal.dart';
 import 'tag_user_list_screen.dart';
 import 'user_detail_screen.dart';
 
@@ -693,15 +694,26 @@ class _AddUserTile extends StatefulWidget {
 
 class _AddUserTileState extends State<_AddUserTile> {
   bool _isClicked = false;
+  bool _submitting = false;
+  bool _showTagPicker = false;
 
   @override
   void didUpdateWidget(_AddUserTile old) {
     super.didUpdateWidget(old);
-    if (widget.username != old.username) _isClicked = false;
+    if (widget.username != old.username) {
+      _isClicked = false;
+      _showTagPicker = false;
+    }
   }
 
+  /// 第一步：校验昵称，然后**先弹标签选择**。
+  ///
+  /// 以前这一步直接就发请求了（`createMetaData(username)` 不带任何参数），
+  /// 而服务端首次添加分支要求必须带标签，所以必然 400——用户看到的是
+  /// 「添加失败: HTTP 400: 你没加tag，这是不行的」。现在把这一步前移到
+  /// 本地：选完标签再提交，提交一次成功。
   void _onClick() {
-    if (_isClicked) return;
+    if (_isClicked || _submitting) return;
     final regex = RegExp(r'^[a-zA-Z0-9_]*$');
     if (!regex.hasMatch(widget.username)) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -709,49 +721,86 @@ class _AddUserTileState extends State<_AddUserTile> {
       );
       return;
     }
-    widget.api.createMetaData(widget.username).then((_) {
+    setState(() => _showTagPicker = true);
+  }
+
+  /// 第二步：带着标签提交。
+  Future<void> _submitWithTags(Map<String, int> tags) async {
+    if (tags.isEmpty) return; // modal 已禁用空提交，这里只是兜底
+    setState(() {
+      _submitting = true;
+      _showTagPicker = false;
+    });
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在添加...')));
+    try {
+      await widget.api.createMetaData(widget.username, tags: tags);
       if (!mounted) return;
       widget.onAdded?.call();
       setState(() => _isClicked = true);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已添加 @${widget.username}')));
-    }).catchError((e) {
+      messenger.showSnackBar(
+          SnackBar(content: Text('已添加 @${widget.username}')));
+    } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('添加失败: $e')));
-    });
+      messenger.showSnackBar(SnackBar(content: Text('添加失败: $e')));
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      child: Card(
-        elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: BorderSide(color: Colors.green.withValues(alpha: 0.3)),
-        ),
-        child: ListTile(
-          dense: true,
-          leading: CircleAvatar(
-            radius: 18,
-            backgroundColor: Colors.green.withValues(alpha: 0.1),
-            child: Icon(
-              _isClicked ? Icons.check : Icons.person_add,
-              size: 18,
-              color: _isClicked ? Colors.green : Colors.green.shade700,
+    return Stack(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+              side: BorderSide(color: Colors.green.withValues(alpha: 0.3)),
+            ),
+            child: ListTile(
+              dense: true,
+              leading: CircleAvatar(
+                radius: 18,
+                backgroundColor: Colors.green.withValues(alpha: 0.1),
+                child: Icon(
+                  _isClicked
+                      ? Icons.check
+                      : (_submitting ? Icons.hourglass_top : Icons.person_add),
+                  size: 18,
+                  color: _isClicked ? Colors.green : Colors.green.shade700,
+                ),
+              ),
+              title: Text(
+                _isClicked
+                    ? '已添加 @${widget.username}'
+                    : '添加 @${widget.username}',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: _isClicked ? Colors.green : Colors.green.shade700,
+                ),
+              ),
+              subtitle: _isClicked
+                  ? null
+                  : const Text('需选择标签后才能添加',
+                      style: TextStyle(fontSize: 11)),
+              onTap: (_isClicked || _submitting) ? null : _onClick,
             ),
           ),
-          title: Text(
-            _isClicked ? '已添加 @${widget.username}' : '添加 @${widget.username}',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-              color: _isClicked ? Colors.green : Colors.green.shade700,
-            ),
-          ),
-          onTap: _isClicked ? null : _onClick,
         ),
-      ),
+        // 添加用户必须带标签：点击后先选标签，再带标签提交。
+        if (_showTagPicker)
+          TagSelectorModal(
+            isOpen: true,
+            requireAtLeastOneTag: true,
+            username: widget.username,
+            onClose: () => setState(() => _showTagPicker = false),
+            onConfirm: _submitWithTags,
+          ),
+      ],
     );
   }
 }

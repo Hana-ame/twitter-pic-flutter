@@ -113,7 +113,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     if (_updating) return;
     setState(() => _updating = true);
     try {
-      await _api.createMetaData(_username);
+      // 「更新数据」= 只重抓元数据、**不动标签**：走 do_not_tag 分支。
+      // 这一分支与标签无关，所以 tags 传空——但服务端要求该用户已存在
+      // （否则 403）。
+      await _api.createMetaData(_username, tags: const {}, doNotTag: true);
       // 重新拉取最新元数据
       final refreshed = await _api.getMetaData(_username, t: DateTime.now().toIso8601String(), forceRefresh: true);
       if (mounted) {
@@ -139,7 +142,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       _savingTags = true;
     });
     try {
-      await _api.createMetaData(_username, body: tags, doNotTag: false, doNotRenew: true);
+      await _api.createMetaData(_username, tags: tags, doNotTag: false, doNotRenew: true);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('标签已保存')));
       }

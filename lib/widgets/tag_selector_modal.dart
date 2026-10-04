@@ -23,6 +23,14 @@ class TagSelectorModal extends StatefulWidget {
   final String username;
   final Map<String, dynamic> initialValues;
 
+  /// 是否要求"至少一个标签"才能确认。
+  ///
+  /// **添加用户的场景必须为 true**：服务端首次添加分支会拒绝空标签
+  /// （`400「你没加tag，这是不行的」`），让用户先选标签再提交，比提交后
+  /// 弹一句服务端报错友好得多。改已有账号的标签时保持 false——那时允许
+  /// 全不选（等于撤掉全部标签）。
+  final bool requireAtLeastOneTag;
+
   const TagSelectorModal({
     super.key,
     required this.isOpen,
@@ -30,6 +38,7 @@ class TagSelectorModal extends StatefulWidget {
     required this.onConfirm,
     required this.username,
     this.initialValues = const {},
+    this.requireAtLeastOneTag = false,
   });
 
   @override
@@ -217,8 +226,15 @@ class _TagSelectorModalState extends State<TagSelectorModal> {
                         TextButton(onPressed: widget.onClose, child: const Text('取消')),
                         const SizedBox(width: 8),
                         ElevatedButton(
-                          onPressed: () => widget.onConfirm(Map.from(_tagScores)),
-                          child: const Text('确认保存'),
+                          // 添加用户时禁掉空提交：服务端一定拒，别让用户
+                          // 白等一次往返才看到报错。
+                          onPressed: widget.requireAtLeastOneTag &&
+                                  _tagScores.isEmpty
+                              ? null
+                              : () => widget.onConfirm(Map.from(_tagScores)),
+                          child: Text(widget.requireAtLeastOneTag
+                              ? '确认保存（至少选一个标签）'
+                              : '确认保存'),
                         ),
                       ],
                     ),

@@ -250,12 +250,45 @@ class TwitterApi {
     return UserMetaData.fromJson(_asJsonMap(resp.data, 'getMetaData($username)'));
   }
 
+  /// 添加/更新一个用户的元数据。
+  ///
+  /// ── 为什么 [tags] 是必填、而不是可选 ──────────────────────────────────────
+  ///
+  /// 服务端 `POST /api/twitter/:username` 在**不带** `do_not_tag` /
+  /// `do_not_renew` 时（即"首次添加"这条分支）会：
+  ///  1. 已经有标签就返回 `200 {"message":"already has tags, skipped"}`；
+  ///  2. 解 body 失败 → 400；解出**空 map** → 400 `"你没加tag，这是不行的"`。
+  ///
+  /// 也就是说**不带标签必然被拒**。实测生产：
+  /// ```
+  /// POST /api/twitter/<user>（无 body）→ 400 {"error":"EOF"}
+  /// ```
+  /// 所以这里用必填命名参数把这条约束**编译进调用点**——以前两处
+  /// `createMetaData(username)` 光秃秃地调用，服务端只会回一句
+  /// 「你没加tag」，用户看到的是「添加失败: HTTP 400」。
+  ///
+  /// [tags] 为空会在本地先抛 [ArgumentError]，不白跑一次网络请求。
+  ///
+  /// 三个分支（服务端语义，别搞混）：
+  /// | 参数 | 语义 |
+  /// |---|---|
+  /// | 默认（都不传） | **首次添加**：必须有标签，写完排队抓取 |
+  /// | `doNotTag: true` | 只重抓数据，不动标签（用户必须已存在，否则 403） |
+  /// | `doNotRenew: true` | 只补标签，不重抓（用于给已有账号加标签） |
   Future<void> createMetaData(
     String username, {
-    Map<String, dynamic>? body,
-    bool doNotTag = true,
+    required Map<String, int> tags,
+    bool doNotTag = false,
     bool doNotRenew = false,
   }) async {
+    // 本地先拦：空标签服务端一定 400，没必要浪费一次往返。
+    if (!doNotTag && !doNotRenew && tags.isEmpty) {
+      throw ArgumentError(
+        '添加用户必须带标签：服务端首次添加分支会拒绝空标签'
+        '（400「你没加tag，这是不行的」）。',
+      );
+    }
+    final body = tags.isEmpty ? null : tags;
     await _dio.post(
       '/$username',
       data: body,
