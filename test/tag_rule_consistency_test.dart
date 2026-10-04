@@ -83,9 +83,12 @@ void main() {
   setUp(() async {
     tmpDir = await Directory.systemTemp.createTemp('tagrules');
     PathProviderPlatform.instance = _FakePathProvider(tmpDir.path);
-    await StorageService.ensureInitialized();
-    // 每个用例从「什么都没配」开始，避免静态存储串味。
-    await StorageService.clearAll();
+    // **必须用 resetForTests，不能用 clearAll + ensureInitialized。**
+    // _loaded 是进程级 static，clearAll 不会把它置回 false，所以第二次
+    // ensureInitialized 会直接 return，_file 仍指着**上一个测试文件**留下的
+    // 临时目录（那个目录已被 tearDown 删掉）—— 于是写入落到不存在的路径上。
+    // 单独跑本文件没事，多文件一起跑就出问题：这是典型的「单跑绿、整包红」。
+    StorageService.resetForTests();
     await StorageService.ensureInitialized();
   });
 

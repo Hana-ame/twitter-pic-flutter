@@ -129,6 +129,9 @@ void main() {
     tmpDir = await Directory.systemTemp.createTemp('addflow');
     PathProviderPlatform.instance = _FakePathProvider(tmpDir.path);
     TwitterApi.resetForTests();
+    // resetForTests 而非只 ensureInitialized：_loaded 是进程级 static，
+    // 不重置就会沿用上一个测试文件留下的 _file（那个临时目录已被删掉）。
+    StorageService.resetForTests();
     await StorageService.ensureInitialized();
   });
 

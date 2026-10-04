@@ -32,8 +32,10 @@ void main() {
   setUp(() async {
     tmpDir = await Directory.systemTemp.createTemp('blocktags');
     PathProviderPlatform.instance = _FakePathProvider(tmpDir.path);
-    await StorageService.ensureInitialized();
-    await StorageService.clearAll();
+    // 用 resetForTests：_loaded 是进程级 static，clearAll 不会把它置回
+    // false，第二次 ensureInitialized 会直接 return，导致 _file 仍指着上一个
+    // 测试文件留下的临时目录（已被 tearDown 删掉）。单跑绿、整包红。
+    StorageService.resetForTests();
     await StorageService.ensureInitialized();
   });
 
