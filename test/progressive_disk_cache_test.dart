@@ -22,7 +22,12 @@ void main() {
 
   tearDown(() async {
     ProgressiveDiskCache.resetForTests();
-    if (await tmp.exists()) await tmp.delete(recursive: true);
+    // 不先 exists() 再 delete()（TOCTOU：两步之间目录可能已被删）。
+    try {
+      await tmp.delete(recursive: true);
+    } on FileSystemException {
+      // 已经不在了：正是我们要的结果。
+    }
   });
 
   Uint8List bytesOf(List<int> v) => Uint8List.fromList(v);

@@ -25,7 +25,14 @@ void main() {
 
   tearDown(() async {
     StorageService.resetForTests();
-    if (await tmp.exists()) await tmp.delete(recursive: true);
+    // 不先 exists() 再 delete()：那是 TOCTOU——两步之间目录可能已被别处
+    // 删掉，delete 就抛 PathNotFoundException。目录本来就是本用例独占建的，
+    // 直接删；已经被删掉也无所谓。
+    try {
+      await tmp.delete(recursive: true);
+    } on FileSystemException {
+      // 已经不在了：正是我们要的结果。
+    }
   });
 
   group('StorageService（storage.json 持久化）', () {
