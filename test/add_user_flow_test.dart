@@ -137,6 +137,7 @@ void main() {
 
   tearDown(() async {
     TwitterApi.resetForTests();
+    StorageService.resetForTests();
     if (tmpDir.existsSync()) tmpDir.deleteSync(recursive: true);
   });
 

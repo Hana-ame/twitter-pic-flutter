@@ -56,6 +56,17 @@ class _TagAdapter implements HttpClientAdapter {
 final _openApis = <TwitterApi>[];
 final _openProxies = <ProxyManager>[];
 
+/// 找出**标签 chip 上的那个** #X 文本，排除 AppBar 标题。
+///
+/// TagUserListScreen 的 AppBar 标题本身就是 `#<被查标签>`，所以直接
+/// find.text('#自拍') 必然命中标题 —— 断言 findsNothing 就会误报成
+/// 「chip 被展示了」。这是本文件第一版犯过的错（CI 实测：
+/// Expected: no matching candidates / Actual: Found 1 widget with text "#自拍"，
+/// 那是标题不是 chip）。
+///
+/// 区分办法：chip 渲染在 Wrap 里，AppBar 标题不在。
+Finder chipText(String tag) =>
+    find.descendant(of: find.byType(Wrap), matching: find.text('#' + tag));
 Widget host(String body) {
   final api = TwitterApi(adapter: _TagAdapter(body));
   final proxy = ProxyManager();
@@ -111,7 +122,10 @@ void main() {
 
   tearDown(() async {
     _releaseAll();
+    // await clearAll 是必需的：_write() 里的 _flush() 是 fire-and-forget，
+    // 不等它写完就删目录，那个 pending future 永远完不成，文件卡到超时。
     await StorageService.clearAll();
+    StorageService.resetForTests();
     if (tmpDir.existsSync()) tmpDir.deleteSync(recursive: true);
   });
 
@@ -155,8 +169,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(find.text('#自拍'), findsNothing,
-          reason: 'score<0 的标签全局不展示');
+      expect(chipText('自拍'), findsNothing,
+          reason: 'score<0 的标签全局不展示（只看 chip，不含 AppBar 标题）');
     },
   );
 
