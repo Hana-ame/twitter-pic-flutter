@@ -50,16 +50,33 @@ class _TagAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+/// 每建一个 TwitterApi / ProxyManager 都要登记，tearDown 里统一释放。
+/// 不释放的话，Dio 的内部定时器会一直活着，flutter_test 认为文件没跑完，
+/// 整个文件卡到超时（CI 上实测 180s rc=124）。
+final _openApis = <TwitterApi>[];
+final _openProxies = <ProxyManager>[];
+
 Widget host(String body) {
   final api = TwitterApi(adapter: _TagAdapter(body));
+  final proxy = ProxyManager();
+  _openApis.add(api);
+  _openProxies.add(proxy);
   return MaterialApp(
     home: TagUserListScreen(
       tag: '自拍',
       api: api,
-      proxy: ProxyManager(),
+      proxy: proxy,
       onSelectUser: (_) {},
     ),
   );
+}
+
+void _releaseAll() {
+  for (final a in _openApis) {
+    a.dispose();
+  }
+  _openApis.clear();
+  _openProxies.clear();
 }
 
 /// 造一个带完整标签集的 by=tag 响应。
@@ -93,6 +110,7 @@ void main() {
   });
 
   tearDown(() async {
+    _releaseAll();
     await StorageService.clearAll();
     if (tmpDir.existsSync()) tmpDir.deleteSync(recursive: true);
   });

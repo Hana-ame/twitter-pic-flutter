@@ -46,7 +46,8 @@ void main() {
 
     await tester.pumpWidget(
         const MaterialApp(home: TagControllerScreen()));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('无关内容'), findsNothing,
         reason: '用户已经明确清空了，默认标签不该被塞回来');
@@ -59,7 +60,8 @@ void main() {
     // 注意：这里**不写** tag-rules，模拟全新安装。
     await tester.pumpWidget(
         const MaterialApp(home: TagControllerScreen()));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('无关内容'), findsOneWidget,
         reason: '键不存在 = 从没配过，默认屏蔽规则应当生效');
@@ -71,7 +73,8 @@ void main() {
 
     await tester.pumpWidget(
         const MaterialApp(home: TagControllerScreen()));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('广告'), findsOneWidget);
     expect(find.text('无关内容'), findsNothing,
