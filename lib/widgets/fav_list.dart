@@ -223,6 +223,15 @@ class _FavTileState extends State<_FavTile> {
           );
         }
         final info = snapshot.data?.accountInfo;
+        // 收藏夹此前**完全不过滤**（连用户名屏蔽都没应用）——用户屏蔽了某个
+        // 账号，它照样出现在收藏里。统一走 shouldHideUser，与其它列表同口径。
+        //
+        // 这里只能拿到 _meta.accountInfo.tags：收藏项是先拉元数据再决定显不
+        // 显示的，所以标签级规则（屏蔽标签 / Gay 模式）在这一步才有数据可用。
+        if (StorageService.shouldHideUser(
+            widget.username, snapshot.data?.accountInfo.tags ?? const {})) {
+          return const SizedBox.shrink();
+        }
         return ListTile(
           leading: ProxyAvatar(
             url: info?.avatar,

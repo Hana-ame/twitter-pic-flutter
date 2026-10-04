@@ -194,8 +194,7 @@ class _TagUserListScreenState extends State<TagUserListScreen> {
     // 过滤掉，从详情页点标签 X 进来却原样列出。Gay 模式存在的全部意义就是
     // 「别让我看到那些账号」，而这条正是漏掉它的那条路。
     final visible = _users
-        .where((u) => !StorageService.isBlocked(u.username))
-        .where((u) => StorageService.matchesGayMode(u.tags))
+        .where((u) => !StorageService.shouldHideUser(u.username, u.tags))
         .toList();
     if (visible.isEmpty) {
       return RefreshIndicator(

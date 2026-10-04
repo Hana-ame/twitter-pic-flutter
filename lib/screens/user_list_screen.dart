@@ -201,9 +201,9 @@ class UserListScreenState extends State<UserListScreen> {
             onRetry: _retrySearch,
           );
         }
+        // 统一走 shouldHideUser（权威判定在 StorageService 里），不再各抄一份。
         final results = outcome.users
-            .where((u) => !StorageService.isBlocked(u.username))
-            .where((u) => StorageService.matchesGayMode(u.tags))
+            .where((u) => !StorageService.shouldHideUser(u.username, u.tags))
             .toList();
         return ListView(
           children: [
@@ -328,8 +328,9 @@ class UserListScreenState extends State<UserListScreen> {
             );
           }
           final u = _users[i];
-          if (StorageService.isBlocked(u.username)) return const SizedBox.shrink();
-          if (!StorageService.matchesGayMode(u.tags)) return const SizedBox.shrink();
+          if (StorageService.shouldHideUser(u.username, u.tags)) {
+            return const SizedBox.shrink();
+          }
           return _UserTile(
             key: ValueKey(u.username),
             username: u.username,

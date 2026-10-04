@@ -50,9 +50,18 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
     // 它又回来了，而且**再也删不掉**（每次开页面都从默认值重新长出来）。
     // 更别扭的是这个复活只发生在 UI 上——_save() 只在增删时调用，所以
     // storage 里可能还是空列表，界面上却一直显示着「已屏蔽 (1)」。
-    _block = rules.containsKey('block')
-        ? storedBlock
-        : _kDefaultBlockTags.toList();
+    //
+    // 出厂值**必须落盘**：只把它显示出来而不写进 storage，界面上写着
+    // 「已屏蔽 (1)」而规则其实并不存在，用户会以为功能坏了。
+    if (rules.containsKey('block')) {
+      _block = storedBlock;
+    } else {
+      // 首次进入：给一份出厂值并**立即落盘**。只显示不落盘的话，界面上写着
+      // 「已屏蔽 (1)」而 storage 里根本没有这条规则，用户看不到任何效果，
+      // 会以为功能坏了；而且下次进来又会重新「复活」一遍。
+      _block = _kDefaultBlockTags.toList();
+      _save();
+    }
   }
 
   void _save() {
@@ -249,8 +258,10 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              '添加后，详情页中命中的标签会特殊显示；'
-              '用户标签命中"屏蔽"时页面顶部会给出提示。',
+              '高亮：命中的标签加星标强调，详情页与标签列表都会显示。\n'
+              '屏蔽：账号带这些标签时，在用户列表 / 标签列表 / 收藏夹里不再出现；'
+              '直接打开其详情页时，页面顶部仍会给出提示条（方便确认是哪个标签命中的）。\n'
+              'Gay 模式开启时不按屏蔽标签过滤，只按 Gay 标签取反筛选。',
               style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 20),

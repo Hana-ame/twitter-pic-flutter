@@ -375,20 +375,12 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       imageUrls.add(it.url);
     }
     final hasMore = !_showAll && timeline.length > _mediaLimit;
-    // 屏蔽规则生效：用户标签命中“标签管理→屏蔽”列表时给提示条。
-    // 标签挂在用户级别（timeline 条目无 tag），故只提示、不自动藏内容。
-    // Gay 模式下，男同/男性/露屌不触发屏蔽提示条。
-    final isGay = StorageService.isGayMode();
-    final blockedHits = StorageService.getBlockTags()
-        .where((t) {
-          if (!_userTags.containsKey(t)) return false;
-          final score = _userTags[t] is num
-              ? (_userTags[t] as num).toInt()
-              : (int.tryParse('${_userTags[t]}') ?? 0);
-          if (score < 0) return false;
-          return !isGay || !kGayTags.contains(t);
-        })
-        .toList();
+    // 屏蔽规则生效：用户标签命中「标签管理→屏蔽」列表时给提示条。
+    //
+    // 判定已收进 StorageService.blockTagHits —— 列表页现在用同一条规则真的把
+    // 这类账号藏起来了，这里只负责「告诉用户是哪个标签命中的」。两处必须共用
+    // 同一个判定：各写一份的话，列表藏了而详情不提示（或反过来）就又是一次漂移。
+    final blockedHits = StorageService.blockTagHits(_userTags);
     final showBlockBanner = blockedHits.isNotEmpty;
 
     return Scaffold(

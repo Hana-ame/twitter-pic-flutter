@@ -313,3 +313,47 @@ Set<String> get kGayTags => StorageService.getGayTags().toSet();
 /// `DEFAULT_GAY_TAGS` 是**同一份跨端契约**，改一处必须同步另一处，并由
 /// test/gay_tag_contract_test.dart 把两端字面量钉在一起。
 final Set<String> kDefaultGayTagsSet = kDefaultGayTags.toSet();
+
+  /// **命中「标签管理 → 屏蔽」标签列表**的那些标签名。
+  ///
+  /// 口径与详情页原有的提示条**逐条一致**（那是这条规则唯一的旧实现）：
+  ///   - 负分标签不算（负分在详情页本来就不展示，commit 6ea90cd），
+  ///     拿它当屏蔽依据会凭空多屏蔽一批人；
+  ///   - Gay 模式下，与 Gay 词表重叠的标签**不**触发 —— 否则开了 Gay 模式
+  ///     之后同一个账号会既被「Gay 模式」放行、又被「屏蔽标签」拦下，
+  ///     两条规则互相打架。
+  ///
+  /// 零分算命中，与旧实现一致（那里判的是 score < 0 才排除）。
+  ///
+  /// 原来这段逻辑内嵌在 user_detail_screen.dart 里，列表页拿不到；现在收到
+  /// 这里，两处共用同一个判定，避免再次各抄一份而漂移。
+  static List<String> blockTagHits(Map<String, dynamic> tags) {
+    final blocked = getBlockTags().toSet();
+    if (blocked.isEmpty) return const [];
+    final isGay = isGayMode();
+    final hits = <String>[];
+    tags.forEach((k, v) {
+      if (!blocked.contains(k)) return;
+      final score = v is num ? v.toInt() : (int.tryParse('$v') ?? 0);
+      if (score < 0) return;
+      if (isGay && kGayTags.contains(k)) return;
+      hits.add(k);
+    });
+    return hits;
+  }
+
+  /// 用户是否应当从列表中隐藏。**这是唯一权威判定，列表页一律调它。**
+  ///
+  /// 三条本地规则的合并口径：
+  ///   1. 按用户名屏蔽（`block-map`）；
+  ///   2. 命中屏蔽标签列表（用户带正权重的屏蔽标签）；
+  ///   3. Gay 模式匹配（关闭时排除带 Gay 标签的，开启时只留带 Gay 标签的）。
+  ///
+  /// 以前这三条是**各屏各抄一份**，于是慢慢漂移：Gay 模式就曾在标签反查页
+  /// 整条漏掉（同一个查询换个入口看到不同的用户集合）。把判定收在这里，
+  /// 新增列表时只需要调它，不再有机会漏。
+  static bool shouldHideUser(String username, Map<String, int> tags) {
+    if (isBlocked(username)) return true;
+    if (blockTagHits(tags).isNotEmpty) return true;
+    return !matchesGayMode(tags);
+  }
