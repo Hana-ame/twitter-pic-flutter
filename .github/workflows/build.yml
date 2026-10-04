@@ -101,18 +101,31 @@ jobs:
             fi
           done
 
-      # 覆盖率数据一直生成后就被丢弃了，无从追踪退化。先攒着：等基线稳定
-      # 了再加成门槛（现在不知道基线多少，直接加门槛只会挡住真改动）。
+      # 整包 + --coverage，这是判据。隔离跑某几个文件通过不算数：
+      # 挂死正是「单文件全过、合起来挂」才暴露的。
+      #
+      # 挂死真因已修（测试体内不再有真实文件 IO：setUp 不调
+      # ensureInitialized，_file 保持 null，_doFlush 首行即短路），
+      # 所以按最严格条件跑：带覆盖率、整包、必须全绿。
       - name: Run tests
         run: |
           cd /tmp/test_project
-          # 整包 + --coverage，这是真正的判据。
-          #
-          # 之前为了绕开挂死曾把 --coverage 去掉，那种「绿」不算数 ——
-          # 那只是换掉了触发条件。挂死的真因已经修掉（测试体内不再有
-          # 真实文件 IO：_file 保持 null，_doFlush 首行即短路），所以现在
-          # 按最严格的条件重验：带覆盖率、整包、必须全绿。
           flutter test --coverage
+
+      # 覆盖率数据要留存，否则无从追踪退化。现在**先攒着不加门槛**：
+      # 不知道基线多少就直接卡门槛，只会挡住真改动。等基线稳定再谈。
+      #
+      # （这一段此前被我误删：当时为绕开挂死连 --coverage 一起去掉了，
+      #    上传步骤成了死代码；--coverage 恢复后忘了补回来，属于删漏，
+      #   不是主动放弃。）
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: /tmp/test_project/coverage/lcov.info
+          if-no-files-found: warn
+          retention-days: 30
 
 
   build_android:
