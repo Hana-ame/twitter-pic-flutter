@@ -136,6 +136,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   Future<void> _handleConfirmTags(Map<String, int> tags) async {
     if (_savingTags) return;
+    // **记住旧值以便回滚。**
+    //
+    // 原来是乐观写：setState 里就把 _userTags 换成新值，await 之后失败
+    // 只弹一句「保存失败」而**不回滚**。于是页面在整个会话里都显示着一组
+    // 从未保存的标签 —— 刷新一下又变回旧的，用户会以为标签「自己丢了」。
+    // 更糟的是「屏蔽标签」提示横幅按 _userTags 计算，会拿不存在的标签去
+    // 触发封禁提示。
+    final prevTags = _userTags;
     setState(() {
       _showTagModal = false;
       _userTags = tags.map((k, v) => MapEntry(k, v as dynamic));
@@ -148,6 +156,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
     } catch (e) {
       if (!mounted) return;
+      // 回滚到保存前的标签，别让页面停在一个服务端并不认的状态。
+      setState(() => _userTags = prevTags);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存失败: $e')));
     } finally {
       if (mounted) setState(() => _savingTags = false);
@@ -365,20 +375,12 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       imageUrls.add(it.url);
     }
     final hasMore = !_showAll && timeline.length > _mediaLimit;
-    // 屏蔽规则生效：用户标签命中“标签管理→屏蔽”列表时给提示条。
-    // 标签挂在用户级别（timeline 条目无 tag），故只提示、不自动藏内容。
-    // Gay 模式下，男同/男性/露屌不触发屏蔽提示条。
-    final isGay = StorageService.isGayMode();
-    final blockedHits = StorageService.getBlockTags()
-        .where((t) {
-          if (!_userTags.containsKey(t)) return false;
-          final score = _userTags[t] is num
-              ? (_userTags[t] as num).toInt()
-              : (int.tryParse('${_userTags[t]}') ?? 0);
-          if (score < 0) return false;
-          return !isGay || !kGayTags.contains(t);
-        })
-        .toList();
+    // 屏蔽规则生效：用户标签命中「标签管理→屏蔽」列表时给提示条。
+    //
+    // 判定已收进 StorageService.blockTagHits —— 列表页现在用同一条规则真的把
+    // 这类账号藏起来了，这里只负责「告诉用户是哪个标签命中的」。两处必须共用
+    // 同一个判定：各写一份的话，列表藏了而详情不提示（或反过来）就又是一次漂移。
+    final blockedHits = StorageService.blockTagHits(_userTags);
     final showBlockBanner = blockedHits.isNotEmpty;
 
     return Scaffold(
@@ -663,18 +665,13 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             Navigator.push(
               context,
               MaterialPageRoute(
+                // 不再传 onSelectUser：标签页自己 push 详情页，返回键才能
+                // 一步回到这批标签结果。此前由本页用**自己的 context** push，
+                // 新详情页压在标签页之上，标签页被埋进栈里。
                 builder: (_) => TagUserListScreen(
                   tag: tag,
                   api: _api,
                   proxy: widget.proxy,
-                  onSelectUser: (userMeta) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => UserDetailScreen(profile: userMeta, proxy: widget.proxy),
-                      ),
-                    );
-                  },
                 ),
               ),
             );

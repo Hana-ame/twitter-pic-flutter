@@ -12,6 +12,28 @@ class StorageService {
   static const _kDecodeBudget = 'decode-budget';
   static const _kGayMode = 'gay-mode';
   static const _kGayTags = 'gay-tags';
+  /// **跨端契约**：Gay 模式默认词表。与图站 `gallery/static/home.js` 的
+  /// `DEFAULT_GAY_TAGS` 必须是同一份。
+  ///
+  /// 选词依据（2026-10-04 实测 data/tags.db 的 account_tags）：
+  ///
+  /// | 词 | 实际带此标签的账号数 |
+  /// |---|---|
+  /// | 男性 | 141 |
+  /// | 男娘 | 214 |
+  /// | 男同 | 19 |
+  /// | 露屌 | 29 |
+  /// | 阳痿 | 5 |
+  /// | 人妖 | 0 |
+  ///
+  /// 知识库里另一份记载（notes/facts-twitter-pic-exclude-tag-cloud）写的
+  /// `gay / yaoi / futanari / 男同 / 基 / bl` **与线上代码不符**——那 5 个
+  /// 英文/单字词在库里**一条记录都没有**（不分大小写、不限权重均查不到）。
+  /// 换句话说：知识库那份若真的生效，会把线上正在过滤的 341 个账号**全部放行**，
+  /// 而不是多过滤几个。那份记载已按实测更正。
+  ///
+  /// ⚠️ 改这里必须同步改 home.js 的 DEFAULT_GAY_TAGS；
+  /// test/gay_tag_contract_test.dart 会把两端的字面量钉在一起，改漏就红。
   static const List<String> kDefaultGayTags = ['男性', '男娘', '人妖', '露屌', '阳痿', '男同'];
 
   static bool _loaded = false;
@@ -276,10 +298,65 @@ class StorageService {
     final has = hasGayTag(tags, customGayTags);
     return isGay ? has : !has;
   }
+
+  /// **命中「标签管理 → 屏蔽」标签列表**的那些标签名。
+  ///
+  /// 口径与详情页原有的提示条**逐条一致**（那是这条规则唯一的旧实现）：
+  ///   - 负分标签不算（负分在详情页本来就不展示，commit 6ea90cd），
+  ///     拿它当屏蔽依据会凭空多屏蔽一批人；
+  ///   - Gay 模式下，与 Gay 词表重叠的标签**不**触发 —— 否则开了 Gay 模式
+  ///     之后同一个账号会既被「Gay 模式」放行、又被「屏蔽标签」拦下，
+  ///     两条规则互相打架。
+  ///
+  /// 零分算命中，与旧实现一致（那里判的是 score < 0 才排除）。
+  ///
+  /// 原来这段逻辑内嵌在 user_detail_screen.dart 里，列表页拿不到；现在收到
+  /// 这里，两处共用同一个判定，避免再次各抄一份而漂移。
+  static List<String> blockTagHits(Map<String, dynamic> tags) {
+    final blocked = getBlockTags().toSet();
+    if (blocked.isEmpty) return const [];
+    final isGay = isGayMode();
+    final hits = <String>[];
+    tags.forEach((k, v) {
+      if (!blocked.contains(k)) return;
+      final score = v is num ? v.toInt() : (int.tryParse('$v') ?? 0);
+      if (score < 0) return;
+      if (isGay && kGayTags.contains(k)) return;
+      hits.add(k);
+    });
+    return hits;
+  }
+
+  /// 用户是否应当从列表中隐藏。**这是唯一权威判定，列表页一律调它。**
+  ///
+  /// 三条本地规则的合并口径：
+  ///   1. 按用户名屏蔽（`block-map`）；
+  ///   2. 命中屏蔽标签列表（用户带正权重的屏蔽标签）；
+  ///   3. Gay 模式匹配（关闭时排除带 Gay 标签的，开启时只留带 Gay 标签的）。
+  ///
+  /// 以前这三条是**各屏各抄一份**，于是慢慢漂移：Gay 模式就曾在标签反查页
+  /// 整条漏掉（同一个查询换个入口看到不同的用户集合）。把判定收在这里，
+  /// 新增列表时只需要调它，不再有机会漏。
+  static bool shouldHideUser(String username, Map<String, int> tags) {
+    if (isBlocked(username)) return true;
+    if (blockTagHits(tags).isNotEmpty) return true;
+    return !matchesGayMode(tags);
+  }
 }
 
 /// 当前生效的 Gay 模式标签集合（动态读取 StorageService.getGayTags）
 Set<String> get kGayTags => StorageService.getGayTags().toSet();
 
-/// 默认的 Gay 模式核心标签常量集合
-const Set<String> kDefaultGayTagsSet = {'男性', '男娘', '人妖', '露屌', '阳痿', '男同'};
+/// 默认的 Gay 模式核心标签常量集合。
+///
+/// 以前这里是**独立写死**的一份，和上面的 `kDefaultGayTags` 内容相同却是两个
+/// 定义 —— 改一处忘另一处，两边就悄悄漂移（这正是本项目反复出问题的形态）。
+/// 现在改成从唯一的真相源派生，全仓不再有第二份字面量。
+///
+/// 词表本身见 [kDefaultGayTags] 的注释：它与图站 gallery/static/home.js 的
+/// `DEFAULT_GAY_TAGS` 是**同一份跨端契约**，改一处必须同步另一处，并由
+/// test/gay_tag_contract_test.dart 把两端字面量钉在一起。
+// 注意要写 StorageService.kDefaultGayTags —— kDefaultGayTags 是类里的
+// **static 成员**，顶层作用域直接引用会报 undefined_identifier。
+final Set<String> kDefaultGayTagsSet =
+    StorageService.kDefaultGayTags.toSet();

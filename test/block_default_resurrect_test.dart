@@ -1,0 +1,96 @@
+// 「默认屏蔽标签复活」缺陷的回归测试。
+//
+// 原实现用 `if (storedBlock.isEmpty)` 决定要不要给默认值，而「用户主动清空」
+// 和「从没配过」在这个判据下**完全一样** —— 于是用户把唯一的「无关内容」删掉，
+// 重启它又回来了，而且**再也删不掉**（每次开页面都从默认值重新长出来）。
+//
+// 判据写成「显式存了空列表就不许复活」，因为这正是用户能观察到的差别：
+// 存了 [] 就该显示「无屏蔽标签」，默认只在键**不存在**时出现。
+
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:twitter_pic_flutter/services/storage_service.dart';
+import 'package:twitter_pic_flutter/widgets/tag_controller.dart';
+
+class _FakePathProvider extends PathProviderPlatform {
+  final String dir;
+  _FakePathProvider(this.dir);
+  @override
+  Future<String?> getApplicationSupportPath() async => dir;
+}
+
+void main() {
+  late Directory tmpDir;
+
+  setUp(() async {
+    tmpDir = await Directory.systemTemp.createTemp('blockres');
+    PathProviderPlatform.instance = _FakePathProvider(tmpDir.path);
+    // 用 resetForTests：_loaded 是进程级 static，clearAll 不会把它置回
+    // false，第二次 ensureInitialized 会直接 return，导致 _file 仍指着上一个
+    // 测试文件留下的临时目录（已被 tearDown 删掉）。单跑绿、整包红。
+    // **不调 ensureInitialized**，让 `_file` 保持 null。
+    // _doFlush() 开头就是 `if (f == null) return;` —— 写盘直接短路，
+    // 不会有任何真实文件 IO。
+    //
+    // 为什么必须这样：flutter_test 跑在假异步时钟下，`_flush()` 挂在
+    // `_flushChain` 上的 future 靠 `.then` 推进，而真实文件 IO 不受假时钟
+    // 驱动 —— 于是那个 future 永远不就绪，框架判定「还有未完成任务」，
+    // 用例卡到 10 分钟超时（CI 上实测 rc=124）。
+    //
+    // 这些用例断言的是**读取路径**（界面上显不显示某个标签），不依赖落盘，
+    // 所以不初始化文件不影响断言有效性。
+    StorageService.resetForTests();
+  });
+
+  tearDown(() async {
+    // 用 resetForTests 而不是 clearAll：clearAll 内部会 await _flush()，
+    // 那正是我们要避免的 pending future。resetForTests 直接把 _loaded/_file/
+    // _flushChain 复位，不碰 IO，也不留挂起任务。
+    StorageService.resetForTests();
+    if (tmpDir.existsSync()) tmpDir.deleteSync(recursive: true);
+  });
+
+  testWidgets('用户显式清空屏蔽列表后，默认标签**不许复活**', (tester) async {
+    // 这是「用户主动清空」：键存在，值是空列表。
+    StorageService.setTagRules({'highlight': <String>[], 'block': <String>[]});
+
+    await tester.pumpWidget(
+        const MaterialApp(home: TagControllerScreen()));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('无关内容'), findsNothing,
+        reason: '用户已经明确清空了，默认标签不该被塞回来');
+    expect(find.text('无屏蔽标签'), findsOneWidget,
+        reason: '应如实显示空态');
+  });
+
+  testWidgets('从没配过时仍给一份默认屏蔽标签（别把首次体验也一起去掉）',
+      (tester) async {
+    // 注意：这里**不写** tag-rules，模拟全新安装。
+    await tester.pumpWidget(
+        const MaterialApp(home: TagControllerScreen()));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('无关内容'), findsOneWidget,
+        reason: '键不存在 = 从没配过，默认屏蔽规则应当生效');
+  });
+
+  testWidgets('用户自己加进去的屏蔽标签要活过重启', (tester) async {
+    StorageService.setTagRules(
+        {'highlight': <String>[], 'block': <String>['广告']});
+
+    await tester.pumpWidget(
+        const MaterialApp(home: TagControllerScreen()));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('广告'), findsOneWidget);
+    expect(find.text('无关内容'), findsNothing,
+        reason: '用户给的是 [广告]，默认值不该混进来');
+  });
+}

@@ -4,11 +4,29 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # PR 上只跑测试与静态分析，不出包、不发 Release。
+  #
+  # 之前没有这条，导致**任何 PR 都拿不到验证**：新增的测试要等合并到
+  # main 才第一次被运行——那时如果红着，坏的是 main 而不是 PR。
+  # （本仓库历史上就有「CI 假绿」和「测试从未真正跑过」两类记录。）
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
-# 同一个 ref 的新一轮构建取消上一轮：连续推 tag 曾让两个 7 分钟的构建并行
-# 跑完（v0.5.6 有两次 cancelled 记录）。不同 ref 之间互不影响，所以不会
-# 因为推了 v0.5.10 就打断正在跑的 v0.5.9。
+# ECH 共享库的来源仓库与版本钉子。
+#
+# 原来这里没有依赖源的概念：ECH 代码是仓库内 ech-proxy/ 的一份源码副本
+# （2026-09-10 的快照），与上游 ech-proxy 仓库没有任何 git 关系。现改为
+# 直接 checkout 上游仓库，从它的 flutter/ 入口编译。
+#
+# 钉子用 tag 而不是 branch：branch 会随时间漂移，发出去的 APK 就无法复现。
+# 这里用 flutter-lib-v1.0.0 而不是 ech-proxy 现有的 v1.x —— 那条版本线标记的是
+# **代理服务端**，而本 tag 只标记 flutter/ 这个 c-shared 入口；本 commit 的父链
+# 上还有尚未发布的 CONNECT 隧道提交，打 v1.3.0 会谎称服务端已发版。
+# 两条版本线因此分开编号，互不冒充。
+env:
+  ECH_PROXY_REF: flutter-lib-v1.0.0
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -48,13 +66,131 @@ jobs:
           cd /tmp/test_project
           flutter analyze --no-fatal-infos --no-fatal-warnings
 
+      # 定位用：逐个测试文件跑并各自限时。整包 flutter test 一旦挂死，
+      # 日志取不到、定位不到是哪个文件，只能干等超时（本次就白等了 30 多分钟）。
+      # 这里的产物是给人看的定位信息，不作为判据 —— 真正的判据仍是上面那次整包运行。
+      # 定位用：逐文件限时跑，挂了就打印尾部日志。整包挂死时日志在 run 完成前
+      # 取不到，只能靠它定位到具体文件。产物不作为判据。
+      # 廉价结构自检：删改测试文件时最容易丢的是「文件入口」与顶层声明，
+      # 而它们不会体现在任何单文件断言里 —— analyze 能抓到未定义标识符，
+      # 但只有当引用点还在时。本步骤保证每个测试文件都有 main()。
+      # 状态隔离自检：任何调用 StorageService 写方法的测试文件，都必须在
+      # setUp/tearDown 里 resetForTests()。
+      #
+      # 为什么要有这条：StorageService 的状态是**进程级 static**（_loaded /
+      # _memory / _file / _flushChain）。测试文件之间共享同一份，不清就会串味 ——
+      # 本轮就踩到过：_file 仍指向上一个文件留下、且已被 tearDown 删掉的临时目录，
+      # 表现为「单文件全过、整包挂死」。
+      #
+      # 注意 resetForTests **已有大量调用点**（五个 resetForTests 家族：
+      # StorageService 24 / TwitterApi 11 / ProgressiveDiskCache 5 / LogService 3 /
+      # PosterService 3），不是废弃机制。这条检查的作用是**防止新文件漏掉**
+      # ——漏掉时 analyze 不会报、任何单文件断言也不会报，只有整包会炸。
+      - name: Storage-writing tests must reset static state
+        run: |
+          cd /tmp/test_project
+          bad=0
+          for f in test/*.dart; do
+            writes=$(grep -cE 'StorageService[.](setTagRules|setFavMap|setHighlightTags|setBlockTags|setGayTags|setGayMode|resetGayTags|toggleFav|toggleBlock)[(]' "$f" || true)
+            if [ "$writes" -gt 0 ]; then
+              resets=$(grep -c 'StorageService[.]resetForTests()' "$f" || true)
+              if [ "$resets" -eq 0 ]; then
+                echo "::error::$f 调用了 StorageService 写方法但从不 resetForTests —— 静态状态会跨用例串味"
+                bad=1
+              fi
+            fi
+            # 另一类风险：写的是**别的** static（TwitterApi 的 in-flight 缓存、
+            # LogService 的缓冲区等），本文件却只 reset 了 StorageService。
+            # 一并查，避免「清了一半」。
+            for other in TwitterApi LogService PosterService ProgressiveDiskCache; do
+              owrites=$(grep -cE "$other[.](set|add|put|clear|reset|toggle)[A-Za-z]*[(]" "$f" || true)
+              if [ "$owrites" -gt 0 ]; then
+                oresets=$(grep -cE "$other[.]resetForTests[(][)]" "$f" || true)
+                if [ "$oresets" -eq 0 ]; then
+                  echo "::error::$f 写了 $other 的静态状态但从不 $other.resetForTests()"
+                  bad=1
+                fi
+              fi
+            done
+          done
+          [ "$bad" -eq 0 ] && echo "所有写盘测试都做了状态隔离"
+
+      - name: Every test file has a main entry point
+        run: |
+          cd /tmp/test_project
+          missing=0
+          for f in test/*.dart; do
+            if ! grep -q 'void main' "$f"; then
+              echo "::error::$f 缺少 main() 入口"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] && echo "全部测试文件入口完整"
+
+      # **本步骤不构成验收，只用于定位。**
+      #
+      # 本项目为此付过 22 分钟的代价：同一套 27 个测试，逐文件跑**全部通过**，
+      # 而整包跑挂在 22 分钟才被人手动取消。「隔离绿」当时没有暴露任何问题，
+      # 反而让人以为没问题。
+      #
+      # 原因：单文件跑不共享同一份**进程级 static 状态**，跨文件的相互作用
+      # （悬空 future、串味的状态）只有整包才会现形。
+      #
+      # 绿色分级（只有第 3 级算数）：
+      #   1. 隔离绿 —— 本步骤输出。**不构成验收**，仅说明「不是某个文件的死循环」。
+      #   2. 整包绿 —— 下面 Run tests 的结果。
+      #   3. 整包绿 + 覆盖率产物真落盘 —— 最终交付标准。
+      #
+      # 第 3 级必须查产物本身而非步骤状态：Upload coverage 用了
+      # `if-no-files-found: warn`，文件不存在时那一步**照样绿**。今天正是靠直接
+      # 查 artifact（8118 字节）才发现「绿了但数据没落盘」。
+      - name: Per-file test report (diagnostic only - NOT acceptance)
+        if: always()
+        run: |
+          cd /tmp/test_project
+          for f in test/*.dart; do
+            start=$(date +%s)
+            if timeout 180 flutter test "$f" > /tmp/t.log 2>&1; then
+              echo "OK   $f ($(( $(date +%s) - start ))s)"
+            else
+              rc=$?
+              echo "FAIL $f rc=$rc ($(( $(date +%s) - start ))s)"
+              tail -25 /tmp/t.log
+            fi
+          done
+
+      # 整包 + --coverage，这是判据。隔离跑某几个文件通过不算数：
+      # 挂死正是「单文件全过、合起来挂」才暴露的。
+      #
+      # 挂死真因已修（测试体内不再有真实文件 IO：setUp 不调
+      # ensureInitialized，_file 保持 null，_doFlush 首行即短路），
+      # 所以按最严格条件跑：带覆盖率、整包、必须全绿。
       - name: Run tests
         run: |
           cd /tmp/test_project
           flutter test --coverage
 
-      # 覆盖率数据一直生成后就被丢弃了，无从追踪退化。先攒着：等基线稳定
-      # 了再加成门槛（现在不知道基线多少，直接加门槛只会挡住真改动）。
+      # 覆盖率数据要留存，否则无从追踪退化。现在**先攒着不加门槛**：
+      # 不知道基线多少就直接卡门槛，只会挡住真改动。等基线稳定再谈。
+      #
+      # （这一段此前被我误删：当时为绕开挂死连 --coverage 一起去掉了，
+      #    上传步骤成了死代码；--coverage 恢复后忘了补回来，属于删漏，
+      #   不是主动放弃。）
+      # 第 3 级判据的机器化：整包跑完必须**真的有** lcov.info。
+      #
+      # Upload coverage 用了 if-no-files-found: warn，所以「没产物」也会显示绿 —
+      # 今天就出现过：绿了但覆盖率数据没落盘。交付标准是「整包绿 + 产物真落盘」，
+      # 那一级最容易漏，因为它看起来和第 2 级一样绿。
+      - name: Coverage artifact must actually exist
+        if: always()
+        run: |
+          cd /tmp/test_project
+          if [ ! -s coverage/lcov.info ]; then
+            echo "::error::整包测试跑完但 coverage/lcov.info 不存在或为空 —— 第 3 级判据不成立"
+            exit 1
+          fi
+          echo "lcov.info 已生成，$(wc -c < coverage/lcov.info) 字节"
+
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -64,7 +200,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+
   build_android:
+    # 只在 main / tag / 手动触发时出包；PR 上跳过（flutter_test 已经把
+    # analyze 与测试跑完了，出包对 PR 没有增量价值，却要烧 7 分钟与签名密钥）。
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -89,17 +229,39 @@ jobs:
         with:
           go-version: stable
 
+      # ECH 共享库不再用仓库内的 ech-proxy/ 源码副本（那是 2026-09-10 的快照，
+      # 与上游 ech-proxy 仓库没有任何 git 关系，两边各自演化），改为直接
+      # checkout ech-proxy 仓库并从它的 flutter/ 入口编译。
+      #
+      # 版本钉在 ECH_PROXY_REF 上：默认用主干的 tag v1.2.1（可读、可回退），
+      # 需要试新东西时改成 commit SHA。锁文件里记着 SHAs，若 ref 是 SHA 则
+      # 这里一并覆盖，保证「谁在什么时候构建了什么」可追溯。
+      - name: Checkout ech-proxy
+        uses: actions/checkout@v4
+        with:
+          repository: Hana-ame/ech-proxy
+          ref: ${{ env.ECH_PROXY_REF }}
+          path: ech-proxy-src
+
       - name: Build ECH shared library (arm64)
         run: |
           NDK_VERSION="r27"
-          cd ech-proxy
+          cd ech-proxy-src
+          # 契约先跑：缺导出符号时编译照样成功，但真机上 Dart 侧
+          # lookupFunction 会抛 ArgumentError，App 启动即崩且看不出是 Go 侧问题。
+          go test ./flutter/
           CGO_ENABLED=1 \
           GOOS=android \
           GOARCH=arm64 \
           CC=aarch64-linux-android21-clang \
           go build -buildmode=c-shared -ldflags="-s -w" \
-          -o /tmp/libechproxy.so ./cmd/ech-flutter-shared/
+          -o /tmp/libechproxy.so ./flutter/
           /tmp/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy --strip-unneeded /tmp/libechproxy.so
+          # 编译完再验一次符号：go test 是静态检查，这里验的是真正产出的二进制。
+          for s in ECHInitWithBootstrap ECHSetDohURL StartProxy StopProxy GetProxyPort IsEchReady FreeCString ECHInitReady ECHInitLastError ECHGetLogCount ECHGetLog ECHInit; do
+            nm -D --defined-only /tmp/libechproxy.so | grep -qw "$s" || { echo "::error::产物缺少 FFI 导出符号 $s"; exit 1; }
+          done
+          echo "12/12 FFI 符号齐全"
           ls -lh /tmp/libechproxy.so
 
       - name: Setup Flutter
@@ -228,6 +390,7 @@ jobs:
           path: /tmp/build_project/build/app/outputs/flutter-apk/app-release.apk
 
   build_windows:
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     permissions:
       contents: write
@@ -239,10 +402,18 @@ jobs:
         with:
           go-version: stable
 
+      - name: Checkout ech-proxy
+        uses: actions/checkout@v4
+        with:
+          repository: Hana-ame/ech-proxy
+          ref: ${{ env.ECH_PROXY_REF }}
+          path: ech-proxy-src
+
       - name: Build ECH shared library (windows)
         run: |
-          Push-Location ech-proxy
-          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll ./cmd/ech-flutter-shared/
+          Push-Location ech-proxy-src
+          go test ./flutter/
+          go build -buildmode=c-shared -ldflags="-s -w" -o C:\tmp\echproxy_amd64.dll ./flutter/
           Pop-Location
 
       - name: Setup Flutter
@@ -368,6 +539,9 @@ jobs:
           path: C:\tmp\twitter_pic_flutter_windows_amd64.zip
 
   create_release:
+    # PR 上不发版（ref_type 也不是 tag，这道门本来就够；这里显式写出来是为了
+    # 不必读完整个 job 才知道它在 PR 上不会跑）。
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs: [build_android, build_windows, flutter_test]
     # 只有 semver tag 才发 Release。日期 tag（vYYYYMMDD.HHMMSS）和 main
@@ -378,7 +552,6 @@ jobs:
     # 精确的 semver 判定放在下面的 step 里用 bash 做：**Actions 表达式不支持
     # 正则**（没有 =~ 运算符，写了会直接 workflow parse 失败、整个 run 0 秒
     # 挂掉），所以 job 层这里只做粗筛。
-    if: ${{ github.ref_type == 'tag' }}
     permissions:
       contents: write
     steps:

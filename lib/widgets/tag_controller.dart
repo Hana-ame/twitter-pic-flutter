@@ -40,13 +40,27 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
     final rules = StorageService.getTagRules();
     _highlight = (rules['highlight'] as List?)?.cast<String>() ?? [];
     final storedBlock = (rules['block'] as List?)?.cast<String>() ?? [];
-    if (storedBlock.isEmpty) {
-      // 仅首次启动（storage 无 block 记录）写默认屏蔽标签；之后完全尊重
-      // 用户修改。原实现每次启动都合并 _kDefaultBlockTags，用户从屏蔽
-      // 列表删除的标签重启后会复活。
-      _block = _kDefaultBlockTags.toList();
-    } else {
+    // 判据必须是 **`containsKey` 而不是 `isEmpty`**。
+    //
+    // 两者在「用户主动清空了屏蔽列表」时都成立，但含义完全相反：
+    //   - 键不存在 = 从来没配过 → 给一份默认（首次体验）
+    //   - 键存在但为空 = 用户明确表示「一个都不要」→ 必须尊重
+    //
+    // 用 isEmpty 判据的后果是：用户把唯一的「无关内容」删掉后重启，
+    // 它又回来了，而且**再也删不掉**（每次开页面都从默认值重新长出来）。
+    // 更别扭的是这个复活只发生在 UI 上——_save() 只在增删时调用，所以
+    // storage 里可能还是空列表，界面上却一直显示着「已屏蔽 (1)」。
+    //
+    // 出厂值**必须落盘**：只把它显示出来而不写进 storage，界面上写着
+    // 「已屏蔽 (1)」而规则其实并不存在，用户会以为功能坏了。
+    if (rules.containsKey('block')) {
       _block = storedBlock;
+    } else {
+      // 首次进入：给一份出厂值并**立即落盘**。只显示不落盘的话，界面上写着
+      // 「已屏蔽 (1)」而 storage 里根本没有这条规则，用户看不到任何效果，
+      // 会以为功能坏了；而且下次进来又会重新「复活」一遍。
+      _block = _kDefaultBlockTags.toList();
+      _save();
     }
   }
 
@@ -244,8 +258,10 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              '添加后，详情页中命中的标签会特殊显示；'
-              '用户标签命中"屏蔽"时页面顶部会给出提示。',
+              '高亮：命中的标签加星标强调，详情页与标签列表都会显示。\n'
+              '屏蔽：账号带这些标签时，在用户列表 / 标签列表 / 收藏夹里不再出现；'
+              '直接打开其详情页时，页面顶部仍会给出提示条（方便确认是哪个标签命中的）。\n'
+              'Gay 模式开启时不按屏蔽标签过滤，只按 Gay 标签取反筛选。',
               style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 20),

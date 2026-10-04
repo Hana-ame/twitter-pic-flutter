@@ -97,7 +97,7 @@ lib/
 │   └── tag_*.dart                 # 标签选择/展示/高亮
 └── main.dart                      # 入口、全局错误捕获、ImageCache、底部导航
 
-ech-proxy/cmd/ech-flutter-shared/main.go   # 代理唯一实现（供 CI 编 .so/.dll）
+（ECH 代理实现已迁至 Hana-ame/ech-proxy 仓库的 flutter/，本仓库不再有源码副本）
 .github/workflows/build.yml                # 测试 → 双平台构建 → 发 Release
 test/                                      # 14 个测试文件，CI 全跑
 doc/architecture.md                        # 架构细节
@@ -108,7 +108,7 @@ doc/troubleshooting.md                     # 症状 → 根因 → 怎么确认
 
 ### 1. 本机代理（Go，唯一真源）
 
-`ech-proxy/cmd/ech-flutter-shared/main.go` 导出 12 个符号给 Dart（FFI）：
+ech-proxy 仓库的 `flutter/main.go` 导出 12 个符号给 Dart（FFI）：
 
 | 符号 | 用途 |
 | --- | --- |

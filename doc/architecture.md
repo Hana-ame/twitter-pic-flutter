@@ -69,7 +69,11 @@ Dio(baseUrl: 'https://x.moonchan.xyz/api/twitter')
 - Dio 拼接 `baseUrl + path` **不会补斜杠**，所有 path 必须自己以 `/` 开头；
   构造函数里加了 `onRequest` 拦截器兜底归一化（事故见 troubleshooting 案例 1）。
 
-## 3. 本机代理内部（`ech-proxy/cmd/ech-flutter-shared/main.go`）
+## 3. 本机代理内部（ech-proxy 仓库的 `flutter/main.go`）
+
+> 该入口已从本仓库迁出到 **Hana-ame/ech-proxy** 仓库的 `flutter/` 目录。
+> 本仓库不再保留源码副本；CI 通过 `actions/checkout` 按 `ECH_PROXY_REF`
+> 钉定的 commit 拉取该仓库再编译。
 
 导出符号（12 个，Dart 侧在 `lib/services/proxy_manager.dart` 按名字绑定）：
 

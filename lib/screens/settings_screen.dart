@@ -41,11 +41,46 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _restarting = false;
   bool _gayMode = false;
+  /// 上一次 didChangeDependencies 看到的 ModalRoute，用于判断路由是否换了。
+  ModalRoute<dynamic>? _lastRoute;
 
   @override
   void initState() {
     super.initState();
     _gayMode = StorageService.isGayMode();
+  }
+
+  /// 从别的页面改同一个开关后回到本页时，把 UI 拉回真实值。
+  ///
+  /// 「Gay 模式」有两处开关写**同一个** storage key：这里的 SwitchListTile，
+  /// 以及标签管理页（tag_controller.dart）的那个。本页在 main.dart 里是
+  /// IndexedStack 的一个分支——**保活、不会重新 initState**，所以从标签管理页
+  /// 改完返回时，这里的开关还停在旧值：文案写着「已关闭」，可过滤其实已经
+  /// 生效；用户再点一下反而是把它关掉。
+  ///
+  /// 这与 user_list_screen.dart 里已有的同一类处理（注释写的是
+  /// 「IndexedStack 保活使本页不会自动重建，返回后必须刷新」）是同一个坑，
+  /// 区别只是本页被路由遮住时拿不到通知。用 RouteAware 在**恢复可见**时读一次
+  /// 存储，而不是在 didChangeDependencies 里读 —— 后者在路由 push 期间就会
+  /// 触发，那时用户可能还没改完。
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 只在「依附的 ModalRoute 变了」时重新同步，而不是每次 build 都同步。
+    // ModalRoute.of(context) 在 didChangeDependencies 里拿到的就是当前 route，
+    // 拿它当 key 与上一次比较即可（这是 Flutter 里判断「路由是否换了」的标准写法）。
+    final route = ModalRoute.of(context);
+    if (route == _lastRoute) return;
+    _lastRoute = route;
+    // 在下一帧同步，而不是立刻：本页被 push 回来时路由的动画还没结束，
+    // 立刻读存储虽然也对，但会在同一帧内连续 setState 两次，白白多一次重建。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncGayMode());
+  }
+
+  void _syncGayMode() {
+    if (!mounted) return;
+    final actual = StorageService.isGayMode();
+    if (actual != _gayMode) setState(() => _gayMode = actual);
   }
 
   // ─── 网络诊断 ─────────────────────────────────────────────────────────────
