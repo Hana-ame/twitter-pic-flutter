@@ -18,10 +18,16 @@ dependencies:
   # 全屏相册（v0.6.4 换掉手写的那套）：放大后单指拖动是**平移图片**而不是
   # 翻到下一张。这靠的是它内部的手势仲裁——自己实现只能做"禁用翻页/切手势"
   # 的二元开关，做不出"放大态归图片、原图态归翻页"这套状态机。
-  # 选它不选 extended_image：后者自带一整套网络栈（要另配 cache manager），
-  # 而本项目的取流**必须**走本机 ECH 代理；混进第二个网络栈就有绕开那条
-  # 纪律的风险。photo_view 自身只依赖 flutter，取流仍由本项目的
-  # ProgressiveImageProvider 负责（仍经 EchUrl.rewrite → 127.0.0.1:port）。
+  # 选它不选 extended_image —— **photo_view 零网络依赖**（实测核对，见下）：
+  # photo_view 0.15.0 的 dependencies 只有 flutter 一个；解包后对 lib/ 搜
+  # package:http / dio / HttpClient / Socket 全部 0 命中。它不做取流，只接收
+  # 一个 ImageProvider。
+  # extended_image 10.1.0 则经 extended_image_library → http_client_helper
+  # **自带网络栈**（HTTP 客户端 + cache manager）。
+  # 所以真正的理由比「网络栈小」更强：photo_view **根本没有**第二个网络栈，
+  # 于是「所有 media 必须走本机 ECH 代理」这条纪律在**结构上无法被绕过** ——
+  # 取流只有本项目 ProgressiveImageProvider 一条路（经 EchUrl.rewrite →
+  # 127.0.0.1:port → ECH）。多一个网络栈就多一条可能绕开该纪律的路。
   photo_view: ^0.15.0
   # 边下边播（系统播放器/ExoPlayer 播本地流）真机不可行已移除；
   # 下载完成原地播放用 video_player（Windows 由 video_player_win 实现，

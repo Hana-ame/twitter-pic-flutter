@@ -538,8 +538,11 @@ class _StatusBox extends StatelessWidget {
 /// 只能做"二选一"（要么禁用翻页、要么切手势），做不出「放大态归图片、
 /// 原图态归翻页」这套**状态机**。photo_view 内置了它，于是直接用它。
 ///
-/// 取流仍然走本机 ECH 代理：`ProgressiveImageProvider(EchUrl.rewrite(...))`，
-/// 没有引入第二个网络栈（这也是不选 extended_image 的原因，见 pubspec 注释）。
+/// 取流仍然走本机 ECH 代理：`ProgressiveImageProvider(EchUrl.rewrite(...))`。
+/// **photo_view 零网络依赖**（实测：依赖只有 flutter，lib/ 里 package:http /
+/// dio / HttpClient / Socket 全部 0 命中），所以取流只有这一条路 ——
+/// extended_image 自带 `extended_image_library → http_client_helper` 网络栈，
+/// 那是本项目不选它的理由（见 pubspec 注释里的完整核对）。
 ///
 /// 保留的既有能力：Hero 过渡、逐块解码、失败重试、下载分享、邻张预取。
 class _ImageViewer extends StatefulWidget {
