@@ -66,11 +66,6 @@ jobs:
           cd /tmp/test_project
           flutter analyze --no-fatal-infos --no-fatal-warnings
 
-      - name: Run tests
-        run: |
-          cd /tmp/test_project
-          flutter test --coverage
-
       # 定位用：逐个测试文件跑并各自限时。整包 flutter test 一旦挂死，
       # 日志取不到、定位不到是哪个文件，只能干等超时（本次就白等了 30 多分钟）。
       # 这里的产物是给人看的定位信息，不作为判据 —— 真正的判据仍是上面那次整包运行。
@@ -91,6 +86,11 @@ jobs:
 
       # 覆盖率数据一直生成后就被丢弃了，无从追踪退化。先攒着：等基线稳定
       # 了再加成门槛（现在不知道基线多少，直接加门槛只会挡住真改动）。
+      - name: Run tests
+        run: |
+          cd /tmp/test_project
+          flutter test --coverage
+
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
