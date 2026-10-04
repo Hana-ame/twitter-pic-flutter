@@ -59,13 +59,6 @@ class _TagAdapter implements HttpClientAdapter {
 ///
 /// 既有测试没这问题：它们从不在 widget 测试体内调这些写方法。
 ///
-/// 用法：写完立刻 `await flushStorage();`，把链排空。
-Future<void> flushStorage() => StorageService.debugFlushPending();
-/// 每建一个 TwitterApi / ProxyManager 都要登记，tearDown 里统一释放。
-/// 不释放的话，Dio 的内部定时器会一直活着，flutter_test 认为文件没跑完，
-/// 整个文件卡到超时（CI 上实测 180s rc=124）。
-final _openApis = <TwitterApi>[];
-final _openProxies = <ProxyManager>[];
 
 /// 找出**标签 chip 上的那个** #X 文本，排除 AppBar 标题。
 ///
@@ -127,15 +120,27 @@ void main() {
     // ensureInitialized 会直接 return，_file 仍指着**上一个测试文件**留下的
     // 临时目录（那个目录已被 tearDown 删掉）—— 于是写入落到不存在的路径上。
     // 单独跑本文件没事，多文件一起跑就出问题：这是典型的「单跑绿、整包红」。
+    // **不调 ensureInitialized**，让 `_file` 保持 null。
+    // _doFlush() 开头就是 `if (f == null) return;` —— 写盘直接短路，
+    // 不会有任何真实文件 IO。
+    //
+    // 为什么必须这样：flutter_test 跑在假异步时钟下，`_flush()` 挂在
+    // `_flushChain` 上的 future 靠 `.then` 推进，而真实文件 IO 不受假时钟
+    // 驱动 —— 于是那个 future 永远不就绪，框架判定「还有未完成任务」，
+    // 用例卡到 10 分钟超时（CI 上实测 rc=124）。
+    //
+    // 这些用例断言的是**读取路径**（界面上显不显示某个标签），不依赖落盘，
+    // 所以不初始化文件不影响断言有效性。
     StorageService.resetForTests();
-    await StorageService.ensureInitialized();
   });
 
   tearDown(() async {
     _releaseAll();
     // await clearAll 是必需的：_write() 里的 _flush() 是 fire-and-forget，
     // 不等它写完就删目录，那个 pending future 永远完不成，文件卡到超时。
-    await StorageService.clearAll();
+    // 用 resetForTests 而不是 clearAll：clearAll 内部 await _flush()，
+    // 那正是要避免的 pending future。resetForTests 直接复位 _loaded/_file/
+    // _flushChain，不碰 IO、不留挂起任务。
     StorageService.resetForTests();
     if (tmpDir.existsSync()) tmpDir.deleteSync(recursive: true);
   });
@@ -161,7 +166,6 @@ void main() {
     'Gay 模式**开启**时，同一个账号应该出现（过滤方向要真的反过来）',
     (tester) async {
       StorageService.setGayMode(true);
-      await flushStorage();
       await tester.pumpWidget(
           host(tagBody('u1', {'自拍': 2, '男同': 1})));
       await tester.pump(const Duration(milliseconds: 100));
@@ -188,7 +192,6 @@ void main() {
 
   testWidgets('高亮规则要能到达标签列表（带星标）', (tester) async {
     StorageService.setHighlightTags(['自拍']);
-      await flushStorage();
     await tester.pumpWidget(host(tagBody('u1', {'自拍': 2})));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
@@ -199,7 +202,6 @@ void main() {
 
   testWidgets('未高亮的标签**不该**有星标（防止星标变成常亮装饰）', (tester) async {
     StorageService.setHighlightTags(['别的标签']);
-      await flushStorage();
     await tester.pumpWidget(host(tagBody('u1', {'自拍': 2})));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));

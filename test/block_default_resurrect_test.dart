@@ -31,10 +31,6 @@ class _FakePathProvider extends PathProviderPlatform {
 ///
 /// 既有测试没这问题：它们从不在 widget 测试体内调这些写方法。
 ///
-/// 用法：写完立刻 `await flushStorage();`，把链排空。
-Future<void> flushStorage() => StorageService.debugFlushPending();
-void main() {
-  late Directory tmpDir;
 
   setUp(() async {
     tmpDir = await Directory.systemTemp.createTemp('blockres');
@@ -42,16 +38,24 @@ void main() {
     // 用 resetForTests：_loaded 是进程级 static，clearAll 不会把它置回
     // false，第二次 ensureInitialized 会直接 return，导致 _file 仍指着上一个
     // 测试文件留下的临时目录（已被 tearDown 删掉）。单跑绿、整包红。
+    // **不调 ensureInitialized**，让 `_file` 保持 null。
+    // _doFlush() 开头就是 `if (f == null) return;` —— 写盘直接短路，
+    // 不会有任何真实文件 IO。
+    //
+    // 为什么必须这样：flutter_test 跑在假异步时钟下，`_flush()` 挂在
+    // `_flushChain` 上的 future 靠 `.then` 推进，而真实文件 IO 不受假时钟
+    // 驱动 —— 于是那个 future 永远不就绪，框架判定「还有未完成任务」，
+    // 用例卡到 10 分钟超时（CI 上实测 rc=124）。
+    //
+    // 这些用例断言的是**读取路径**（界面上显不显示某个标签），不依赖落盘，
+    // 所以不初始化文件不影响断言有效性。
     StorageService.resetForTests();
-    await StorageService.ensureInitialized();
   });
 
   tearDown(() async {
-    // **必须 await 写盘完成再删目录。** _write() 里的 _flush() 是 async 且
-    // 调用点不 await（它 fire-and-forget），于是测试结束时仍有一个 pending
-    // future 在往磁盘写；tearDown 这时把目录删掉，那个 future 永远等不到
-    // 完成 —— flutter_test 判定「还有未完成任务」，整个文件卡到 10 分钟超时。
-    await StorageService.clearAll();
+    // 用 resetForTests 而不是 clearAll：clearAll 内部会 await _flush()，
+    // 那正是我们要避免的 pending future。resetForTests 直接把 _loaded/_file/
+    // _flushChain 复位，不碰 IO，也不留挂起任务。
     StorageService.resetForTests();
     if (tmpDir.existsSync()) tmpDir.deleteSync(recursive: true);
   });
@@ -59,7 +63,6 @@ void main() {
   testWidgets('用户显式清空屏蔽列表后，默认标签**不许复活**', (tester) async {
     // 这是「用户主动清空」：键存在，值是空列表。
     StorageService.setTagRules({'highlight': <String>[], 'block': <String>[]});
-    await flushStorage();
 
     await tester.pumpWidget(
         const MaterialApp(home: TagControllerScreen()));
@@ -87,7 +90,6 @@ void main() {
   testWidgets('用户自己加进去的屏蔽标签要活过重启', (tester) async {
     StorageService.setTagRules(
         {'highlight': <String>[], 'block': <String>['广告']});
-    await flushStorage();
 
     await tester.pumpWidget(
         const MaterialApp(home: TagControllerScreen()));

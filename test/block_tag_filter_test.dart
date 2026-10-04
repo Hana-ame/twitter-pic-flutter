@@ -40,11 +40,9 @@ void main() {
   });
 
   tearDown(() async {
-    // **必须 await 写盘完成再删目录。** _write() 里的 _flush() 是 async 且
-    // 调用点不 await（它 fire-and-forget），于是测试结束时仍有一个 pending
-    // future 在往磁盘写；tearDown 这时把目录删掉，那个 future 永远等不到
-    // 完成 —— flutter_test 判定「还有未完成任务」，整个文件卡到 10 分钟超时。
-    await StorageService.clearAll();
+    // 用 resetForTests 而不是 clearAll：clearAll 内部会 await _flush()，
+    // 那正是我们要避免的 pending future。resetForTests 直接把 _loaded/_file/
+    // _flushChain 复位，不碰 IO，也不留挂起任务。
     StorageService.resetForTests();
     if (tmpDir.existsSync()) tmpDir.deleteSync(recursive: true);
   });

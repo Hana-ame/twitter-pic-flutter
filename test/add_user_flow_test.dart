@@ -131,8 +131,18 @@ void main() {
     TwitterApi.resetForTests();
     // resetForTests 而非只 ensureInitialized：_loaded 是进程级 static，
     // 不重置就会沿用上一个测试文件留下的 _file（那个临时目录已被删掉）。
+    // **不调 ensureInitialized**，让 `_file` 保持 null。
+    // _doFlush() 开头就是 `if (f == null) return;` —— 写盘直接短路，
+    // 不会有任何真实文件 IO。
+    //
+    // 为什么必须这样：flutter_test 跑在假异步时钟下，`_flush()` 挂在
+    // `_flushChain` 上的 future 靠 `.then` 推进，而真实文件 IO 不受假时钟
+    // 驱动 —— 于是那个 future 永远不就绪，框架判定「还有未完成任务」，
+    // 用例卡到 10 分钟超时（CI 上实测 rc=124）。
+    //
+    // 这些用例断言的是**读取路径**（界面上显不显示某个标签），不依赖落盘，
+    // 所以不初始化文件不影响断言有效性。
     StorageService.resetForTests();
-    await StorageService.ensureInitialized();
   });
 
   tearDown(() async {
