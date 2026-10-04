@@ -21,6 +21,7 @@ import '../models/user.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../widgets/proxy_avatar.dart';
+import 'user_detail_screen.dart';
 import '../widgets/tag_controller.dart';
 
 /// by=tag 的服务端返回上限（无分页）。
@@ -32,16 +33,21 @@ class TagUserListScreen extends StatefulWidget {
   final TwitterApi api;
   final ProxyManager proxy;
 
-  /// 选中用户后回调，参数是已拉好的完整元数据。调用方负责打开
-  /// UserDetailScreen（照 main.dart / user_list_screen 的 Navigator.push 写法）。
-  final void Function(UserMetaData) onSelectUser;
+  /// 选中用户后的回调，参数是已拉好的完整元数据。
+  ///
+  /// 传了就用它跳转（外部自行管理导航栈）；**不传则由本页 push 详情页** ——
+  /// 后者是生产路径，见 [_pushDetail]：在标签页自己的 Navigator 上 push，
+  /// 返回键一步就回到这批标签结果。
+  ///
+  /// 测试用这个钩子断言「点某一行确实带回了该用户的元数据」，不必真的跳转。
+  final void Function(UserMetaData)? onSelectUser;
 
   const TagUserListScreen({
     super.key,
     required this.tag,
     required this.api,
     required this.proxy,
-    required this.onSelectUser,
+    this.onSelectUser,
   });
 
   @override
@@ -115,12 +121,38 @@ class _TagUserListScreenState extends State<TagUserListScreen> {
         timeline: const [],
         totalUrls: 0,
       );
-      widget.onSelectUser(profile);
+      await _pushDetail(profile);
       return;
     }
     if (!mounted) return;
     setState(() => _loadingUser = null);
-    widget.onSelectUser(profile);
+    await _pushDetail(profile);
+  }
+
+  /// 在**本页自己的 Navigator** 上打开详情页。
+  ///
+  /// 原实现把这个动作交给调用方（user_detail_screen）用自己的 context 执行，
+  /// 于是新详情页压在**标签页之上**：栈是 详情→标签→详情，返回键要先退回标签页
+  /// 才到上一个详情页 —— 标签页被埋住了。改用 popAndPush 会把标签页也丢掉，
+  /// 连标签漫游的上下文一起没。
+  ///
+  /// 在本页 push，栈仍是 详情→标签→详情，但返回键从新详情页**一步**就回到
+  /// 标签结果页 —— 这正是标签漫游想要的语义。
+  Future<void> _pushDetail(UserMetaData profile) async {
+    // 测试钩子：给了回调就交回调用方，不自己跳转。
+    final cb = widget.onSelectUser;
+    if (cb != null) {
+      cb(profile);
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => UserDetailScreen(profile: profile, proxy: widget.proxy),
+      ),
+    );
+    if (!mounted) return;
+    // 从详情页返回时，那边可能改过标签，本页结果已过期 → 重建一次。
+    setState(() {});
   }
 
   @override

@@ -665,18 +665,13 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             Navigator.push(
               context,
               MaterialPageRoute(
+                // 不再传 onSelectUser：标签页自己 push 详情页，返回键才能
+                // 一步回到这批标签结果。此前由本页用**自己的 context** push，
+                // 新详情页压在标签页之上，标签页被埋进栈里。
                 builder: (_) => TagUserListScreen(
                   tag: tag,
                   api: _api,
                   proxy: widget.proxy,
-                  onSelectUser: (userMeta) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => UserDetailScreen(profile: userMeta, proxy: widget.proxy),
-                      ),
-                    );
-                  },
                 ),
               ),
             );
