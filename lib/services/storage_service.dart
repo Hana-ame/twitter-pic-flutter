@@ -298,21 +298,6 @@ class StorageService {
     final has = hasGayTag(tags, customGayTags);
     return isGay ? has : !has;
   }
-}
-
-/// 当前生效的 Gay 模式标签集合（动态读取 StorageService.getGayTags）
-Set<String> get kGayTags => StorageService.getGayTags().toSet();
-
-/// 默认的 Gay 模式核心标签常量集合。
-///
-/// 以前这里是**独立写死**的一份，和上面的 `kDefaultGayTags` 内容相同却是两个
-/// 定义 —— 改一处忘另一处，两边就悄悄漂移（这正是本项目反复出问题的形态）。
-/// 现在改成从唯一的真相源派生，全仓不再有第二份字面量。
-///
-/// 词表本身见 [kDefaultGayTags] 的注释：它与图站 gallery/static/home.js 的
-/// `DEFAULT_GAY_TAGS` 是**同一份跨端契约**，改一处必须同步另一处，并由
-/// test/gay_tag_contract_test.dart 把两端字面量钉在一起。
-final Set<String> kDefaultGayTagsSet = kDefaultGayTags.toSet();
 
   /// **命中「标签管理 → 屏蔽」标签列表**的那些标签名。
   ///
@@ -357,3 +342,18 @@ final Set<String> kDefaultGayTagsSet = kDefaultGayTags.toSet();
     if (blockTagHits(tags).isNotEmpty) return true;
     return !matchesGayMode(tags);
   }
+}
+
+/// 当前生效的 Gay 模式标签集合（动态读取 StorageService.getGayTags）
+Set<String> get kGayTags => StorageService.getGayTags().toSet();
+
+/// 默认的 Gay 模式核心标签常量集合。
+///
+/// 以前这里是**独立写死**的一份，和上面的 `kDefaultGayTags` 内容相同却是两个
+/// 定义 —— 改一处忘另一处，两边就悄悄漂移（这正是本项目反复出问题的形态）。
+/// 现在改成从唯一的真相源派生，全仓不再有第二份字面量。
+///
+/// 词表本身见 [kDefaultGayTags] 的注释：它与图站 gallery/static/home.js 的
+/// `DEFAULT_GAY_TAGS` 是**同一份跨端契约**，改一处必须同步另一处，并由
+/// test/gay_tag_contract_test.dart 把两端字面量钉在一起。
+final Set<String> kDefaultGayTagsSet = kDefaultGayTags.toSet();

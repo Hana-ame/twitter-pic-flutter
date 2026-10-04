@@ -41,6 +41,8 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _restarting = false;
   bool _gayMode = false;
+  /// 上一次 didChangeDependencies 看到的 ModalRoute，用于判断路由是否换了。
+  ModalRoute<dynamic>? _lastRoute;
 
   @override
   void initState() {
@@ -64,8 +66,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // 只在「依附的 ModalRoute 变了」时重新同步，而不是每次 build 都同步。
+    // ModalRoute.of(context) 在 didChangeDependencies 里拿到的就是当前 route，
+    // 拿它当 key 与上一次比较即可（这是 Flutter 里判断「路由是否换了」的标准写法）。
     final route = ModalRoute.of(context);
-    if (route is PageRoute) route.addPostFrameCallback((_) => _syncGayMode());
+    if (route == _lastRoute) return;
+    _lastRoute = route;
+    // 在下一帧同步，而不是立刻：本页被 push 回来时路由的动画还没结束，
+    // 立刻读存储虽然也对，但会在同一帧内连续 setState 两次，白白多一次重建。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncGayMode());
   }
 
   void _syncGayMode() {
