@@ -14,6 +14,7 @@
 // 缓冲、边下边播；控制栏逻辑保留（自动淡出、拖动进度、全屏），新增下载、分享。
 
 import 'dart:async';
+import 'dart:io';
 // Uint8List：封面字节/抓帧缓冲。以前这个类型是跟着 `dart:io` 顺带进来的，
 // 下载逻辑拆到 services/video_downloader.dart 后必须自己显式导入。
 import 'dart:typed_data';
@@ -33,6 +34,7 @@ import '../services/proxy_manager.dart';
 import '../services/video_downloader.dart';
 import '../utils/ech_url.dart';
 import '../utils/frame_luma.dart';
+import '../utils/media_url.dart';
 import '../utils/video_failure.dart';
 import '../video/decoder_policy.dart';
 import '../video/video_decoder_pool.dart';
@@ -240,8 +242,85 @@ class _TwitterVideoState extends State<TwitterVideo>
       });
       return;
     }
-    // 没缓存：申请一个槽位去抓一张。排队期间显示 loading 转圈。
+    // 没缓存：先试**推导出来的封面 URL**（纯网络请求，不占解码器）。
+    final derived = MediaUrl.videoPosterOf(widget.url);
+    if (derived != null) {
+      final port = widget.proxy.port;
+      if (port != null) {
+        final ok = await _tryLoadDerivedPoster(EchUrl.rewrite(derived, port));
+        if (ok) return;
+      }
+    }
+    // 推导失败（URL 推不出、或那个封面取不到）：退回旧路径——申请一个解码器
+    // 槽位去抓一帧。**这才是槽位池存在的唯一理由**，不再是常规路径。
+    if (!mounted) return;
     _requestSlot();
+  }
+
+  /// 拉取推导出的封面 URL；成功则转成 [PosterService] 的字节缓存并显示。
+  ///
+  /// 任何失败都安静返回 false，让调用方退回抓帧——这条推导未经本机实测，
+  /// 失败必须是**常态分支**而不是异常。
+  Future<bool> _tryLoadDerivedPoster(String proxiedUrl) async {
+    try {
+      final bytes = await _fetchBytes(proxiedUrl);
+      if (!mounted || bytes == null || bytes.isEmpty) return false;
+      // 校验它真是图片：CDN 出错时也返回 200 + 一段 HTML/JSON，
+      // 直接当图片缓存下来，卡片就会永远显示一块坏图。
+      if (!_looksLikeImage(bytes)) return false;
+      setState(() {
+        _poster = bytes;
+        _isLoading = false;
+      });
+      // 存进磁盘缓存：下次（哪怕换了进程）直接命中，不必再推导+再拉一次。
+      unawaited(PosterService.put(widget.url, bytes));
+      if (!_captureLogged) {
+        _captureLogged = true;
+        LogService.recordNote('poster', '封面来自推导的 twimg URL（不占解码器）');
+      }
+      return true;
+    } catch (e) {
+      LogService.recordNote('poster', '推导封面取不到，退回抓帧：$e');
+      return false;
+    }
+  }
+
+  /// 取 URL 的全部字节（有上限，防止异常大响应把内存吃穿）。
+  Future<Uint8List?> _fetchBytes(String url, {int maxBytes = 8 * 1024 * 1024}) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 20);
+    try {
+      final req = await client.getUrl(Uri.parse(url));
+      final resp = await req.close().timeout(const Duration(seconds: 30));
+      if (resp.statusCode != 200) return null;
+      final builder = BytesBuilder(copy: false);
+      var total = 0;
+      await for (final chunk in resp) {
+        total += chunk.length;
+        if (total > maxBytes) return null;
+        builder.add(chunk);
+      }
+      return builder.takeBytes();
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// 魔数粗判：JPEG(FF D8)、PNG(89 50)、GIF("GIF8")、WebP(RIFF....WEBP)。
+  static bool _looksLikeImage(Uint8List b) {
+    if (b.length < 12) return false;
+    if (b[0] == 0xFF && b[1] == 0xD8) return true; // JPEG
+    if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+      return true; // PNG
+    }
+    if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38) {
+      return true; // GIF
+    }
+    if (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
+        b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+      return true; // WebP
+    }
+    return false;
   }
 
   @override

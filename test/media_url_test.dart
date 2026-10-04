@@ -135,4 +135,54 @@ void main() {
       expect(MediaUrl.kOriginName, 'orig');
     });
   });
+
+  group('videoPosterOf：从视频 URL 推导封面', () {
+    // 依据：生产数据里 timeline 项只有 url/date/tweet_id/type，没有 poster；
+    // gallery_dl 的 twitter extractor 也不产 poster（全文件 0 处）。
+    // 所以只能从 URL 里的视频 id 推导 twimg 的 *_video_thumb 约定。
+
+    test('amplify_video（线上真实形态）', () {
+      const url =
+          'https://video.twimg.com/amplify_video/2106165359934058496/vid/avc1/720x1280/zx9BkJrR-H1UFpBO.mp4?tag=29';
+      final poster = MediaUrl.videoPosterOf(url);
+      expect(poster, isNotNull);
+      expect(poster,
+          'https://pbs.twimg.com/amplify_video_thumb/2106165359934058496/img/photo1.jpg?format=jpg&name=small');
+    });
+
+    test('ext_tw_video 走另一套前缀', () {
+      const url =
+          'https://video.twimg.com/ext_tw_video/1234567890/pu/vid/avc1/720x720/x.mp4';
+      expect(MediaUrl.videoPosterOf(url),
+          'https://pbs.twimg.com/ext_tw_video_thumb/1234567890/img/photo1.jpg?format=jpg&name=small');
+    });
+
+    test('取的是路径里的纯数字 id，日期 tag 与额外 query 都不影响', () {
+      const url =
+          'https://video.twimg.com/amplify_video/2106165359934058496/vid/avc1/720x1280/x.mp4?tag=29';
+      expect(MediaUrl.videoPosterOf(url),
+          contains('/amplify_video_thumb/2106165359934058496/'));
+    });
+
+    test('推导不出时必须返回 null，绝不拼一个像模像样的坏 URL', () {
+      // 图片没有封面可推
+      expect(
+          MediaUrl.videoPosterOf(
+              'https://pbs.twimg.com/media/X?format=jpg&name=orig'),
+          isNull);
+      // 路径里没有视频 id 段
+      expect(MediaUrl.videoPosterOf('https://video.twimg.com/some/other/path.mp4'),
+          isNull);
+      // 非法输入不抛
+      expect(MediaUrl.videoPosterOf('not a url'), isNull);
+      expect(MediaUrl.videoPosterOf(''), isNull);
+    });
+
+    test('只有数字 id 的那一段被采用，路径余下部分不参与', () {
+      const url =
+          'https://video.twimg.com/amplify_video/98765abc/vid/avc1/x.mp4';
+      expect(MediaUrl.videoPosterOf(url), isNull,
+          reason: 'id 段必须全是数字，否则说明不是这套约定，应退回抓帧而不是乱拼');
+    });
+  });
 }

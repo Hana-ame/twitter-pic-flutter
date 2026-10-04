@@ -106,4 +106,41 @@ class MediaUrl {
     }
     return false;
   }
+
+  // ─── 视频封面 ────────────────────────────────────────────────────────────
+
+  /// 从视频 URL 推导 Twitter 的封面图 URL；推不出来返回 null。
+  ///
+  /// ── 为什么需要推导 ──────────────────────────────────────────────────────
+  ///
+  /// 实测生产数据（`GET /api/twitter/<user>.json.gz`）里timeline 项只有
+  /// `url` / `date` / `tweet_id` / `type` 四个字段，**没有 poster**；
+  /// gallery_dl 的 twitter extractor 也**根本不产出poster**（全文件 0 处
+  /// "poster"）。所以服务端与抓取链都不提供封面 URL，只能从视频 URL 里的
+  /// 视频 id 推导。
+  ///
+  /// twimg 的封面约定：
+  /// ```
+  /// amplify_video/<id>/vid/... .mp4  →  /amplify_video_thumb/<id>/img/photo1.jpg
+  /// ext_tw_video/<id>/...    .mp4  →  /ext_tw_video_thumb/<id>/img/photo1.jpg
+  /// ```
+  ///
+  /// **推不出来时必须返回 null**（调用方退回原路径），绝不能拼一个看起来
+  /// 像那么回事的 URL —— 错的 URL 会 404，而"404 之后还占着解码器槽位等重试"
+  /// 比直接用原路径更糟。
+  ///
+  /// 这条推导**未在本机实测**（本机所有 twimg 域名都不通，这正是 ECH 代理的
+  /// 存在理由）。所以调用方必须容忍它失败：加载不出就退回"用解码器抓一帧"
+  /// 的旧路径（见 twitter_video.dart）。这是本项目一贯的兜底纪律。
+  static String? videoPosterOf(String videoUrl) {
+    final uri = Uri.tryParse(videoUrl);
+    if (uri == null) return null;
+    final m = RegExp(r'/(amplify_video|ext_tw_video)/(\d+)/').firstMatch(uri.path);
+    if (m == null) return null;
+
+    final id = m.group(2)!;
+    final prefix = '${m.group(1)}_thumb';
+    // name=small：封面只是卡片上的一小块，没必要按原图拉。
+    return 'https://pbs.twimg.com/$prefix/$id/img/photo1.jpg?format=jpg&name=small';
+  }
 }
