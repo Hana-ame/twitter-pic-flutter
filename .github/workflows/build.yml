@@ -106,11 +106,13 @@ jobs:
       - name: Run tests
         run: |
           cd /tmp/test_project
-          # 不加 --coverage：带覆盖率时整包 flutter test 在本项目上会挂死
-          # （逐文件跑全部正常，合起来跑就永不返回，CI 上观察到 30+ 分钟）。
-          # 判据仍然是**整包必须全绿**，去掉 coverage 只是去掉那个触发条件，
-          # 不是把「跑不完」改成「跑得过就算过」。
-          flutter test
+          # 整包 + --coverage，这是真正的判据。
+          #
+          # 之前为了绕开挂死曾把 --coverage 去掉，那种「绿」不算数 ——
+          # 那只是换掉了触发条件。挂死的真因已经修掉（测试体内不再有
+          # 真实文件 IO：_file 保持 null，_doFlush 首行即短路），所以现在
+          # 按最严格的条件重验：带覆盖率、整包、必须全绿。
+          flutter test --coverage
 
 
   build_android:
