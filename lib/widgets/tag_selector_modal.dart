@@ -144,18 +144,39 @@ class _TagSelectorModalState extends State<TagSelectorModal> {
   Widget build(BuildContext context) {
     if (!widget.isOpen) return const SizedBox.shrink();
 
+    // 遮罩必须**显式占满**可用空间。
+    //
+    // 修一个真实的「添加用户」缺陷（v0.6.3 补齐的那条流程在列表页里是坏的）：
+    // 调用点之一是 user_list_screen.dart 里 `_AddUserTile.build` 的 Stack，
+    // 而那个 Stack 是 `ListView(children: [...])` 的直接子节点，ListView 给
+    // 子节点的是**纵向无界**约束。Stack 在无界高度下按最松约束收缩，而那个
+    // 只有 color、没有 child 的 Container 量出来**高度 0** —— 遮罩完全不可见，
+    // 对话框被按 0 高度裁掉，整个标签选择器点不动。
+    //
+    // 同一个 widget 在 user_detail_screen.dart（作为 Scaffold body，即紧约束）
+    // 里是正常的，所以这是**调用点特有**的缺陷：只测 standalone 布局的测试
+    // 永远测不出来。Positioned.fill 让遮罩在两种约束下都是整屏。
     return Stack(
       children: [
-        GestureDetector(
-          onTap: widget.onClose,
-          child: Container(color: Colors.black54),
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: widget.onClose,
+            child: Container(color: Colors.black54),
+          ),
         ),
         Center(
           child: Material(
             borderRadius: BorderRadius.circular(12),
             child: Container(
               width: MediaQuery.of(context).size.width * 0.9,
-              constraints: const BoxConstraints(maxHeight: 600),
+              // 键盘弹起时把可用高度扣掉：自定义标签输入框是 autofocus 的，
+              // 一点「+ 添加」键盘就盖住底部整行，「确认保存」既看不见也点不到。
+              // clamp 下限保证极端小屏（横屏 + 键盘）下仍有可用高度，不会为 0。
+              constraints: BoxConstraints(
+                maxHeight: (MediaQuery.of(context).size.height -
+                        MediaQuery.of(context).viewInsets.bottom)
+                    .clamp(200.0, 600.0),
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [

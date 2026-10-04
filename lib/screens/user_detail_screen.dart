@@ -136,6 +136,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   Future<void> _handleConfirmTags(Map<String, int> tags) async {
     if (_savingTags) return;
+    // **记住旧值以便回滚。**
+    //
+    // 原来是乐观写：setState 里就把 _userTags 换成新值，await 之后失败
+    // 只弹一句「保存失败」而**不回滚**。于是页面在整个会话里都显示着一组
+    // 从未保存的标签 —— 刷新一下又变回旧的，用户会以为标签「自己丢了」。
+    // 更糟的是「屏蔽标签」提示横幅按 _userTags 计算，会拿不存在的标签去
+    // 触发封禁提示。
+    final prevTags = _userTags;
     setState(() {
       _showTagModal = false;
       _userTags = tags.map((k, v) => MapEntry(k, v as dynamic));
@@ -148,6 +156,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
     } catch (e) {
       if (!mounted) return;
+      // 回滚到保存前的标签，别让页面停在一个服务端并不认的状态。
+      setState(() => _userTags = prevTags);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存失败: $e')));
     } finally {
       if (mounted) setState(() => _savingTags = false);

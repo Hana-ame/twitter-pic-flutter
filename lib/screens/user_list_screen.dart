@@ -702,8 +702,22 @@ class _AddUserTileState extends State<_AddUserTile> {
     super.didUpdateWidget(old);
     if (widget.username != old.username) {
       _isClicked = false;
+      // 换了搜索词，旧弹层必须收掉，否则 OverlayEntry 泄漏（换 100 次搜索词
+      // 就叠 100 层遮罩，点哪儿都点不动）。
+      _tagPickerEntry?.remove();
+      _tagPickerEntry = null;
       _showTagPicker = false;
+      _pendingTags = const {};
     }
+  }
+
+  @override
+  void dispose() {
+    // 弹层挂在根 Overlay 上，不随本 State 卸载而消失：换搜索词 / 离开页面
+    // 都必须手动摘掉，否则遮罩会留在屏幕上，点哪儿都没反应。
+    _tagPickerEntry?.remove();
+    _tagPickerEntry = null;
+    super.dispose();
   }
 
   /// 第一步：校验昵称，然后**先弹标签选择**。
@@ -714,7 +728,13 @@ class _AddUserTileState extends State<_AddUserTile> {
   /// 本地：选完标签再提交，提交一次成功。
   void _onClick() {
     if (_isClicked || _submitting) return;
-    final regex = RegExp(r'^[a-zA-Z0-9_]*$');
+    // `*` 改成 `+`：`^[a-zA-Z0-9_]*$` 对**空串也匹配**（`*` 允许零次），
+    // 于是空用户名能过这道校验，`createMetaData('')` 拼出 `/api/twitter/`
+    // 打到 gin 的 NoRoute —— 而 NoRoute 在本项目里回的是 gallery 的 SSR 页面
+    "HTTP 200 HTML"（go/server/main.go 的 r.NoRoute），
+    // 客户端把 200 当成功，于是**一次根本没发生的添加被报成「已添加」**，
+    // 还白烧掉服务端 25 次/小时的 POST 配额之一。
+    final regex = RegExp(r'^[a-zA-Z0-9_]+$');
     if (!regex.hasMatch(widget.username)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('不支持的昵称格式，请使用@后面的字符串')),
@@ -722,11 +742,68 @@ class _AddUserTileState extends State<_AddUserTile> {
       return;
     }
     setState(() => _showTagPicker = true);
+    _openTagPicker();
+  }
+
+  /// 提交失败后重新打开标签选择器时带回上次的勾选。
+  ///
+  /// 原来失败后 `_showTagPicker` 一直是 false，而 `_tagScores` 活在已经
+  /// unmount 的 modal State 里 —— 用户重开时 4 个标签全没了，得一个一个重按。
+  Map<String, int> _pendingTags = const {};
+
+  /// 标签选择器的 Overlay 句柄。见 [_openTagPicker] 的注释。
+  OverlayEntry? _tagPickerEntry;
+
+  /// 把标签选择器挂到**根 Overlay**（整屏），而不是作为本 tile 的子 widget。
+  ///
+  /// 为什么必须走 Overlay：本 tile 的 build 返回一个 Stack，而这个 Stack 是
+  /// `ListView(children: [...])` 的直接子节点 —— ListView 给子节点的是**纵向
+  /// 无界**约束，弹层在这个 Stack 里只量得出「ListView 里这一行」的高度。
+  /// 后果是遮罩高度 0（不可见）、对话框被裁掉大半，**添加用户的标签选择器
+  /// 基本点不动** —— 而这正是 v0.6.3 刚修好的那条流程。
+  ///
+  /// 同一个 widget 在 user_detail_screen.dart（作为 Scaffold body，即紧约束）
+  /// 里是正常的，所以这是**调用点特有**的缺陷：只测 standalone 布局的测试
+  /// 永远测不出来。OverlayEntry 由 Navigator/Overlay 给出紧约束，
+  /// 与 Scaffold body 同级，彻底摆脱宿主的约束形态。
+  void _openTagPicker() {
+    if (_tagPickerEntry != null) return;
+    _tagPickerEntry = OverlayEntry(
+      builder: (overlayContext) => TagSelectorModal(
+        isOpen: true,
+        requireAtLeastOneTag: true,
+        username: widget.username,
+        // 失败重开时把上次的勾选带回来（_pendingTags 由 _submitWithTags 填）。
+        initialValues: _pendingTags,
+        onClose: () {
+          // 用户主动关掉＝放弃这次的选择，重开时从空白开始。
+          _pendingTags = const {};
+          _closeTagPicker();
+        },
+        onConfirm: _submitWithTags,
+      ),
+    );
+    Overlay.of(context, rootOverlay: true).insert(_tagPickerEntry!);
+  }
+
+  void _closeTagPicker() {
+    _tagPickerEntry?.remove();
+    _tagPickerEntry = null;
+    if (mounted) setState(() => _showTagPicker = false);
   }
 
   /// 第二步：带着标签提交。
   Future<void> _submitWithTags(Map<String, int> tags) async {
     if (tags.isEmpty) return; // modal 已禁用空提交，这里只是兜底
+    // 全负分（每个 chip 连点两下 0→1→-1）时 _tagScores 非空但没有一个正权重，
+    // 服务端会照单全收写成 cnt=-1，而反查只数正权重 —— 结果是**建了个搜不到
+    // 的空账号**。modal 那道门槛只挡空集，挡不住这个，这里补一道。
+    if (!tags.values.any((v) => v > 0)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('至少选一个正分标签：全选负分标签建出来的账号搜不到')));
+      return;
+    }
+    _pendingTags = Map<String, int>.from(tags);
     setState(() {
       _submitting = true;
       _showTagPicker = false;
@@ -736,12 +813,16 @@ class _AddUserTileState extends State<_AddUserTile> {
     try {
       await widget.api.createMetaData(widget.username, tags: tags);
       if (!mounted) return;
+      _pendingTags = const {};
       widget.onAdded?.call();
       setState(() => _isClicked = true);
       messenger.showSnackBar(
           SnackBar(content: Text('已添加 @${widget.username}')));
     } catch (e) {
       if (!mounted) return;
+      // 失败：把选择器**重新弹回来**并带上刚才的勾选，别让用户重按一遍。
+      setState(() => _showTagPicker = true);
+      _openTagPicker();
       messenger.showSnackBar(SnackBar(content: Text('添加失败: $e')));
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -791,15 +872,10 @@ class _AddUserTileState extends State<_AddUserTile> {
             ),
           ),
         ),
-        // 添加用户必须带标签：点击后先选标签，再带标签提交。
-        if (_showTagPicker)
-          TagSelectorModal(
-            isOpen: true,
-            requireAtLeastOneTag: true,
-            username: widget.username,
-            onClose: () => setState(() => _showTagPicker = false),
-            onConfirm: _submitWithTags,
-          ),
+        // 标签选择器**不在这里渲染** —— 它走 _openTagPicker() 挂到根 Overlay 上。
+        // 原因见该方法注释：原来它作为本 Stack 的子节点，而本 Stack 是
+        // `ListView(children: [...])` 的直接子节点，ListView 给的是**纵向无界**
+        // 约束，弹层只量得出 ListView 里这一行的高度，遮罩与对话框都被压扁。
       ],
     );
   }

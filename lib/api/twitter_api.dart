@@ -350,9 +350,18 @@ class TwitterApi {
       case DioExceptionType.connectionError:
         return const NetworkException('网络不可达');
       case DioExceptionType.badResponse:
+        // **必须带上服务端给的那段文字。**
+        //
+        // 服务端所有可执行的提示都放在响应体的 error/message 字段里：
+        //   400 「你没加tag，这是不行的」/ 「invalid tags body」
+        //   403 「Access Denied」（ipban）
+        //   429 「too many requests」（limit/middleware.go）
+        // 而 statusMessage 对这些响应**永远是空串**，于是原实现拼出来的
+        // 文案是 `HTTP 429: ` —— 冒号后面什么都没有。429 限流、400 没带标签、
+        // 403 被封禁，三种完全不同的原因在用户眼里长得一模一样。
         return HttpException(
             e.response?.statusCode ?? 0,
-            'HTTP ${e.response?.statusCode}: ${e.response?.statusMessage}');
+            _describeHttpFailure(e.response));
       default:
         return UnknownException(e.message ?? '未知错误');
     }
@@ -360,5 +369,70 @@ class TwitterApi {
 
   void dispose() {
     _dio.close(force: true);
+  }
+
+
+
+  /// 把一次 HTTP 失败渲染成**人话**：状态码 + 服务端正文里的 error/message。
+  ///
+  /// 服务端用 `gin.H{"error": ...}` 或 `{"message": ...}` 回话，正文可能是
+  /// String，也可能是嵌套结构或列表，所以逐层往下挖，取到第一段非空文本。
+  /// 全挖不到就退回 statusMessage，再退回一句通用文案 —— 绝不让用户看到
+  /// 裸的 `HTTP 429: `。
+  static String _describeHttpFailure(Response<dynamic>? resp) {
+    final code = resp?.statusCode ?? 0;
+    var detail = _firstText(resp?.data);
+    if (detail.isEmpty) {
+      final sm = resp?.statusMessage?.trim() ?? '';
+      detail = sm.isEmpty ? _fallbackHttpText(code) : sm;
+    }
+    return 'HTTP $code: $detail';
+  }
+
+  static String _fallbackHttpText(int code) {
+    switch (code) {
+      case 400:
+        return '请求被拒绝（参数不合法，例如添加用户时没带标签）';
+      case 403:
+        return '被拒绝访问（IP 被限流或已封禁）';
+      case 404:
+        return '资源不存在';
+      case 429:
+        return '操作过于频繁，已被限流，请稍后再试';
+      default:
+        return code >= 500 ? '服务端错误，请稍后再试' : '请求失败';
+    }
+  }
+
+  /// 从可能是 String / Map / List 的响应体里取出第一段非空文本。
+  static String _firstText(dynamic data, [int depth = 0]) {
+    if (depth > 4) return '';
+    if (data == null) return '';
+    if (data is String) {
+      final t = data.trim();
+      return t.isEmpty ? '' : t;
+    }
+    if (data is Map) {
+      // 优先 error / message —— 服务端所有可执行提示都在这两个键里。
+      for (final k in const ['error', 'message', 'detail', 'msg']) {
+        final v = data[k];
+        if (v != null) {
+          final t = _firstText(v, depth + 1);
+          if (t.isNotEmpty) return t;
+        }
+      }
+      for (final v in data.values) {
+        final t = _firstText(v, depth + 1);
+        if (t.isNotEmpty) return t;
+      }
+      return '';
+    }
+    if (data is Iterable) {
+      for (final v in data) {
+        final t = _firstText(v, depth + 1);
+        if (t.isNotEmpty) return t;
+      }
+    }
+    return '';
   }
 }
