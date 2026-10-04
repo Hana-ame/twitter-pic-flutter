@@ -99,6 +99,19 @@ jobs:
                 bad=1
               fi
             fi
+            # 另一类风险：写的是**别的** static（TwitterApi 的 in-flight 缓存、
+            # LogService 的缓冲区等），本文件却只 reset 了 StorageService。
+            # 一并查，避免「清了一半」。
+            for other in TwitterApi LogService PosterService ProgressiveDiskCache; do
+              owrites=$(grep -cE "$other[.](set|add|put|clear|reset|toggle)[A-Za-z]*[(]" "$f" || true)
+              if [ "$owrites" -gt 0 ]; then
+                oresets=$(grep -cE "$other[.]resetForTests[(][)]" "$f" || true)
+                if [ "$oresets" -eq 0 ]; then
+                  echo "::error::$f 写了 $other 的静态状态但从不 $other.resetForTests()"
+                  bad=1
+                fi
+              fi
+            done
           done
           [ "$bad" -eq 0 ] && echo "所有写盘测试都做了状态隔离"
 
