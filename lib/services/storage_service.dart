@@ -12,6 +12,28 @@ class StorageService {
   static const _kDecodeBudget = 'decode-budget';
   static const _kGayMode = 'gay-mode';
   static const _kGayTags = 'gay-tags';
+  /// **跨端契约**：Gay 模式默认词表。与图站 `gallery/static/home.js` 的
+  /// `DEFAULT_GAY_TAGS` 必须是同一份。
+  ///
+  /// 选词依据（2026-10-04 实测 data/tags.db 的 account_tags）：
+  ///
+  /// | 词 | 实际带此标签的账号数 |
+  /// |---|---|
+  /// | 男性 | 141 |
+  /// | 男娘 | 214 |
+  /// | 男同 | 19 |
+  /// | 露屌 | 29 |
+  /// | 阳痿 | 5 |
+  /// | 人妖 | 0 |
+  ///
+  /// 知识库里另一份记载（notes/facts-twitter-pic-exclude-tag-cloud）写的
+  /// `gay / yaoi / futanari / 男同 / 基 / bl` **与线上代码不符**——那 5 个
+  /// 英文/单字词在库里**一条记录都没有**（不分大小写、不限权重均查不到）。
+  /// 换句话说：知识库那份若真的生效，会把线上正在过滤的 341 个账号**全部放行**，
+  /// 而不是多过滤几个。那份记载已按实测更正。
+  ///
+  /// ⚠️ 改这里必须同步改 home.js 的 DEFAULT_GAY_TAGS；
+  /// test/gay_tag_contract_test.dart 会把两端的字面量钉在一起，改漏就红。
   static const List<String> kDefaultGayTags = ['男性', '男娘', '人妖', '露屌', '阳痿', '男同'];
 
   static bool _loaded = false;
@@ -281,5 +303,13 @@ class StorageService {
 /// 当前生效的 Gay 模式标签集合（动态读取 StorageService.getGayTags）
 Set<String> get kGayTags => StorageService.getGayTags().toSet();
 
-/// 默认的 Gay 模式核心标签常量集合
-const Set<String> kDefaultGayTagsSet = {'男性', '男娘', '人妖', '露屌', '阳痿', '男同'};
+/// 默认的 Gay 模式核心标签常量集合。
+///
+/// 以前这里是**独立写死**的一份，和上面的 `kDefaultGayTags` 内容相同却是两个
+/// 定义 —— 改一处忘另一处，两边就悄悄漂移（这正是本项目反复出问题的形态）。
+/// 现在改成从唯一的真相源派生，全仓不再有第二份字面量。
+///
+/// 词表本身见 [kDefaultGayTags] 的注释：它与图站 gallery/static/home.js 的
+/// `DEFAULT_GAY_TAGS` 是**同一份跨端契约**，改一处必须同步另一处，并由
+/// test/gay_tag_contract_test.dart 把两端字面量钉在一起。
+final Set<String> kDefaultGayTagsSet = kDefaultGayTags.toSet();
