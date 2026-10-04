@@ -21,6 +21,7 @@ import '../models/user.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../widgets/proxy_avatar.dart';
+import '../widgets/tag_controller.dart';
 
 /// by=tag 的服务端返回上限（无分页）。
 const int kTagSearchLimit = 15;
@@ -141,6 +142,18 @@ class _TagUserListScreenState extends State<TagUserListScreen> {
             ),
           ],
         ),
+        actions: [
+          // 标签管理入口。此前**只在根 AppBar** 有，用户一旦进入标签反查页
+          // 想调屏蔽/高亮规则就必须一路按返回键回到首页 —— 而标签页本身
+          // 就是被标签驱动的页面，调规则是这里的自然动作。
+          IconButton(
+            icon: const Icon(Icons.local_offer_outlined),
+            tooltip: '标签管理',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const TagControllerScreen()),
+            ),
+          ),
+        ],
       ),
       body: _buildBody(),
     );

@@ -205,8 +205,23 @@ class UserListScreenState extends State<UserListScreen> {
         final results = outcome.users
             .where((u) => !StorageService.shouldHideUser(u.username, u.tags))
             .toList();
-        return ListView(
-          children: [
+        // 下拉刷新：**搜索态也必须有**。原来只有默认列表包了
+        // RefreshIndicator，搜索结果是一个裸 ListView —— 用户下拉毫无反应，
+        // 看起来像卡住了。搜索结果同样会过期（比如刚在详情页改了标签），
+        // 没有任何手动刷新入口。
+        //
+        // 刷新动作是重置 _searchFuture 让同一个键重新发一次请求，而不是
+        // 清空搜索词退回默认列表 —— 用户要的是"重看当前这批结果"。
+        return RefreshIndicator(
+          color: const Color(0xFF4F6CFF),
+          backgroundColor: Colors.white,
+          onRefresh: () async {
+            setState(() => _searchFuture = null);
+            await _ensureSearchFuture();
+          },
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
             // tag 模式隐藏"添加此用户"：它把搜索词当用户名（中文标签还会被
             // _AddUserTile 的 ^[a-zA-Z0-9_]*$ 正则挡掉），对标签查询毫无意义。
             if (!_searchByTag)
@@ -229,7 +244,8 @@ class UserListScreenState extends State<UserListScreen> {
             // tag 路命中如实标注服务端截断（LIMIT 15、无游标），不给"加载更多"。
             if (_searchByTag && results.isNotEmpty)
               _TagCapFooter(serverReturned: outcome.users.length),
-          ],
+            ],
+          ),
         );
       },
     );
