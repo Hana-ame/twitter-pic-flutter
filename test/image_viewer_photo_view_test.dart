@@ -10,6 +10,7 @@
 // 拖动会翻页"。photo_view 内置了这套仲裁，但**它是否被正确接线仍需断言**
 // —— 依赖换了不等于行为自动对。
 
+import 'dart:io' show zlib;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -105,7 +106,7 @@ class _GalleryState extends State<_Gallery> {
           onPageChanged: (i) => setState(() => _index = i),
         backgroundDecoration: const BoxDecoration(color: Colors.black),
           builder: (context, index) => PhotoViewGalleryPageOptions(
-            imageProvider: MemoryImage(_kPixels[index % _kPixels.length]),
+            imageProvider: MemoryImage(_kPixel),
             controller: widget.controllers[index],
             heroAttributes: widget.heroIndexes.contains(index)
                 ? PhotoViewHeroAttributes(tag: 'img_${widget.urls[index]}')
@@ -121,22 +122,68 @@ class _GalleryState extends State<_Gallery> {
   }
 }
 
-/// 8x8 纯红 PNG（75 字节）。
+/// 400x300 纯红 PNG，**运行时生成**而不是内联字节串。
 ///
-/// **必须是真 PNG**：早先用 `[255,255,255,255]`（4 个字节）当图片，那是**非法
-/// 图像数据**，MemoryImage 解码抛 "Invalid image data"。测试脚手架用假字节
-/// 装图片时，解码器会在 pumpAndSettle 里把异常抛回来，而堆栈指向
-/// ImageProvider，看不出是自己造的假数据 —— 白排查一轮。
-final List<Uint8List> _kPixels = [
-  Uint8List.fromList([
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, //
-    0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0, 75, 109, 41,
-    220, 0, 0, 0, 18, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192,
-    128, 21, 97, 23, 29, 180, 18, 0, 40, 255, 63, 193, 110, 236, 223,
-    97, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
-  ]),
-];
+/// 两点都是本轮踩出来的：
+///  1. 必须是**合法** PNG。用 [255,255,255,255] 四个字节当图片，MemoryImage
+///     解码抛 "Invalid image data"，堆栈指向 ImageProvider，像组件坏了，
+///     实则是脚手架自己造的假数据。
+///  2. 必须**够大**。8x8 的图在 800x600 测试视口里 `contained` 会算出 75x
+///     缩放（800/8≈100，再被另一轴压到 75），于是"翻页后应回到 contain
+///     比例"这条断言拿到 75.0 而失败——同样是测试脚手架的错，不是产品缺陷。
+///     400x300 接近手机屏比例，`contained` 落在 1~2 之间。
+///  3. 内联 810 字节字面量难读也难校验，改用 zlib 现场压：只依赖 dart:io 的
+///     zlib，读者能看懂构造过程。
+Uint8List _png(int w, int h, {int r = 255, int g = 0, int b = 0}) {
+  final row = List<int>.filled(w * 3 + 1, 0)..[0] = 0; // filter byte + RGB
+  for (var i = 1; i < row.length; i += 3) {
+    row[i] = r;
+    row[i + 1] = g;
+    row[i + 2] = b;
+  }
+  final raw = List<int>.filled(row.length * h, 0);
+  for (var y = 0; y < h; y++) {
+    raw.setRange(y * row.length, (y + 1) * row.length, row);
+  }
 
+  List<int> chunk(String type, List<int> data) {
+    final body = <int>[...type.codeUnits, ...data];
+    return <int>[
+      ...(data.length >> 24) & 0xff,
+      ...(data.length >> 16) & 0xff,
+      ...(data.length >> 8) & 0xff,
+      ...data.length & 0xff,
+      ...body,
+      ...(_crc32(body) & 0xffffffff),
+    ];
+  }
+
+  final ihdr = <int>[
+    ...(w >> 24) & 0xff, ...(w >> 16) & 0xff, ...(w >> 8) & 0xff, ...w & 0xff,
+    ...(h >> 24) & 0xff, ...(h >> 16) & 0xff, ...(h >> 8) & 0xff, ...h & 0xff,
+    8, 2, 0, 0, 0, // 8bit, truecolor
+  ];
+  return Uint8List.fromList(<int>[
+    137, 80, 78, 71, 13, 10, 26, 10, // PNG magic
+    ...chunk('IHDR', ihdr),
+    ...chunk('IDAT', zlib.encode(raw)),
+    ...chunk('IEND', const <int>[]),
+  ]);
+}
+
+final Uint8List _kPixel = _png(400, 300);
+
+/// CRC32（PNG 分块校验）。自实现是因为 dart:io 的 zlib 没有暴露 crc32。
+int _crc32(List<int> data) {
+  var crc = 0xffffffff;
+  for (final byte in data) {
+    crc ^= byte;
+    for (var k = 0; k < 8; k++) {
+      crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xedb88320 : crc >> 1;
+    }
+  }
+  return crc ^ 0xffffffff;
+}
 void main() {
   const urls = [
     'http://127.0.0.1:1234/media/a.jpg?format=jpg&name=orig',
