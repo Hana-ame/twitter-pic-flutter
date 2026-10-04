@@ -165,6 +165,20 @@ jobs:
       # 挂死真因已修（测试体内不再有真实文件 IO：setUp 不调
       # ensureInitialized，_file 保持 null，_doFlush 首行即短路），
       # 所以按最严格条件跑：带覆盖率、整包、必须全绿。
+      #
+      # 【本步骤把上面那段注释变成可执行断言】注释拦不住人，断言可以。
+      # 它拦住的具体行为是：拿「逐文件跑通了」当验收——那是第 1 级绿色，
+      # 不构成验收（跨文件的相互作用只有整包才现形）。
+      - name: Acceptance gate (whole-suite, not per-file)
+        run: |
+          cd /tmp/test_project
+          n_test=$(ls test/*.dart 2>/dev/null | wc -l)
+          if [ "$n_test" -eq 0 ]; then
+            echo "::error::找不到任何测试文件，整包验收无从谈起"
+            exit 1
+          fi
+          echo "整包验收对象：$n_test 个测试文件（必须在下面 Run tests 那一次运行里全部被执行）"
+
       - name: Run tests
         run: |
           cd /tmp/test_project
@@ -197,7 +211,12 @@ jobs:
         with:
           name: coverage
           path: /tmp/test_project/coverage/lcov.info
-          if-no-files-found: warn
+          # `error`（原先 `warn`）：warn 意味着**产物不存在时这一步照样绿**——
+          # 于是「整包测试跑完、CI 全绿、但覆盖率数据根本没落盘」不会有任何信号。
+          # 这一级的意义就是「产物真的落地」，产物缺失必须**失败**。
+          # 注意这不能替代上面那道 `Coverage artifact must actually exist`
+          # （它查内容非空）：这里是查文件在不在，那里是查有没有内容。
+          if-no-files-found: error
           retention-days: 30
 
 
