@@ -172,7 +172,10 @@ void main() {
       expect(box.bottom, lessThanOrEqualTo(tester.view.physicalSize.height /
           tester.view.devicePixelRatio),
           reason: '确认按钮被挤出视口（bottom=${box.bottom}）');
-      expect(tester.hitTestable(confirm), findsOneWidget,
+      // hitTestable 是 find 的修饰器，不是 WidgetTester 的方法。
+      // 它筛出「命中测试能真正落到这个 widget 上」的候选，用来实现
+      // 「按钮没有被遮罩或父级挡住」这条判据。
+      expect(confirm.hitTestable(), findsOneWidget,
           reason: '确认按钮不可 hit-test —— 遮罩或父级把它挡住了');
     },
   );

@@ -356,4 +356,7 @@ Set<String> get kGayTags => StorageService.getGayTags().toSet();
 /// 词表本身见 [kDefaultGayTags] 的注释：它与图站 gallery/static/home.js 的
 /// `DEFAULT_GAY_TAGS` 是**同一份跨端契约**，改一处必须同步另一处，并由
 /// test/gay_tag_contract_test.dart 把两端字面量钉在一起。
-final Set<String> kDefaultGayTagsSet = kDefaultGayTags.toSet();
+// 注意要写 StorageService.kDefaultGayTags —— kDefaultGayTags 是类里的
+// **static 成员**，顶层作用域直接引用会报 undefined_identifier。
+final Set<String> kDefaultGayTagsSet =
+    StorageService.kDefaultGayTags.toSet();
