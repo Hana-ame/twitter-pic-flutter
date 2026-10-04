@@ -690,6 +690,11 @@ class _ImageViewerState extends State<_ImageViewer> {
             minScale: PhotoViewComputedScale.contained,
             initialScale: PhotoViewComputedScale.contained,
             maxScale: PhotoViewComputedScale.covered * 4,
+            // 放大后允许单指拖动平移图片。**这一条正是用户指出的核心诉求**：
+            // 默认行为是「只有图片已到边界才允许平移」，未到边界的拖动会被
+            // 上层相册接去翻页，于是「放大后拖动 = 翻到下一张」。
+            // enablePanAlways 让拖动**始终**归平移，翻页只在未放大时生效。
+            enablePanAlways: true,
             // 双击在 1x 与 2.5x 之间切；点一下空白处关掉相册是列表那边的行为，
             // 这里 onTapUp 交给 PhotoView 默认（无操作），避免与双击抢。
             onTapUp: (context, details, controller) {},

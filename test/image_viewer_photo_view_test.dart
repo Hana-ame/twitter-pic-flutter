@@ -18,14 +18,26 @@ import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 
 /// 缩放状态控制器：photo_view 把每页的缩放挂在它上面，测试据此断言。
+///
+/// 只覆写 [reset]（它确实存在且是 public），用来观测「翻页时是否发生复位」。
+/// 缩放值走真实的 [value] getter —— 真实 API 里是 `PhotoViewControllerValue.scale`
+/// （可空 double），没有 zoomToValue / scaleStateValue 这两个方法/属性
+/// （写测试时按记忆猜过，报 undefined 才查源码确认）。
 class _SpyController extends PhotoViewController {
-  double? lastScale;
   int resetCount = 0;
 
   @override
   void reset() {
     resetCount++;
     super.reset();
+  }
+
+  /// 当前缩放；null = 未设置（photo_view 用 null 表示"由 ScaleState 自决"）。
+  double? get currentScale => value.scale;
+
+  /// 用真实 setter 放大（`scale` 是 PhotoViewController 上的公开 setter）。
+  void zoomTo(double s) {
+    scale = s;
   }
 }
 
@@ -85,6 +97,7 @@ class _GalleryState extends State<_Gallery> {
           minScale: PhotoViewComputedScale.contained,
           initialScale: PhotoViewComputedScale.contained,
           maxScale: PhotoViewComputedScale.covered * 4,
+          enablePanAlways: true,
         ),
       ),
     );
@@ -137,7 +150,7 @@ void main() {
     final first = controllers[0];
 
     // 把第 1 页缩放上去（模拟用户双击放大）
-    first.zoomToValue(2.5);
+    first.zoomTo(2.5);
     await tester.pumpAndSettle();
 
     // 翻到第 2 页
@@ -147,11 +160,10 @@ void main() {
     // 第 2 页的 controller 不该继承第 1 页的缩放
     final second = controllers[1];
     expect(second.scaleStateValue, isNotNull);
-    expect(
-      second.scaleStateValue!.scale,
-      anyOf(lessThan(1.5), isNull),
-      reason: '翻页后新页应回到 contain 比例，而不是继承上一页的放大',
-    );
+    // 第二页的 scale 要么仍是 null（由 ScaleState 自决=contain），要么是 1.x
+    // 的contain 比例；**绝不该是 2.5**（那是第一页的值）。
+    expect(second.currentScale, anyOf(isNull, lessThan(1.5)),
+        reason: '翻页后新页应回到 contain 比例，而不是继承上一页的放大');
   });
 
   testWidgets('Hero tag 只挂在打开时那一页（否则翻页撞重复 tag 断言）',
@@ -172,7 +184,7 @@ void main() {
     final first = controllers[0];
 
     // 先放大到 2.5x —— 只有放大后，「拖动」才应该被理解为平移。
-    first.zoomToValue(2.5);
+    first.zoomTo(2.5);
     await tester.pumpAndSettle();
 
     // 记下当前页

@@ -104,10 +104,6 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
           fit: BoxFit.cover,
           width: widget.radius * 2,
           height: widget.radius * 2,
-          // 头像只需 radius*2 像素，避免为小圆形头像解码全尺寸图片浪费
-          // 内存/CPU。
-          cacheWidth: (widget.radius * 2).round(),
-          cacheHeight: (widget.radius * 2).round(),
           errorBuilder: (context, error, stackTrace) {
             // 当前通道失败 → 试下一个候选通道。
             if (_attempt < candidates.length - 1) {
