@@ -113,6 +113,15 @@ Finder backdropFinder() => find.byWidgetPredicate(
       w.color == const Color(0x8A000000),
 );
 
+//
+// ## 为什么全文只用有界 pump，不用 pumpAndSettle
+//
+// 被测页面里有**永不停止的动画**：
+//   - UserListScreen 在结果回来前渲染 _SkeletonCircle（AnimationController.repeat）；
+//   - TagUserListScreen 外面包着 RefreshIndicator，转圈动画同样不停。
+// pumpAndSettle 的语义是「一直 pump 直到没有任何待处理帧」，遇到这种动画
+// **永远不会返回** —— 本次 CI 上就因此挂死了 30 多分钟（正常一轮约 80 秒）。
+// 一律改成 pump(const Duration(...))，自己控制推进多少帧。
 void main() {
   late Directory tmpDir;
 
@@ -134,22 +143,28 @@ void main() {
       final adapter = _AddFlowAdapter();
       final api = TwitterApi(adapter: adapter);
 
+      // 用 Scaffold 包一层，与既有 search_merge_test 保持一致（那边是已知能跑通的
+      // 结构）。不要直接 MaterialApp(home: ...)：那样 AppBar 之外没有 body 约束，
+      // 与真实使用形态不同。
       await tester.pumpWidget(MaterialApp(
-        home: UserListScreen(proxy: ProxyManager(), api: api),
+        home: Scaffold(body: UserListScreen(proxy: ProxyManager(), api: api)),
       ));
-      await tester.pump();
+      // 全部用**有界** pump，不用 pumpAndSettle：默认列表在结果回来前渲染
+      // _SkeletonCircle（AnimationController.repeat，无限动画），
+      // pumpAndSettle 永远等不到"无待处理帧"，会一直转到超时。
+      await tester.pump(const Duration(milliseconds: 100));
 
       // 搜一个用户名，让「添加 @xxx」那张卡片出现（_AddUserTile）。
       await tester.enterText(find.byType(TextField).first, 'alice');
       await tester.pump(const Duration(milliseconds: 400));
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
 
       expect(addTile(), findsWidgets,
           reason: '前置条件：搜索后应出现「添加 @alice」卡片');
 
       await tester.tap(addTile().first);
-      await tester.pump();
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
 
       // 判据 1：弹层确实挂出来了。
       expect(find.textContaining('添加标签 @alice'), findsOneWidget);
@@ -186,17 +201,23 @@ void main() {
       final adapter = _AddFlowAdapter()..failWithStatus = 500;
       final api = TwitterApi(adapter: adapter);
 
+      // 用 Scaffold 包一层，与既有 search_merge_test 保持一致（那边是已知能跑通的
+      // 结构）。不要直接 MaterialApp(home: ...)：那样 AppBar 之外没有 body 约束，
+      // 与真实使用形态不同。
       await tester.pumpWidget(MaterialApp(
-        home: UserListScreen(proxy: ProxyManager(), api: api),
+        home: Scaffold(body: UserListScreen(proxy: ProxyManager(), api: api)),
       ));
-      await tester.pump();
+      // 全部用**有界** pump，不用 pumpAndSettle：默认列表在结果回来前渲染
+      // _SkeletonCircle（AnimationController.repeat，无限动画），
+      // pumpAndSettle 永远等不到"无待处理帧"，会一直转到超时。
+      await tester.pump(const Duration(milliseconds: 100));
       await tester.enterText(find.byType(TextField).first, 'alice');
       await tester.pump(const Duration(milliseconds: 400));
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
 
       await tester.tap(addTile().first);
-      await tester.pump();
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
 
       // 先禁用状态 → 选一个标签让它解禁。
       expect(
@@ -204,7 +225,7 @@ void main() {
         isNull,
         reason: '没选标签时确认按钮应禁用');
       await tester.tap(find.text('男性').first);
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
       expect(
         tester.widget<ElevatedButton>(find.byType(ElevatedButton).first).onPressed,
         isNotNull,
@@ -212,7 +233,7 @@ void main() {
 
       // 提交（必然失败）。
       await tester.tap(find.byType(ElevatedButton).first);
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(adapter.postCount, greaterThan(0),

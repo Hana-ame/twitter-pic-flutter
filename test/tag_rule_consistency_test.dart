@@ -68,6 +68,15 @@ String tagBody(String username, Map<String, int> tags) {
   return '[{"username":"$username","tags":{$entries}}]';
 }
 
+//
+// ## 为什么全文只用有界 pump，不用 pumpAndSettle
+//
+// 被测页面里有**永不停止的动画**：
+//   - UserListScreen 在结果回来前渲染 _SkeletonCircle（AnimationController.repeat）；
+//   - TagUserListScreen 外面包着 RefreshIndicator，转圈动画同样不停。
+// pumpAndSettle 的语义是「一直 pump 直到没有任何待处理帧」，遇到这种动画
+// **永远不会返回** —— 本次 CI 上就因此挂死了 30 多分钟（正常一轮约 80 秒）。
+// 一律改成 pump(const Duration(...))，自己控制推进多少帧。
 void main() {
   late Directory tmpDir;
 
@@ -93,8 +102,8 @@ void main() {
       // u1 同时带「自拍」和 Gay 词表里的「男同」。
       await tester.pumpWidget(
           host(tagBody('u1', {'自拍': 2, '男同': 1})));
-      await tester.pump();
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
 
       // 判据是「找不到」：Gay 模式存在的全部意义就是别让它漏出来。
       expect(find.text('@u1'), findsNothing,
@@ -108,8 +117,8 @@ void main() {
       StorageService.setGayMode(true);
       await tester.pumpWidget(
           host(tagBody('u1', {'自拍': 2, '男同': 1})));
-      await tester.pump();
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
 
       expect(find.text('@u1'), findsOneWidget,
           reason: '开了 Gay 模式就该放行 —— 这条防止「过滤写死成永远隐藏」');
@@ -122,8 +131,8 @@ void main() {
       // 「自拍」权重为负：详情页的 TagDisplayArea 早就把它藏了（commit
       // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
       await tester.pumpWidget(host(tagBody('u1', {'自拍': -1})));
-      await tester.pump();
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
 
       expect(find.text('#自拍'), findsNothing,
           reason: 'score<0 的标签全局不展示');
@@ -133,8 +142,8 @@ void main() {
   testWidgets('高亮规则要能到达标签列表（带星标）', (tester) async {
     StorageService.setHighlightTags(['自拍']);
     await tester.pumpWidget(host(tagBody('u1', {'自拍': 2})));
-    await tester.pump();
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.byIcon(Icons.star), findsOneWidget,
         reason: '标签管理里标了高亮，标签页就该给同样的强调');
@@ -143,8 +152,8 @@ void main() {
   testWidgets('未高亮的标签**不该**有星标（防止星标变成常亮装饰）', (tester) async {
     StorageService.setHighlightTags(['别的标签']);
     await tester.pumpWidget(host(tagBody('u1', {'自拍': 2})));
-    await tester.pump();
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.byIcon(Icons.star), findsNothing);
   });
