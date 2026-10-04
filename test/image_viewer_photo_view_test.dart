@@ -58,11 +58,22 @@ class _Gallery extends StatefulWidget {
 
   @override
   State<_Gallery> createState() => _GalleryState();
+
+  /// 当前页码：测试据此断言「拖动后到底翻没翻页」。
+  static int currentPageOf(WidgetTester tester) =>
+      tester.state<_GalleryState>(find.byType(_Gallery)).currentPage;
 }
 
 class _GalleryState extends State<_Gallery> {
   late final PageController _pageController;
   late int _index;
+
+  /// 当前页码。
+  ///
+  /// 测试据此断言「拖动之后到底翻没翻页」——这是唯一能判别
+  /// 「放大后拖动=平移」与「放大后拖动=翻页」的观测量。断言 widget 实例
+  /// 相同或 resetCount 恒等都是**弱断言**（几乎恒真），写不出缺陷。
+  int get currentPage => _index;
 
   @override
   void initState() {
@@ -82,22 +93,28 @@ class _GalleryState extends State<_Gallery> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: PhotoViewGallery.builder(
-        pageController: _pageController,
-        itemCount: widget.urls.length,
-        onPageChanged: (i) => setState(() => _index = i),
+    // MaterialApp 是必需的：Scaffold 要一个 Directionality 祖先，而
+    // Directionality 由 MaterialApp（或 WidgetsApp / Directionality）提供。
+    // 只 pump 一个 Scaffold 会直接抛 "No Directionality widget found"——
+    // 这个坑本轮踩过一次（6 个用例全挂在同一句断言上）。
+    return MaterialApp(
+      home: Scaffold(
+        body: PhotoViewGallery.builder(
+          pageController: _pageController,
+          itemCount: widget.urls.length,
+          onPageChanged: (i) => setState(() => _index = i),
         backgroundDecoration: const BoxDecoration(color: Colors.black),
-        builder: (context, index) => PhotoViewGalleryPageOptions(
-          imageProvider: MemoryImage(_kPixels[index % _kPixels.length]),
-          controller: widget.controllers[index],
-          heroAttributes: widget.heroIndexes.contains(index)
-              ? PhotoViewHeroAttributes(tag: 'img_${widget.urls[index]}')
-              : null,
-          minScale: PhotoViewComputedScale.contained,
-          initialScale: PhotoViewComputedScale.contained,
-          maxScale: PhotoViewComputedScale.covered * 4,
-          tightMode: true,
+          builder: (context, index) => PhotoViewGalleryPageOptions(
+            imageProvider: MemoryImage(_kPixels[index % _kPixels.length]),
+            controller: widget.controllers[index],
+            heroAttributes: widget.heroIndexes.contains(index)
+                ? PhotoViewHeroAttributes(tag: 'img_${widget.urls[index]}')
+                : null,
+            minScale: PhotoViewComputedScale.contained,
+            initialScale: PhotoViewComputedScale.contained,
+            maxScale: PhotoViewComputedScale.covered * 4,
+            tightMode: true,
+          ),
         ),
       ),
     );
@@ -185,36 +202,33 @@ void main() {
     // 先放大到 2.5x —— 只有放大后，「拖动」才应该被理解为平移。
     first.zoomTo(2.5);
     await tester.pumpAndSettle();
+    expect(_Gallery.currentPageOf(tester), 0);
 
-    // 记下当前页
-    final beforePage = tester.widget<PhotoViewGallery>(find.byType(PhotoViewGallery));
-
-    // 模拟"放大后单指横向拖动"
+    // 单指横向拖动（模拟用户放大后想看图片右侧）
     await tester.drag(find.byType(PhotoViewGallery), const Offset(-160, 0));
     await tester.pumpAndSettle();
 
-    // 关键断言：拖动之后**仍然是第 0 页**（没被翻走）
-    final afterPage = tester.widget<PhotoViewGallery>(find.byType(PhotoViewGallery));
-    expect(identical(beforePage, afterPage), isFalse,
-        reason: 'widget 实例可能重建，这条只作弱断言');
+    // 核心断言：**页码没变**。旧实现（手写 Transform.scale + GestureDetector）
+    // 在这里会翻到下一张 —— 这条断言就是为守住该缺陷而写的。
+    expect(_Gallery.currentPageOf(tester), 0,
+        reason: '放大后拖动必须平移图片，不能翻到下一张');
 
-    // 更强的断言：gallery 的页码指示没变（_ImageViewer 的标题读 _index）
+    // 也没有把图片甩回初始缩放（翻页时才会 reset）
     expect(first.resetCount, 0,
-        reason: '平移不应触发 controller.reset（reset 是翻页时复位用的）');
+        reason: '平移不应触发 controller.reset（reset 是翻页/缩放复位用的）');
   });
 
   testWidgets('未放大时横向拖动 = 翻页（平移不得劫持未放大时的翻页）',
       (tester) async {
-    final controllers = await pumpGallery(tester);
-    final first = controllers[0];
+    await pumpGallery(tester);
+    expect(_Gallery.currentPageOf(tester), 0);
 
-    // 未放大（contain）
+    // 未放大（contain）时，横向拖动应当翻页
     await tester.drag(find.byType(PhotoViewGallery), const Offset(-500, 0));
     await tester.pumpAndSettle();
 
-    // 翻页成功 → PhotoViewGallery 内部 page 变了
-    expect(first.resetCount, greaterThanOrEqualTo(0));
-    // 能完成拖动且无异常即通过；真正的页码断言见下面 state 版
-    expect(tester.takeException(), isNull);
+    // 与上一条「放大后不翻页」成对，构成状态机两翼
+    expect(_Gallery.currentPageOf(tester), 1,
+        reason: '未放大时横向拖动必须翻页，否则相册翻不过去');
   });
 }
