@@ -732,7 +732,7 @@ class _AddUserTileState extends State<_AddUserTile> {
     // `*` 改成 `+`：`^[a-zA-Z0-9_]*$` 对**空串也匹配**（`*` 允许零次），
     // 于是空用户名能过这道校验，`createMetaData('')` 拼出 `/api/twitter/`
     // 打到 gin 的 NoRoute —— 而 NoRoute 在本项目里回的是 gallery 的 SSR 页面
-    "HTTP 200 HTML"（go/server/main.go 的 r.NoRoute），
+    // HTTP 200 HTML（go/server/main.go 的 r.NoRoute），
     // 客户端把 200 当成功，于是**一次根本没发生的添加被报成「已添加」**，
     // 还白烧掉服务端 25 次/小时的 POST 配额之一。
     final regex = RegExp(r'^[a-zA-Z0-9_]+$');
