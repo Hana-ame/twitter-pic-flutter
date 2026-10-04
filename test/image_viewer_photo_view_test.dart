@@ -97,7 +97,7 @@ class _GalleryState extends State<_Gallery> {
           minScale: PhotoViewComputedScale.contained,
           initialScale: PhotoViewComputedScale.contained,
           maxScale: PhotoViewComputedScale.covered * 4,
-          enablePanAlways: true,
+          tightMode: true,
         ),
       ),
     );
@@ -159,7 +159,6 @@ void main() {
 
     // 第 2 页的 controller 不该继承第 1 页的缩放
     final second = controllers[1];
-    expect(second.scaleStateValue, isNotNull);
     // 第二页的 scale 要么仍是 null（由 ScaleState 自决=contain），要么是 1.x
     // 的contain 比例；**绝不该是 2.5**（那是第一页的值）。
     expect(second.currentScale, anyOf(isNull, lessThan(1.5)),

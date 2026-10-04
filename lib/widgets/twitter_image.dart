@@ -690,11 +690,18 @@ class _ImageViewerState extends State<_ImageViewer> {
             minScale: PhotoViewComputedScale.contained,
             initialScale: PhotoViewComputedScale.contained,
             maxScale: PhotoViewComputedScale.covered * 4,
-            // 放大后允许单指拖动平移图片。**这一条正是用户指出的核心诉求**：
-            // 默认行为是「只有图片已到边界才允许平移」，未到边界的拖动会被
-            // 上层相册接去翻页，于是「放大后拖动 = 翻到下一张」。
-            // enablePanAlways 让拖动**始终**归平移，翻页只在未放大时生效。
-            enablePanAlways: true,
+            // **放大后拖动 = 平移图片**（用户指出的核心诉求）。
+            //
+            // 之前想用 `enablePanAlways`，但 PhotoViewGalleryPageOptions 没有
+            // 这个参数——查源码确认：相册内部构造 PhotoView 时
+            // （photo_view_gallery.dart:280-304）只透传 tightMode 等既有项，
+            // **enablePanAlways 不在其中**，所以它在相册里根本设不上。
+            //
+            // 真正的开关是 tightMode：它把 PhotoView 的约束收紧到
+            // "childSize × scale"，于是尺寸随缩放变大，平移在放大后必然
+            // 有可移动空间；未放大时该空间为 0，拖动自然交还给相册去翻页。
+            // 这正是「放大态归图片、原图态归翻页」的状态机。
+            tightMode: true,
             // 双击在 1x 与 2.5x 之间切；点一下空白处关掉相册是列表那边的行为，
             // 这里 onTapUp 交给 PhotoView 默认（无操作），避免与双击抢。
             onTapUp: (context, details, controller) {},
