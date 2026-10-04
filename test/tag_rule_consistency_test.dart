@@ -50,6 +50,17 @@ class _TagAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+/// 把 StorageService 里 fire-and-forget 的写盘链排空。
+///
+/// `_write()` 内部是 `unawaited(_flush())`，每次写都往 `_flushChain` 上挂一个
+/// future。flutter_test 用假异步时钟，`.then` 回调要等下一次 pump 才会跑；
+/// 而这些写发生在 widget 测试体内，于是该 future 永远不就绪，框架判定
+/// 「还有未完成任务」，用例卡到 10 分钟超时。
+///
+/// 既有测试没这问题：它们从不在 widget 测试体内调这些写方法。
+///
+/// 用法：写完立刻 `await flushStorage();`，把链排空。
+Future<void> flushStorage() => StorageService.debugFlushPending();
 /// 每建一个 TwitterApi / ProxyManager 都要登记，tearDown 里统一释放。
 /// 不释放的话，Dio 的内部定时器会一直活着，flutter_test 认为文件没跑完，
 /// 整个文件卡到超时（CI 上实测 180s rc=124）。
@@ -150,6 +161,7 @@ void main() {
     'Gay 模式**开启**时，同一个账号应该出现（过滤方向要真的反过来）',
     (tester) async {
       StorageService.setGayMode(true);
+      await flushStorage();
       await tester.pumpWidget(
           host(tagBody('u1', {'自拍': 2, '男同': 1})));
       await tester.pump(const Duration(milliseconds: 100));
@@ -176,6 +188,7 @@ void main() {
 
   testWidgets('高亮规则要能到达标签列表（带星标）', (tester) async {
     StorageService.setHighlightTags(['自拍']);
+      await flushStorage();
     await tester.pumpWidget(host(tagBody('u1', {'自拍': 2})));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
@@ -186,6 +199,7 @@ void main() {
 
   testWidgets('未高亮的标签**不该**有星标（防止星标变成常亮装饰）', (tester) async {
     StorageService.setHighlightTags(['别的标签']);
+      await flushStorage();
     await tester.pumpWidget(host(tagBody('u1', {'自拍': 2})));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));

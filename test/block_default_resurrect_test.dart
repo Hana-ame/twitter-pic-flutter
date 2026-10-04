@@ -22,6 +22,17 @@ class _FakePathProvider extends PathProviderPlatform {
   Future<String?> getApplicationSupportPath() async => dir;
 }
 
+/// 把 StorageService 里 fire-and-forget 的写盘链排空。
+///
+/// `_write()` 内部是 `unawaited(_flush())`，每次写都往 `_flushChain` 上挂一个
+/// future。flutter_test 用假异步时钟，`.then` 回调要等下一次 pump 才会跑；
+/// 而这些写发生在 widget 测试体内，于是该 future 永远不就绪，框架判定
+/// 「还有未完成任务」，用例卡到 10 分钟超时。
+///
+/// 既有测试没这问题：它们从不在 widget 测试体内调这些写方法。
+///
+/// 用法：写完立刻 `await flushStorage();`，把链排空。
+Future<void> flushStorage() => StorageService.debugFlushPending();
 void main() {
   late Directory tmpDir;
 
@@ -48,6 +59,7 @@ void main() {
   testWidgets('用户显式清空屏蔽列表后，默认标签**不许复活**', (tester) async {
     // 这是「用户主动清空」：键存在，值是空列表。
     StorageService.setTagRules({'highlight': <String>[], 'block': <String>[]});
+    await flushStorage();
 
     await tester.pumpWidget(
         const MaterialApp(home: TagControllerScreen()));
@@ -75,6 +87,7 @@ void main() {
   testWidgets('用户自己加进去的屏蔽标签要活过重启', (tester) async {
     StorageService.setTagRules(
         {'highlight': <String>[], 'block': <String>['广告']});
+    await flushStorage();
 
     await tester.pumpWidget(
         const MaterialApp(home: TagControllerScreen()));
