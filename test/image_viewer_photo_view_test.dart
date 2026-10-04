@@ -146,21 +146,23 @@ Uint8List _png(int w, int h, {int r = 255, int g = 0, int b = 0}) {
     raw.setRange(y * row.length, (y + 1) * row.length, row);
   }
 
+  /// 大端 4 字节。Dart **没有** uint32，所以用 int（补码足够，
+  /// PNG 字段都 < 2^31）并显式 & 0xff逐字节取出。
+  ///
+  /// 注意不能写成 `...(v >> 24) & 0xff` —— 那是把**一个 int** 展开进 list
+  /// 字面量，analyze 直接报 not_iterable_spread（"Spread elements in list or
+  /// set literals must implement 'Iterable'"）。必须先算出单个字节再放进列表。
+  List<int> be32(int v) =>
+      <int>[(v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
+
   List<int> chunk(String type, List<int> data) {
     final body = <int>[...type.codeUnits, ...data];
-    return <int>[
-      ...(data.length >> 24) & 0xff,
-      ...(data.length >> 16) & 0xff,
-      ...(data.length >> 8) & 0xff,
-      ...data.length & 0xff,
-      ...body,
-      ...(_crc32(body) & 0xffffffff),
-    ];
+    return <int>[...be32(data.length), ...body, ...be32(_crc32(body))];
   }
 
   final ihdr = <int>[
-    ...(w >> 24) & 0xff, ...(w >> 16) & 0xff, ...(w >> 8) & 0xff, ...w & 0xff,
-    ...(h >> 24) & 0xff, ...(h >> 16) & 0xff, ...(h >> 8) & 0xff, ...h & 0xff,
+    ...be32(w),
+    ...be32(h),
     8, 2, 0, 0, 0, // 8bit, truecolor
   ];
   return Uint8List.fromList(<int>[
