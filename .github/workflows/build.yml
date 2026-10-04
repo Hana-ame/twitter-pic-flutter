@@ -74,6 +74,34 @@ jobs:
       # 廉价结构自检：删改测试文件时最容易丢的是「文件入口」与顶层声明，
       # 而它们不会体现在任何单文件断言里 —— analyze 能抓到未定义标识符，
       # 但只有当引用点还在时。本步骤保证每个测试文件都有 main()。
+      # 状态隔离自检：任何调用 StorageService 写方法的测试文件，都必须在
+      # setUp/tearDown 里 resetForTests()。
+      #
+      # 为什么要有这条：StorageService 的状态是**进程级 static**（_loaded /
+      # _memory / _file / _flushChain）。测试文件之间共享同一份，不清就会串味 ——
+      # 本轮就踩到过：_file 仍指向上一个文件留下、且已被 tearDown 删掉的临时目录，
+      # 表现为「单文件全过、整包挂死」。
+      #
+      # 注意 resetForTests **已有大量调用点**（五个 resetForTests 家族：
+      # StorageService 24 / TwitterApi 11 / ProgressiveDiskCache 5 / LogService 3 /
+      # PosterService 3），不是废弃机制。这条检查的作用是**防止新文件漏掉**
+      # ——漏掉时 analyze 不会报、任何单文件断言也不会报，只有整包会炸。
+      - name: Storage-writing tests must reset static state
+        run: |
+          cd /tmp/test_project
+          bad=0
+          for f in test/*.dart; do
+            writes=$(grep -cE 'StorageService[.](setTagRules|setFavMap|setHighlightTags|setBlockTags|setGayTags|setGayMode|resetGayTags|toggleFav|toggleBlock)[(]' "$f" || true)
+            if [ "$writes" -gt 0 ]; then
+              resets=$(grep -c 'StorageService[.]resetForTests()' "$f" || true)
+              if [ "$resets" -eq 0 ]; then
+                echo "::error::$f 调用了 StorageService 写方法但从不 resetForTests —— 静态状态会跨用例串味"
+                bad=1
+              fi
+            fi
+          done
+          [ "$bad" -eq 0 ] && echo "所有写盘测试都做了状态隔离"
+
       - name: Every test file has a main entry point
         run: |
           cd /tmp/test_project
@@ -86,7 +114,24 @@ jobs:
           done
           [ "$missing" -eq 0 ] && echo "全部测试文件入口完整"
 
-      - name: Per-file test report
+      # **本步骤不构成验收，只用于定位。**
+      #
+      # 本项目为此付过 22 分钟的代价：同一套 27 个测试，逐文件跑**全部通过**，
+      # 而整包跑挂在 22 分钟才被人手动取消。「隔离绿」当时没有暴露任何问题，
+      # 反而让人以为没问题。
+      #
+      # 原因：单文件跑不共享同一份**进程级 static 状态**，跨文件的相互作用
+      # （悬空 future、串味的状态）只有整包才会现形。
+      #
+      # 绿色分级（只有第 3 级算数）：
+      #   1. 隔离绿 —— 本步骤输出。**不构成验收**，仅说明「不是某个文件的死循环」。
+      #   2. 整包绿 —— 下面 Run tests 的结果。
+      #   3. 整包绿 + 覆盖率产物真落盘 —— 最终交付标准。
+      #
+      # 第 3 级必须查产物本身而非步骤状态：Upload coverage 用了
+      # `if-no-files-found: warn`，文件不存在时那一步**照样绿**。今天正是靠直接
+      # 查 artifact（8118 字节）才发现「绿了但数据没落盘」。
+      - name: Per-file test report (diagnostic only - NOT acceptance)
         if: always()
         run: |
           cd /tmp/test_project
@@ -118,6 +163,21 @@ jobs:
       # （这一段此前被我误删：当时为绕开挂死连 --coverage 一起去掉了，
       #    上传步骤成了死代码；--coverage 恢复后忘了补回来，属于删漏，
       #   不是主动放弃。）
+      # 第 3 级判据的机器化：整包跑完必须**真的有** lcov.info。
+      #
+      # Upload coverage 用了 if-no-files-found: warn，所以「没产物」也会显示绿 —
+      # 今天就出现过：绿了但覆盖率数据没落盘。交付标准是「整包绿 + 产物真落盘」，
+      # 那一级最容易漏，因为它看起来和第 2 级一样绿。
+      - name: Coverage artifact must actually exist
+        if: always()
+        run: |
+          cd /tmp/test_project
+          if [ ! -s coverage/lcov.info ]; then
+            echo "::error::整包测试跑完但 coverage/lcov.info 不存在或为空 —— 第 3 级判据不成立"
+            exit 1
+          fi
+          echo "lcov.info 已生成，$(wc -c < coverage/lcov.info) 字节"
+
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
