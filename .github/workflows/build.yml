@@ -12,18 +12,14 @@ on:
 # （2026-09-10 的快照），与上游 ech-proxy 仓库没有任何 git 关系。现改为
 # 直接 checkout 上游仓库，从它的 flutter/ 入口编译。
 #
-# 钉子用 commit SHA 而不是 branch 或 tag：
-#   - branch 会随时间漂移，发出去的 APK 无法复现；
-#   - ech-proxy 侧的 flutter/ 入口目前只存在于 feat/flutter-c-shared-entry
-#     分支，还没合并、也还没有 tag，用分支名会随那边 rebase 失效；
-#   - SHA 精确指向「谁在什么时候构建了什么」。等 ech-proxy 那边给 flutter/ 入口
-#     发了 tag，把这一行换成 tag 名即可（tag 同样是固定 SHA，只是更可读）。
+# 钉子用 tag 而不是 branch：branch 会随时间漂移，发出去的 APK 就无法复现。
+# 这里用 flutter-lib-v1.0.0 而不是 ech-proxy 现有的 v1.x —— 那条版本线标记的是
+# **代理服务端**，而本 tag 只标记 flutter/ 这个 c-shared 入口；本 commit 的父链
+# 上还有尚未发布的 CONNECT 隧道提交，打 v1.3.0 会谎称服务端已发版。
+# 两条版本线因此分开编号，互不冒充。
 env:
-  ECH_PROXY_REF: 3ae5c1c98b5aebade394307d41a89812e38d77b1
+  ECH_PROXY_REF: flutter-lib-v1.0.0
 
-# 同一个 ref 的新一轮构建取消上一轮：连续推 tag 曾让两个 7 分钟的构建并行
-# 跑完（v0.5.6 有两次 cancelled 记录）。不同 ref 之间互不影响，所以不会
-# 因为推了 v0.5.10 就打断正在跑的 v0.5.9。
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
