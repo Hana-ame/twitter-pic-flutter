@@ -121,8 +121,21 @@ class _GalleryState extends State<_Gallery> {
   }
 }
 
-/// 1x1 白点：只为让 ImageProvider 有真实可解码内容（不校验网络）。
-final List<Uint8List> _kPixels = [Uint8List.fromList([255, 255, 255, 255])];
+/// 8x8 纯红 PNG（75 字节）。
+///
+/// **必须是真 PNG**：早先用 `[255,255,255,255]`（4 个字节）当图片，那是**非法
+/// 图像数据**，MemoryImage 解码抛 "Invalid image data"。测试脚手架用假字节
+/// 装图片时，解码器会在 pumpAndSettle 里把异常抛回来，而堆栈指向
+/// ImageProvider，看不出是自己造的假数据 —— 白排查一轮。
+final List<Uint8List> _kPixels = [
+  Uint8List.fromList([
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, //
+    0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0, 75, 109, 41,
+    220, 0, 0, 0, 18, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192,
+    128, 21, 97, 23, 29, 180, 18, 0, 40, 255, 63, 193, 110, 236, 223,
+    97, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+  ]),
+];
 
 void main() {
   const urls = [
