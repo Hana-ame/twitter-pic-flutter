@@ -644,6 +644,29 @@ jobs:
         run: |
           echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
 
+      # 产物校验和：与产物一起发布，供下载方核对完整性。
+      #
+      # 为什么加：此前 v0.6.4 及以前的 release 只有裸产物，没有任何校验和，
+      # 下载方无法确认拿到的是完整文件。校验和必须在**发布这一步**算——
+      # 事后从本地算不算数，因为无法证明算的是 CI 传上去的那一份。
+      - name: Generate checksums
+        if: ${{ steps.is_release.outputs.publish == 'true' }}
+        run: |
+          cd artifact
+          # 用 awk 剥掉目录前缀，而不是 sed：sha256sum 的输出是 `<hash><两个空格><path>`，
+          # sed 里 `s#^apk/#` 锚在行首**匹配不到**（行首是 hash），
+          # 实测会原样留下 `apk/app-release.apk` —— 于是 SHA256SUMS.txt 里的
+          # 文件名与 release 里实际挂的名字对不上，下载方按它核对会找不到文件。
+          sha256sum apk/app-release.apk windows/twitter_pic_flutter_windows_amd64.zip \
+            | awk '{n=$2; sub(/^apk\//,"",n); sub(/^windows\//,"",n); print $1"  "n}' \
+            > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          # 行数不对 = 校验和没算出来，必须失败而不是发一个空壳
+          [ "$(wc -l < SHA256SUMS.txt)" -eq 2 ] || { echo "::error::SHA256SUMS.txt 行数异常"; exit 1; }
+          # 文件名必须与 release 里挂的产物名一致（错位了下载方核对不到）
+          grep -q '  app-release.apk$' SHA256SUMS.txt || { echo "::error::SHA256SUMS.txt 未含 app-release.apk"; exit 1; }
+          grep -q '  twitter_pic_flutter_windows_amd64.zip$' SHA256SUMS.txt || { echo "::error::SHA256SUMS.txt 未含 windows zip"; exit 1; }
+
       - name: Create Release
         if: ${{ steps.is_release.outputs.publish == 'true' }}
         uses: softprops/action-gh-release@v2
@@ -654,5 +677,6 @@ jobs:
           files: |
             ./artifact/apk/app-release.apk
             ./artifact/windows/twitter_pic_flutter_windows_amd64.zip
+            ./artifact/SHA256SUMS.txt
           generate_release_notes: false
           make_latest: true
