@@ -60,6 +60,11 @@ class _TagAdapter implements HttpClientAdapter {
 /// 既有测试没这问题：它们从不在 widget 测试体内调这些写方法。
 ///
 
+/// 每建一个 TwitterApi / ProxyManager 都要登记，tearDown 里统一释放。
+/// 不释放的话，Dio 的内部定时器会一直活着，flutter_test 认为文件没跑完。
+final _openApis = <TwitterApi>[];
+final _openProxies = <ProxyManager>[];
+
 /// 找出**标签 chip 上的那个** #X 文本，排除 AppBar 标题。
 ///
 /// TagUserListScreen 的 AppBar 标题本身就是 `#<被查标签>`，所以直接

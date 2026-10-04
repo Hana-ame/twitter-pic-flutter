@@ -71,6 +71,21 @@ jobs:
       # 这里的产物是给人看的定位信息，不作为判据 —— 真正的判据仍是上面那次整包运行。
       # 定位用：逐文件限时跑，挂了就打印尾部日志。整包挂死时日志在 run 完成前
       # 取不到，只能靠它定位到具体文件。产物不作为判据。
+      # 廉价结构自检：删改测试文件时最容易丢的是「文件入口」与顶层声明，
+      # 而它们不会体现在任何单文件断言里 —— analyze 能抓到未定义标识符，
+      # 但只有当引用点还在时。本步骤保证每个测试文件都有 main()。
+      - name: Every test file has a main entry point
+        run: |
+          cd /tmp/test_project
+          missing=0
+          for f in test/*.dart; do
+            if ! grep -q 'void main' "$f"; then
+              echo "::error::$f 缺少 main() 入口"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] && echo "全部测试文件入口完整"
+
       - name: Per-file test report
         if: always()
         run: |
