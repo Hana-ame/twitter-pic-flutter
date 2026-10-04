@@ -18,6 +18,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:photo_view/photo_view.dart';
+import 'package:photo_view/photo_view_gallery.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
@@ -528,11 +530,18 @@ class _StatusBox extends StatelessWidget {
   }
 }
 
-/// 全屏画廊：左右滑动或上下滑动翻页，双击放大/还原。
+/// 全屏相册：左右滑动翻页，双击放大，**放大后单指拖动是平移图片**。
 ///
-/// 刻意不用 InteractiveViewer：它的 scale 手势识别器会在手势竞技场里抢走
-/// 单指拖动，导致 PageView 永远翻不了页（Flutter 的已知冲突）。这里改成
-/// PageView 负责翻页、双击负责缩放，两者互不抢手势。
+/// v0.6.4：这一整套原先是手写的（PageView + GestureDetector + Transform.scale），
+/// 换来的是一串互相打架的手势：放大后拖动会翻到下一张，而不是平移图片。
+/// 根因是 Flutter 的手势竞技场里，「缩放识别器」与「翻页识别器」互相抢——手写
+/// 只能做"二选一"（要么禁用翻页、要么切手势），做不出「放大态归图片、
+/// 原图态归翻页」这套**状态机**。photo_view 内置了它，于是直接用它。
+///
+/// 取流仍然走本机 ECH 代理：`ProgressiveImageProvider(EchUrl.rewrite(...))`，
+/// 没有引入第二个网络栈（这也是不选 extended_image 的原因，见 pubspec 注释）。
+///
+/// 保留的既有能力：Hero 过渡、逐块解码、失败重试、下载分享、邻张预取。
 class _ImageViewer extends StatefulWidget {
   final List<String> gallery;
   final int initialIndex;
@@ -552,14 +561,25 @@ class _ImageViewerState extends State<_ImageViewer> {
   late final PageController _pageController;
   late int _index;
 
+  /// 每页一个 controller：照片视图的缩放状态挂在它上面，页内双击/缩放由此驱动。
+  ///
+  /// 刻意不用一个共享 controller —— 共享会让翻页后新图片继承上一页的缩放
+  /// 比例（翻到第 5 张结果还保持着第 3 张放大的状态）。
+  late final List<PhotoViewController> _controllers;
+  late final List<int> _retryCounts;
+
   @override
   void initState() {
     super.initState();
     _index = widget.initialIndex.clamp(0, widget.gallery.length - 1);
     _pageController = PageController(initialPage: _index);
-    // 预取下一张：翻过去就能立刻看到（本身也是逐块解码的）。
-    // 必须等首帧之后再预取：precacheImage 会读 MediaQuery，initState 里
-    // 依赖 InheritedWidget 会直接抛断言。
+    _controllers = List.generate(
+      widget.gallery.length,
+      (_) => PhotoViewController(),
+    );
+    _retryCounts = List.generate(widget.gallery.length, (_) => 0);
+    // 预取邻张：翻过去就能立刻看到。必须等首帧之后 —— precacheImage 要读
+    // MediaQuery，在 initState 里依赖 InheritedWidget 会直接抛断言。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _precacheNeighbour(1);
     });
@@ -568,6 +588,9 @@ class _ImageViewerState extends State<_ImageViewer> {
   @override
   void dispose() {
     _pageController.dispose();
+    for (final c in _controllers) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -580,16 +603,6 @@ class _ImageViewerState extends State<_ImageViewer> {
       ProgressiveImageProvider(EchUrl.rewrite(widget.gallery[i], port)),
       context,
     ).catchError((_) {});
-  }
-
-  void _go(int delta) {
-    final next = _index + delta;
-    if (next < 0 || next >= widget.gallery.length) return;
-    _pageController.animateToPage(
-      next,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-    );
   }
 
   Future<void> _downloadAndShare() async {
@@ -614,6 +627,18 @@ class _ImageViewerState extends State<_ImageViewer> {
 
   @override
   Widget build(BuildContext context) {
+    final port = widget.proxy.port;
+    if (port == null) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(backgroundColor: Colors.black),
+        body: const Center(
+          child: Text('ECH 代理未启动，无法打开相册',
+              style: TextStyle(color: Colors.white70)),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -633,138 +658,57 @@ class _ImageViewerState extends State<_ImageViewer> {
           ),
         ],
       ),
-      body: PageView.builder(
-        controller: _pageController,
+      body: PhotoViewGallery.builder(
+        pageController: _pageController,
         itemCount: widget.gallery.length,
         onPageChanged: (i) {
           setState(() => _index = i);
           _precacheNeighbour(1);
         },
-        itemBuilder: (context, i) => GestureDetector(
-          // PageView 只认水平拖动，竖直拖动没人抢，用它做"上下滑动翻页"。
-          onVerticalDragEnd: (details) {
-            final v = details.primaryVelocity ?? 0;
-            if (v < -250) {
-              _go(1); // 上滑 → 下一张
-            } else if (v > 250) {
-              _go(-1); // 下滑 → 上一张
-            }
-          },
-          child: _GalleryPage(
-            url: widget.gallery[i],
-            proxy: widget.proxy,
-            heroTag: i == widget.initialIndex ? 'img_${widget.gallery[i]}' : null,
+        backgroundDecoration: const BoxDecoration(color: Colors.black),
+        // 原图态：左右拖 = 翻页；双击 = 放大。放大后由 photo_view 接管，
+        // 单指拖动变成平移图片，到边才交还给翻页（tightMode 的仲裁）。
+        loadingBuilder: (context, event) => const Center(
+          child: SizedBox(
+            width: 28,
+            height: 28,
+            child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white54),
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// 画廊里的一页：逐块解码 + 双击放大。
-class _GalleryPage extends StatefulWidget {
-  final String url;
-  final ProxyManager proxy;
-  final String? heroTag;
-
-  const _GalleryPage({required this.url, required this.proxy, this.heroTag});
-
-  @override
-  State<_GalleryPage> createState() => _GalleryPageState();
-}
-
-class _GalleryPageState extends State<_GalleryPage> {
-  int _retryCount = 0;
-  bool _zoomed = false;
-
-  /// 非空即处于错误态：此时改为渲染独立的错误块，双击缩放的手势整体摘掉，
-  /// 「重试」按钮才按得动（成因见 build 末尾注释）。
-  Object? _lastError;
-  bool get _failed => _lastError != null;
-
-  void _retry() {
-    setState(() {
-      _retryCount++;
-      _lastError = null;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final port = widget.proxy.port;
-    if (port == null) {
-      return const Center(
-        child: Text('ECH 代理未启动', style: TextStyle(color: Colors.white70)),
-      );
-    }
-    final url = EchUrl.rewrite(widget.url, port);
-
-    Widget image = Image(
-      image: ProgressiveImageProvider(url, retry: _retryCount),
-      key: ValueKey('$url#$_retryCount'),
-      fit: BoxFit.contain,
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) return child;
-        final total = progress.expectedTotalBytes;
-        final percent = (total != null && total > 0)
-            ? progress.cumulativeBytesLoaded / total
-            : null;
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            child,
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: _ProgressOverlay(percent: percent, onDark: true),
+        builder: (context, index) {
+          final raw = widget.gallery[index];
+          final proxied = EchUrl.rewrite(raw, port);
+          final retry = _retryCounts[index];
+          return PhotoViewGalleryPageOptions(
+            imageProvider: ProgressiveImageProvider(proxied, retry: retry),
+            controller: _controllers[index],
+            // 只有打开时的那一页参与 Hero 过渡；其余页没有来源，强行给
+            // 同名 tag 会在翻页瞬间抛出重复 tag 断言。
+            heroAttributes: index == widget.initialIndex
+                ? PhotoViewHeroAttributes(tag: 'img_$raw')
+                : null,
+            minScale: PhotoViewComputedScale.contained,
+            initialScale: PhotoViewComputedScale.contained,
+            maxScale: PhotoViewComputedScale.covered * 4,
+            // 双击在 1x 与 2.5x 之间切；点一下空白处关掉相册是列表那边的行为，
+            // 这里 onTapUp 交给 PhotoView 默认（无操作），避免与双击抢。
+            onTapUp: (context, details, controller) {},
+            errorBuilder: (context, error, stackTrace) => _GalleryError(
+              error: error,
+              onRetry: () => setState(() => _retryCounts[index]++),
             ),
-          ],
-        );
-      },
-      errorBuilder: (context, error, stackTrace) {
-        // 记进 state，交给下面独立的错误块渲染；这里只占住图片的槽位。
-        // 不在 build 期间 setState，所以走 postFrame。
-        if (_lastError == null) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _lastError == null) {
-              setState(() => _lastError = error);
-            }
-          });
-        }
-        return const SizedBox.expand();
-      },
-    );
-
-    if (widget.heroTag != null) {
-      image = Hero(tag: widget.heroTag!, child: image);
-    }
-
-    // 双击缩放的手势**只包住图片本身**，不能包住上面 errorBuilder 里的
-    // 「重试」按钮：双击识别器要等一个"可能的第二下"，期间一直占着手势
-    // 竞技场，嵌套按钮的 tap 因此永远胜不出——和列表卡片里那个"看得到按
-    // 不到"是同一个成因。错误态下双击缩放本来也没意义。
-    final hasError = _failed;
-    return GestureDetector(
-      onDoubleTap: hasError ? null : () => setState(() => _zoomed = !_zoomed),
-      // ClipRect：放大后画面超出屏幕的部分不要盖到顶栏上。
-      child: ClipRect(
-        child: Center(
-          child: hasError
-              ? _GalleryError(
-                  error: _lastError!,
-                  onRetry: _retry,
-                )
-              : Transform.scale(scale: _zoomed ? 2.5 : 1.0, child: image),
-        ),
+          );
+        },
       ),
     );
   }
 }
 
-/// 全屏画廊的错误态：黑底 + 错误详情 + 一定能按动的「重试」。
+/// 相册里单页的错误态：黑底 + 错误详情 + 一定能按动的「重试」。
 ///
-/// 独立成一个 widget 是为了保证它**不在任何 GestureDetector 里面**——原来
-/// 它画在 `Image.errorBuilder` 里，而外面套着 `onDoubleTap` 的识别器，按钮
-/// 因此和列表卡片里一样"看得见按不到"。
+/// 独立成 widget 的原因：它是 PhotoView 的 errorBuilder 回调内容，**不在**
+/// PhotoView 的手势识别器内部，所以重试按钮不会被缩放/拖动手势吞掉。
+/// （此前手写版本把它画在 GestureDetector 里，出现过「看得见按不到」。）
 class _GalleryError extends StatelessWidget {
   final Object error;
   final VoidCallback onRetry;

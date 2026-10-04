@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
+import 'progressive_image.dart';
 
 class ProxyAvatar extends StatefulWidget {
   final String? url;
@@ -92,8 +93,13 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
       child: SizedBox(
         width: widget.radius * 2,
         height: widget.radius * 2,
-        child: Image.network(
-          target,
+        child: Image(
+          // v0.6.4：改用 ProgressiveImageProvider，不再用 Image.network。
+          // 理由是**所有 media 必须走 ECH 代理 + 落磁盘缓存**这一条纪律：
+          // Image.network 只命中内存 ImageCache，内存一挤就得经 ECH 重下一遍
+          // 头像；而 ProgressiveImageProvider 是本项目媒体取流的唯一入口
+          // （ECH 改写 + 逐块解码 + 磁盘缓存都在里面）。
+          image: ProgressiveImageProvider(target, retry: _attempt),
           key: ValueKey('${target}_$_attempt'),
           fit: BoxFit.cover,
           width: widget.radius * 2,

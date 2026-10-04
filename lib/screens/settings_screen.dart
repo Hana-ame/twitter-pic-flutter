@@ -118,13 +118,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// 用 widget 真正使用的那套栈（NetworkImage → 图片缓存 → 解码）验证一张图，
-  /// 而不是 raw HttpClient。两者失败原因可能完全不同（例如解码失败、
-  /// 缺 Content-Length 导致 codec 报错等）。
+  /// 用 widget 真正使用的那套栈（ProgressiveImageProvider → ECH 代理 →
+  /// 逐块解码 → 图片缓存/磁盘缓存）验证一张图，而不是 raw HttpClient。
+  /// 两者失败原因可能完全不同（例如解码失败、缺 Content-Length 导致 codec
+  /// 报错等）。
+  ///
+  /// v0.6.4：这里从 NetworkImage 改成 ProgressiveImageProvider，否则诊断页说的
+  /// 「widget 用的就是这套栈」与实际不符——ProxyAvatar 已改用后者（v0.6.4 起
+  /// 所有 media 统一走 ProgressiveImageProvider，见 proxy_avatar.dart）。
+  /// 诊断页与被诊断对象必须同栈，否则它报「widget 层正常」而实际是坏的。
   Future<String> _imageDecodeProbe(String url, {int timeoutSec = 30}) async {
     final sw = Stopwatch()..start();
     final completer = Completer<String>();
-    final stream = NetworkImage(url).resolve(ImageConfiguration.empty);
+    final stream =
+        ProgressiveImageProvider(url).resolve(ImageConfiguration.empty);
     late ImageStreamListener listener;
     listener = ImageStreamListener(
       (info, _) {

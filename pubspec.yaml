@@ -1,7 +1,7 @@
 name: twitter_pic_flutter
 description: "A Flutter project for Twitter image browsing."
 publish_to: 'none'
-version: 0.6.3
+version: 0.6.4
 
 environment:
   sdk: ^3.12.0
@@ -15,6 +15,14 @@ dependencies:
   path_provider: ^2.1.5
   cached_network_image: ^3.4.1  # 磁盘+内存二级缓存 + 降采样解码
   dio: ^5.7.0                    # 网络层：超时控制、拦截器、结构化异常
+  # 全屏相册（v0.6.4 换掉手写的那套）：放大后单指拖动是**平移图片**而不是
+  # 翻到下一张。这靠的是它内部的手势仲裁——自己实现只能做"禁用翻页/切手势"
+  # 的二元开关，做不出"放大态归图片、原图态归翻页"这套状态机。
+  # 选它不选 extended_image：后者自带一整套网络栈（要另配 cache manager），
+  # 而本项目的取流**必须**走本机 ECH 代理；混进第二个网络栈就有绕开那条
+  # 纪律的风险。photo_view 自身只依赖 flutter，取流仍由本项目的
+  # ProgressiveImageProvider 负责（仍经 EchUrl.rewrite → 127.0.0.1:port）。
+  photo_view: ^0.15.0
   # 边下边播（系统播放器/ExoPlayer 播本地流）真机不可行已移除；
   # 下载完成原地播放用 video_player（Windows 由 video_player_win 实现，
   # federated 自动注册，无需手动 registerWith）。
