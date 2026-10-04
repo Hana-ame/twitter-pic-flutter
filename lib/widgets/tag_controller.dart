@@ -40,14 +40,19 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
     final rules = StorageService.getTagRules();
     _highlight = (rules['highlight'] as List?)?.cast<String>() ?? [];
     final storedBlock = (rules['block'] as List?)?.cast<String>() ?? [];
-    if (storedBlock.isEmpty) {
-      // 仅首次启动（storage 无 block 记录）写默认屏蔽标签；之后完全尊重
-      // 用户修改。原实现每次启动都合并 _kDefaultBlockTags，用户从屏蔽
-      // 列表删除的标签重启后会复活。
-      _block = _kDefaultBlockTags.toList();
-    } else {
-      _block = storedBlock;
-    }
+    // 判据必须是 **`containsKey` 而不是 `isEmpty`**。
+    //
+    // 两者在「用户主动清空了屏蔽列表」时都成立，但含义完全相反：
+    //   - 键不存在 = 从来没配过 → 给一份默认（首次体验）
+    //   - 键存在但为空 = 用户明确表示「一个都不要」→ 必须尊重
+    //
+    // 用 isEmpty 判据的后果是：用户把唯一的「无关内容」删掉后重启，
+    // 它又回来了，而且**再也删不掉**（每次开页面都从默认值重新长出来）。
+    // 更别扭的是这个复活只发生在 UI 上——_save() 只在增删时调用，所以
+    // storage 里可能还是空列表，界面上却一直显示着「已屏蔽 (1)」。
+    _block = rules.containsKey('block')
+        ? storedBlock
+        : _kDefaultBlockTags.toList();
   }
 
   void _save() {

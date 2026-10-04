@@ -186,9 +186,17 @@ class _TagUserListScreenState extends State<TagUserListScreen> {
         ),
       );
     }
-    // 屏蔽过滤与用户列表页保持一致（纯本地规则，见 StorageService）。
-    final visible =
-        _users.where((u) => !StorageService.isBlocked(u.username)).toList();
+    // 本地过滤必须与「用户列表页的 tag 搜索」**逐条对齐**（见
+    // user_list_screen.dart 的 _buildSearchResults）。
+    //
+    // 原来这里只有 isBlocked，漏了 matchesGayMode —— 而同一个 by=tag 查询从
+    // 两条路进来会给出**不同的用户集合**：搜索框打 #X 时带 Gay 标签的账号被
+    // 过滤掉，从详情页点标签 X 进来却原样列出。Gay 模式存在的全部意义就是
+    // 「别让我看到那些账号」，而这条正是漏掉它的那条路。
+    final visible = _users
+        .where((u) => !StorageService.isBlocked(u.username))
+        .where((u) => StorageService.matchesGayMode(u.tags))
+        .toList();
     if (visible.isEmpty) {
       return RefreshIndicator(
         color: const Color(0xFF4F6CFF),
@@ -218,7 +226,7 @@ class _TagUserListScreenState extends State<TagUserListScreen> {
       child: ListView(
         children: [
           ...visible.map(_buildTile),
-          _buildCapFooter(),
+          _buildCapFooter(visible.length),
         ],
       ),
     );
@@ -257,16 +265,32 @@ class _TagUserListScreenState extends State<TagUserListScreen> {
     );
   }
 
-  /// 如实表达"仅前 15 个 / 已截断"：本接口没有游标，不提供任何加载更多入口。
-  Widget _buildCapFooter() {
-    final truncated = _users.length >= kTagSearchLimit;
+  /// 如实表达"服务端返回了几个 / 本地隐藏了几个 / 是否已截断"。
+  ///
+  /// 三个数必须分开说，混在一起就会自相矛盾：
+  ///   - 服务端返回 [_users.length]（判「是否触顶」要用**过滤前**的数，
+  ///     否则本地屏蔽掉 3 个就会误判成没触顶）；
+  ///   - 本地实际显示 [visibleCount]；
+  ///   - 两者之差是本地规则（屏蔽 / Gay 模式）隐藏掉的。
+  ///
+  /// 原来这里直接印 _users.length，于是「显示了 12 行、写着共 15 个命中」，
+  /// 而同一条查询在用户列表页写的是过滤后的数——同一个查询两个数字。
+  Widget _buildCapFooter(int visibleCount) {
+    final returned = _users.length;
+    final truncated = returned >= kTagSearchLimit;
+    final hidden = returned - visibleCount;
+    final buf = StringBuffer()
+      ..write(truncated
+          ? '已达服务端返回上限（$kTagSearchLimit 个，按标签权重降序），'
+              '其余命中已被截断——该接口无分页'
+          : '服务端返回 $returned 个命中（按标签权重降序，上限 $kTagSearchLimit）');
+    if (hidden > 0) {
+      buf.write('；其中 $hidden 个被本地屏蔽 / Gay 模式规则隐藏');
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Text(
-        truncated
-            ? '已达服务端返回上限（$kTagSearchLimit 个，按标签权重降序），'
-              '其余命中已被截断——该接口无分页'
-            : '共 ${_users.length} 个命中（服务端按标签权重降序，上限 $kTagSearchLimit）',
+        buf.toString(),
         textAlign: TextAlign.center,
         style: const TextStyle(fontSize: 12, color: Colors.grey),
       ),
@@ -293,10 +317,20 @@ class _TagChips extends StatelessWidget {
         return byWeight != 0 ? byWeight : a.key.compareTo(b.key);
       });
     final isGay = StorageService.isGayMode();
+    // 与 TagDisplayArea **同一条负分口径**：score < 0 的标签全局不展示
+    // （commit 6ea90cd）。原来这里只按 Gay 词表过滤，于是同一个人、同一个
+    // 标签，在详情页是「看不见」、在标签反查列表里却显示成一枚红色 chip——
+    // 同一个东西在两个屏幕上含义相反。
     final visibleEntries = entries
+        .where((e) => e.value >= 0)
         .where((e) => isGay || !kGayTags.contains(e.key))
         .toList();
     if (visibleEntries.isEmpty) return const SizedBox.shrink();
+
+    // 高亮（标签管理→高亮）在详情页是带星标的；这里也要带，否则用户点进来
+    // 之后想找的那个信号凭空消失。getHighlightTags 只有 TagDisplayArea 一个
+    // 调用点 —— 规则存着、设置页也在承诺，却到不了这条路上。
+    final hits = StorageService.getHighlightTags().toSet();
 
     return Padding(
       padding: const EdgeInsets.only(top: 4),
@@ -310,19 +344,37 @@ class _TagChips extends StatelessWidget {
                   ? Colors.red
                   : Colors.grey;
           final isCurrent = e.key == current;
+          final isHighlighted = hits.contains(e.key);
           return Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
+              color: color.withValues(alpha: isHighlighted ? 0.18 : 0.1),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
-                color: isCurrent ? color : color.withValues(alpha: 0.2),
-                width: isCurrent ? 1.4 : 1,
+                // 高亮用琥珀色边框，被查标签用本标签色 —— 两种强调各占一个
+                // 维度，才不会「高亮的标签恰好不是搜的那个」时分不清。
+                color: isHighlighted
+                    ? Colors.amber.shade400
+                    : (isCurrent ? color : color.withValues(alpha: 0.2)),
+                width: (isCurrent || isHighlighted) ? 1.4 : 1,
               ),
             ),
-            child: Text(
-              '#${e.key}',
-              style: TextStyle(fontSize: 11, color: color),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (isHighlighted) ...[
+                  Icon(Icons.star, size: 11, color: Colors.amber.shade700),
+                  const SizedBox(width: 3),
+                ],
+                Text(
+                  '#${e.key}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: isHighlighted ? FontWeight.w600 : null,
+                    color: color,
+                  ),
+                ),
+              ],
             ),
           );
         }).toList(),

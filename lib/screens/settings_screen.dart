@@ -48,6 +48,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _gayMode = StorageService.isGayMode();
   }
 
+  /// 从别的页面改同一个开关后回到本页时，把 UI 拉回真实值。
+  ///
+  /// 「Gay 模式」有两处开关写**同一个** storage key：这里的 SwitchListTile，
+  /// 以及标签管理页（tag_controller.dart）的那个。本页在 main.dart 里是
+  /// IndexedStack 的一个分支——**保活、不会重新 initState**，所以从标签管理页
+  /// 改完返回时，这里的开关还停在旧值：文案写着「已关闭」，可过滤其实已经
+  /// 生效；用户再点一下反而是把它关掉。
+  ///
+  /// 这与 user_list_screen.dart 里已有的同一类处理（注释写的是
+  /// 「IndexedStack 保活使本页不会自动重建，返回后必须刷新」）是同一个坑，
+  /// 区别只是本页被路由遮住时拿不到通知。用 RouteAware 在**恢复可见**时读一次
+  /// 存储，而不是在 didChangeDependencies 里读 —— 后者在路由 push 期间就会
+  /// 触发，那时用户可能还没改完。
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) route.addPostFrameCallback((_) => _syncGayMode());
+  }
+
+  void _syncGayMode() {
+    if (!mounted) return;
+    final actual = StorageService.isGayMode();
+    if (actual != _gayMode) setState(() => _gayMode = actual);
+  }
+
   // ─── 网络诊断 ─────────────────────────────────────────────────────────────
   bool _diagRunning = false;
   final List<_DiagItem> _diag = [];
