@@ -205,7 +205,11 @@ void main() {
       controllers: controllers,
       heroIndexes: heroIndexes,
     ));
-    await tester.pumpAndSettle();
+    // **有界 pump，不用 pumpAndSettle**：PhotoViewGallery 的 loading 指示器
+    // （以及默认的 loadingBuilder）是一个**永不停止的动画**，pumpAndSettle 会
+    // 等到超时（实测 "pumpAndSettle timed out"）。解码很快就绪，只需几帧。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
     return controllers;
   }
 
@@ -230,11 +234,13 @@ void main() {
 
     // 把第 1 页缩放上去（模拟用户双击放大）
     first.zoomTo(2.5);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
 
     // 翻到第 2 页
     await tester.drag(find.byType(PhotoViewGallery), const Offset(-500, 0));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
 
     // 第 2 页的 controller 不该继承第 1 页的缩放
     final second = controllers[1];
@@ -249,9 +255,11 @@ void main() {
     // 只给第 0 页 hero；翻页到第 1、2 页不应抛异常
     await pumpGallery(tester, heroIndexes: const {0});
     await tester.drag(find.byType(PhotoViewGallery), const Offset(-500, 0));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
     await tester.drag(find.byType(PhotoViewGallery), const Offset(-500, 0));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
     // 能翻完两页且没抛 = 没有重复 hero tag
     expect(tester.takeException(), isNull);
   });
@@ -263,12 +271,14 @@ void main() {
 
     // 先放大到 2.5x —— 只有放大后，「拖动」才应该被理解为平移。
     first.zoomTo(2.5);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
     expect(_Gallery.currentPageOf(tester), 0);
 
     // 单指横向拖动（模拟用户放大后想看图片右侧）
     await tester.drag(find.byType(PhotoViewGallery), const Offset(-160, 0));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
 
     // 核心断言：**页码没变**。旧实现（手写 Transform.scale + GestureDetector）
     // 在这里会翻到下一张 —— 这条断言就是为守住该缺陷而写的。
@@ -287,7 +297,8 @@ void main() {
 
     // 未放大（contain）时，横向拖动应当翻页
     await tester.drag(find.byType(PhotoViewGallery), const Offset(-500, 0));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
 
     // 与上一条「放大后不翻页」成对，构成状态机两翼
     expect(_Gallery.currentPageOf(tester), 1,
