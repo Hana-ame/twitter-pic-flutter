@@ -16,6 +16,7 @@ import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../utils/doh_resolver.dart';
 import '../utils/ech_url.dart';
+import '../widgets/progressive_image.dart';
 import '../widgets/report_help.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -517,6 +518,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await StorageService.clearAll();
     // 封面缓存也一起清：它在磁盘上（应用支持目录的 posters/），不清会越攒越多。
     await PosterService.clearAll();
+    // 图片磁盘缓存（v0.6.1 新增，image-cache/）：同一个理由，而且它更大。
+    await ProgressiveDiskCache.clearAll();
     if (mounted) {
       setState(() {
         _gayMode = StorageService.isGayMode();

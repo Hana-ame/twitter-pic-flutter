@@ -27,6 +27,7 @@ import 'screens/settings_screen.dart';
 import 'screens/user_list_screen.dart';
 import 'utils/doh_resolver.dart';
 import 'widgets/fav_list.dart';
+import 'widgets/progressive_image.dart';
 import 'widgets/report_help.dart';
 import 'widgets/tag_controller.dart';
 
@@ -62,6 +63,9 @@ void main() {
     await LogService.ensureInitialized(buildNum: _kBuildNum);
     // 视频封面缓存目录：卡片抓到的静帧存这儿，之后不占解码器也能显示。
     await PosterService.ensureInitialized();
+    // 图片磁盘缓存（v0.6.1）：滚回来的图直接从磁盘读，不再经 ECH 重下。
+    // 失败也无所谓——未就绪时自动降级为纯内存，不是功能依赖。
+    unawaited(ProgressiveDiskCache.ensureInitialized());
 
     // 顺序要紧：先读上一次的会话文件判断是否正常结束，再写本次会话 ——
     // 反过来的话 startSession() 会先把旧记录覆盖掉，永远检测不到异常退出。

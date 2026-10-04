@@ -732,9 +732,12 @@ class _MediaCard extends StatelessWidget {
             TwitterVideo(url: item.url, proxy: proxy)
           else
             TwitterImage(
-              // 一律 origin：与全屏预览、下载用同一个 URL。
+              // 卡片只拉 name=small 缩略图（一屏十几张，原图就是"列表半天
+              // 出不来画面"的主因）；全屏预览走 gallery 里的**原图** URL，
+              // 下载分享同样用原图，两边画质都不受影响。
               url: item.url,
               proxy: proxy,
+              thumb: true,
               gallery: gallery,
               galleryIndex: galleryIndex,
             ),

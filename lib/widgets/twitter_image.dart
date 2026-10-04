@@ -22,6 +22,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
+import '../utils/media_url.dart';
 import '../utils/stable_hash.dart';
 import 'progressive_image.dart';
 
@@ -38,6 +39,15 @@ class TwitterImage extends StatefulWidget {
   final double? width;
   final double? height;
 
+  /// 列表卡片模式：只用于**列表里的缩略图**，不是原图。
+  ///
+  /// v0.6.1：列表改拉 `name=small` 档位，一屏字节数掉到原来的 1/10 左右。
+  /// 只有这个开关为true 时才走缩略图——全屏预览与详情页保持原图，否则预览
+  /// 会变成"看的是缩略图"（放大就糊），下载分享也必须拿原图。
+  ///
+  /// 缩略图 URL 只影响**加载**，不影响 [gallery]：预览列表仍传原图 URL。
+  final bool thumb;
+
   /// 当前页面里所有图片的原始 URL（按时间线顺序），用于全屏预览时左右/上下
   /// 滑动翻页。为空时只预览当前这一张。
   final List<String>? gallery;
@@ -52,6 +62,7 @@ class TwitterImage extends StatefulWidget {
     this.fit = BoxFit.cover,
     this.width,
     this.height,
+    this.thumb = false,
     this.gallery,
     this.galleryIndex = 0,
   });
@@ -94,7 +105,9 @@ class _TwitterImageState extends State<TwitterImage> {
   @override
   void didUpdateWidget(TwitterImage old) {
     super.didUpdateWidget(old);
-    if (old.url != widget.url) {
+    // thumb 也算"换了一张图"：档位一变，实际加载的 URL 就变了，尺寸探测
+    // 与缓存 key 都必须跟着换，否则会拿缩略图的比例去裁原图。
+    if (old.url != widget.url || old.thumb != widget.thumb) {
       _aspect = _kFallbackAspect;
       _retryCount = 0;
       _autoRetried = false;
@@ -120,12 +133,17 @@ class _TwitterImageState extends State<TwitterImage> {
     setState(() {});
   }
 
-  String? _proxiedUrl() {
+  /// 真正去加载的那个 URL（已按 [TwitterImage.thumb] 决定档位）。
+  ///
+  /// 分工：thumb=true → `name=small`（列表，便宜）；thumb=false → 原图
+  /// （详情/预览，清楚）。缓存 key 天然分开，不会互相顶掉。
+  String? _loadUrl() {
     final port = widget.proxy.port;
     if (port == null) return null;
+    final target = widget.thumb ? MediaUrl.thumbOf(widget.url) : widget.url;
     // 全部走 ECH 代理：EchUrl.rewrite 丢弃原始域名，代理统一拼
     // https://video-cf.twimg.com/<path>（图片与视频同通道）。
-    return EchUrl.rewrite(widget.url, port);
+    return EchUrl.rewrite(target, port);
   }
 
   void _detachSizeListener() {
@@ -141,7 +159,7 @@ class _TwitterImageState extends State<TwitterImage> {
   /// 这里**不能**用 NetworkImage：不同 provider 类型就是不同的缓存 key，
   /// 同一张图会被下载两遍。原注释声称两者共享缓存，是错的。
   void _watchSize() {
-    final url = _proxiedUrl();
+    final url = _loadUrl();
     if (url == null || url == _sizeUrl) return;
     _sizeUrl = url;
     _detachSizeListener();
@@ -202,7 +220,7 @@ class _TwitterImageState extends State<TwitterImage> {
 
   @override
   Widget build(BuildContext context) {
-    final url = _proxiedUrl();
+    final url = _loadUrl();
     if (url == null) {
       return _frame(
         child: const _StatusBox(message: 'ECH 代理未启动，无法加载图片'),
