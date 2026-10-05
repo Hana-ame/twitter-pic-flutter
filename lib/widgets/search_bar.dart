@@ -271,56 +271,58 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
     // 表现得像「点不动」。Flutter 会为此抛断言（"ListTile background color or
     // ink splashes may be invisible"），widget 测试直接红。
     final scheme = Theme.of(context).colorScheme;
-    return Material(
+    return SizedBox(
       width: double.infinity,
-      color: scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(8),
-      clipBehavior: Clip.antiAlias,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: scheme.outlineVariant),
-        ),
-        child: Container(
-          constraints: const BoxConstraints(maxHeight: 260),
-          padding: const EdgeInsets.only(bottom: 4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Text('标签推荐',
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                    ),
-                    if (showingHot)
-                      const Text('热门标签，点一下立即按该标签查找',
-                          style: TextStyle(fontSize: 11)),
-                  ],
+      child: Material(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        clipBehavior: Clip.antiAlias,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Container(
+            constraints: const BoxConstraints(maxHeight: 260),
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text('标签推荐',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      ),
+                      if (showingHot)
+                        const Text('热门标签，点一下立即按该标签查找',
+                            style: TextStyle(fontSize: 11)),
+                    ],
+                  ),
                 ),
-              ),
-              Flexible(
-                child: ListView(
-                  shrinkWrap: true,
-                  padding: EdgeInsets.zero,
-                  children: items.map((t) => ListTile(
-                        dense: true,
-                        // 标签推荐与账号搜索是两种不同的事，用不同的前导图标区分，
-                        // 免得用户以为点了会跳到某个账号页。
-                        leading: const Icon(Icons.sell_outlined, size: 16),
-                        title: Text('#${t.tag}',
-                            style: const TextStyle(fontSize: 13)),
-                        // ⚠️ 显示的是**票数**不是人数（见 TagCount.count 的口径说明），
-                        // 所以标签旁边只写「热度」而不是「N 人」。
-                        subtitle: Text('热度 ${t.count}',
-                            style: const TextStyle(fontSize: 11)),
-                        onTap: () => _pickTag(t.tag),
-                      )).toList(),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    children: items.map((t) => ListTile(
+                          dense: true,
+                          // 标签推荐与账号搜索是两种不同的事，用不同的前导图标区分，
+                          // 免得用户以为点了会跳到某个账号页。
+                          leading: const Icon(Icons.sell_outlined, size: 16),
+                          title: Text('#${t.tag}',
+                              style: const TextStyle(fontSize: 13)),
+                          // ⚠️ 显示的是**票数**不是人数（见 TagCount.count 的口径说明），
+                          // 所以标签旁边只写「热度」而不是「N 人」。
+                          subtitle: Text('热度 ${t.count}',
+                              style: const TextStyle(fontSize: 11)),
+                          onTap: () => _pickTag(t.tag),
+                        )).toList(),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -333,58 +335,61 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
     // 同 _buildSuggestPanel：背景色必须在 Material 上，否则 ListTile 的
     // 水波纹被中间的 DecoratedBox 盖住，按下历史项看不到反馈。
     final scheme = Theme.of(context).colorScheme;
-    return Material(
+    return SizedBox(
       width: double.infinity,
-      color: scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(8),
-      clipBehavior: Clip.antiAlias,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: scheme.outlineVariant),
-        ),
-        child: Container(
-          constraints: const BoxConstraints(maxHeight: 200),
-          padding: const EdgeInsets.only(bottom: 4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  const Expanded(
+      child: Material(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        clipBehavior: Clip.antiAlias,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Container(
+            constraints: const BoxConstraints(maxHeight: 200),
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
                       child: Text('搜索历史',
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
-                  TextButton(
-                    onPressed: _clearHistory,
-                    child: const Text('清除', style: TextStyle(fontSize: 11)),
-                  ),
-                ],
-              ),
-              Flexible(
-                child: ListView(
-                  shrinkWrap: true,
-                  padding: EdgeInsets.zero,
-                  children: _history.map((h) => ListTile(
-                        dense: true,
-                        leading: const Icon(Icons.history, size: 16),
-                        title: Text(h, style: const TextStyle(fontSize: 13)),
-                        onTap: () {
-                          _ctrl.text = h;
-                          widget.onChanged(h);
-                          setState(() => _overlay = null);
-                          FocusScope.of(context).unfocus();
-                        },
-                        trailing: IconButton(
-                          icon: const Icon(Icons.close, size: 14),
-                          onPressed: () {
-                            setState(() => _history.remove(h));
-                            StorageService.saveSearchHistory(_history);
-                          },
-                        ),
-                      )).toList(),
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    ),
+                    TextButton(
+                      onPressed: _clearHistory,
+                      child: const Text('清除', style: TextStyle(fontSize: 11)),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    children: _history.map((h) => ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.history, size: 16),
+                          title: Text(h, style: const TextStyle(fontSize: 13)),
+                          onTap: () {
+                            _ctrl.text = h;
+                            widget.onChanged(h);
+                            setState(() => _overlay = null);
+                            FocusScope.of(context).unfocus();
+                          },
+                          trailing: IconButton(
+                            icon: const Icon(Icons.close, size: 14),
+                            onPressed: () {
+                              setState(() => _history.remove(h));
+                              StorageService.saveSearchHistory(_history);
+                            },
+                          ),
+                        )).toList(),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
