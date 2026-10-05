@@ -27,16 +27,41 @@ void main() {
     'COS': 620,
   });
 
-  group('空输入不退化成热门推荐', () {
-    test('空串返回空列表——不替调用方决定弹热门', () {
-      expect(rankTagSuggestions(real, ''), isEmpty);
-      expect(rankTagSuggestions(real, '   '), isEmpty);
+  group('空输入退化成热门推荐', () {
+    test('空串返回按热度排序的热门标签——不给起手就等于要用户先想好标签名',
+        () {
+      final got = rankTagSuggestions(real, '');
+      expect(got, isNotEmpty);
+      expect(got.first.tag, '女性',
+          reason: '热度最高的就是女性（实测 7580）');
+      expect(got.map((e) => e.tag), containsAll(<String>['女性', '男女性交', '二次元']));
+      // 纯空白等同空串。
+      expect(rankTagSuggestions(real, '   ').map((e) => e.tag).toList(),
+          got.map((e) => e.tag).toList());
     });
 
-    test('null 语义不出现：返回类型是 List<TagCount>，空即空列表', () {
+    test('热门榜同样受 kTagSuggestLimit 约束', () {
+      final many = cloud({for (var i = 0; i < 50; i++) '标$i': i + 1});
+      expect(rankTagSuggestions(many, '').length, kTagSuggestLimit);
+      expect(rankTagSuggestions(many, '', limit: 0), isEmpty,
+          reason: 'limit<=0 时上限优先于热门榜');
+    });
+
+    test('空表 + 空输入返回空列表（不给用户弹一个空框）', () {
+      expect(rankTagSuggestions(const <TagCount>[], ''), isEmpty);
+    });
+
+    test('null 语义不出现：返回类型是 List<TagCount>，不是 null', () {
       // 调用方用 `.isEmpty` 判「要不要弹」，所以必须返回真列表而不是 null。
       expect(rankTagSuggestions(real, '').runtimeType.toString(),
           isNot(contains('Null')));
+    });
+
+    test('空输入不修改传入的标签表（排序必须走副本）', () {
+      final before = real.map((e) => e.tag).toList();
+      rankTagSuggestions(real, '');
+      expect(real.map((e) => e.tag).toList(), before,
+          reason: '就地排序会把外层持有的 _tagCloud 顺序改掉');
     });
   });
 

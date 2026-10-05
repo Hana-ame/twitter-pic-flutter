@@ -1,4 +1,4 @@
-// 搜索栏组件：支持搜索历史、清除历史，以及输入 `#` 时的标签推荐下拉。
+// 搜索栏组件：支持搜索历史、清除历史，以及边打字边给的标签推荐下拉（不需要输入 #）。
 import 'package:flutter/material.dart';
 
 import '../models/user.dart';
@@ -26,7 +26,8 @@ class SearchBarWidget extends StatefulWidget {
   const SearchBarWidget({
     super.key,
     required this.onChanged,
-    this.placeholder = '搜索用户名、昵称，或 #标签...',
+    // 不提 `#`：这次改动就是不让用户输入那个符号，占位符再教一遍等于把它请回来。
+    this.placeholder = '搜索用户名、昵称或标签…',
     this.tagCloud = const <TagCount>[],
     this.onPickTag,
   });
@@ -56,9 +57,9 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
 
   /// 当前该显示哪一个下拉：历史，还是标签推荐。
   ///
-  /// 二者互斥，且**推荐优先于历史**：用户打了 `#` 就是明确要找标签，此时弹
-  /// 一列「你上次搜过什么」是答非所问（这两条数据还常常打架——历史里存着
-  /// `#女性`，用户正在打 `#女`，两个下拉会同时想出现）。
+  /// 二者互斥，且**推荐优先于历史**：一旦有标签命中候选，就说明用户正在找一个
+  /// 标签，此时弹一列「你上次搜过什么」是答非所问（这两条数据还常常打架——
+  /// 历史里存着「女性」，用户正在打「女」，两个下拉会同时想出现）。
   _Overlay? _overlay;
 
   /// 输入框当前聚焦着没有。只在聚焦时弹下拉：失焦后下拉必须自己消失，
@@ -71,20 +72,26 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
   /// 扫一遍 178 个标签，而下拉滚动时每帧都会重建。
   List<TagCount> _suggests = const <TagCount>[];
 
-  /// 输入的是不是「正在找一个标签」——以 `#` 开头，或光标在开头的 `#` 之后。
+  /// 当前输入里被当作「标签搜索词」的那部分文本。
   ///
-  /// 只看 `startsWith('#')` 不够：用户可能是先打了别的词、退格、再打 `#`，
-  /// 也可能想去掉 `#` 退回普通搜索。判定与提交时的规则保持一致（见
-  /// [_onSubmitted]），否则会出现「下拉在推荐标签，提交时却按账号名搜」。
-  bool get _wantsTag =>
-      _ctrl.text.trimLeft().startsWith('#') && widget.onPickTag != null;
-
-  /// `#` 之后正在打的那段词（去掉前导 `#` 与空白）。
+  /// ## 为什么不要求用户打 `#`
+  ///
+  /// 一开始这个功能是「打 # 才弹标签推荐」。实测下来那是**反的**：`#` 对
+  /// 绝大多数用户是个需要专门记住的约定符号，忘了打就完全搜不到标签——而
+  /// 「我想找女性标签的用户」这件事本身完全说得出口，不需要用户知道平台
+  /// 用 `#` 标记标签。所以改成：标签表在手就直接给候选，输入什么都能匹配，
+  /// **`#` 仍然接受但不再是前提**（老习惯不用改）。
+  ///
+  /// 取值：去掉前导 `#` 后的整段文本；不含 `#` 时就是普通输入。
   String get _tagQuery {
     final raw = _ctrl.text.trimLeft();
-    if (!raw.startsWith('#')) return '';
-    return raw.substring(1).trim();
+    return raw.startsWith('#') ? raw.substring(1).trim() : raw.trim();
   }
+
+  /// 要不要弹标签推荐。
+  ///
+  /// 开关就是「有没有标签表 + 调用方想不想要」——不再看输入里有没有 `#`。
+  bool get _wantsTag => widget.onPickTag != null;
 
   @override
   void initState() {
@@ -144,27 +151,26 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
 
   _Overlay? _computeOverlay() {
     if (_wantsTag) {
-      // 打 `#` 但还没打词：给一列热门标签当起手推荐——用户连标签名都不知道
-      // 时，直接列热门比空着有用。但只在标签表真的到手时才列。
       final q = _tagQuery;
-      final hits = q.isEmpty
-          ? widget.tagCloud.take(kTagSuggestLimit).toList()
-          : rankTagSuggestions(widget.tagCloud, q);
+      final hits = rankTagSuggestions(widget.tagCloud, q);
       _suggests = hits;
       // 一个都没命中就别弹空框：用户会以为搜索坏了。
-      return hits.isEmpty ? null : _Overlay.suggest;
+      if (hits.isNotEmpty) return _Overlay.suggest;
     }
     _suggests = const <TagCount>[];
     return _history.isEmpty ? null : _Overlay.history;
   }
 
   void _pickTag(String tag) {
-    final picked = tag.trim();
+    final picked = tag.trim().replaceFirst(RegExp(r'^#+'), '').trim();
     if (picked.isEmpty) return;
-    // 回填到输入框（带 `#`，让输入框如实显示「我在按标签搜」），再交回调。
+    // 回填**不带 `#`**：这次改动的整个方向就是「不让用户输入 #」，回填时再
+    // 塞一个 # 进去等于把约定又塞回用户眼前。回填裸标签名，输出一律是
+    // 「标签推荐」，输入框里就是用户刚才点的那个词。
+    //
     // 先写 controller 再回调：回调通常会把搜索词写进外层 state，两者需要
     // 看到同一个值。
-    _ctrl.text = '#$picked';
+    _ctrl.text = picked;
     _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
     setState(() => _overlay = null);
     widget.onPickTag!(picked);
@@ -311,7 +317,7 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
                           // 标签推荐与账号搜索是两种不同的事，用不同的前导图标区分，
                           // 免得用户以为点了会跳到某个账号页。
                           leading: const Icon(Icons.sell_outlined, size: 16),
-                          title: Text('#${t.tag}',
+                          title: Text(t.tag,
                               style: const TextStyle(fontSize: 13)),
                           // ⚠️ 显示的是**票数**不是人数（见 TagCount.count 的口径说明），
                           // 所以标签旁边只写「热度」而不是「N 人」。

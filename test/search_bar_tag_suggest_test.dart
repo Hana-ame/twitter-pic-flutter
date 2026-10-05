@@ -1,23 +1,28 @@
 // 搜索框标签推荐下拉 + 「点标签立即进入 tag 查找模式」的渲染判据。
 //
+// ## 交互契约（本次改动的核心）
+//
+// **用户不需要输入 `#`。** 输入框里打什么都在拿标签表匹配，打 `#` 只是
+// 老写法、仍然被接受。判据必须钉住这一点，否则很容易「改回去」而不自知——
+// 单看「打 # 能搜到 tag」这类用例，删掉 `#` 支持后**依然全绿**。
+//
 // ## 为什么全程用 pump() 而不是 pumpAndSettle()
 //
 // 输入框一旦获得焦点，光标闪烁就是一个**永不停歇**的动画，pumpAndSettle()
-// 会一直等到 10 分钟超时（CI 上实测：整包跑到 15m39s，8 例红）。这个坑与
-// 仓库里已知的「整包挂起」同族——差异在触发条件（这里是焦点动画，不是
-// unawaited(_flush())），症状一样：测试挂住而不是失败。
-//
+// 会一直等到 10 分钟超时（CI run 37323158057 实测：整包 16m51s，1 例红）。
 // 本组件的每一处 setState 都是**同步**的（没有 setState 里 await 网络），
-// 所以固定 pump 一次就够了；下拉的出现/消失不依赖任何动画时长。
+// 所以固定 pump 一次就够了。
+//
+// ⚠️ `tester.testTextInput.receiveAction(...)` 也必须不碰：它会走到
+// `_onSubmitted` → `StorageService.saveSearchHistory` → `unawaited(_flush())`，
+// 在整包跑（32 个测试文件共用静态状态）时把整包拖到 10 分钟超时。判「有没有
+// 历史」改成直接断言 UI，不靠提交动作。
 //
 // ## 这组测试拦的是什么
 //
 // 症状类只有一条：**点了推荐标签，列表没换**。它很难被肉眼抓住，因为推荐下拉
 // 本身渲染正常、标签表也正常，只有「点下去之后走哪条数据路」错了。所以判据必须
 // 落在**回调收到的标签名**与**回填进输入框的文本**上，而不是下拉看起来对不对。
-//
-// 第二个症状是**静默失败**：推荐一个都没匹配上时如果弹一个空框，用户会以为搜索
-// 坏了。所以「无命中不弹框」也是判据。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twitter_pic_flutter/models/user.dart';
@@ -25,7 +30,7 @@ import 'package:twitter_pic_flutter/services/storage_service.dart';
 import 'package:twitter_pic_flutter/widgets/search_bar.dart';
 
 /// 一张贴近线上真实形状的标签表（实测 /api/tag-cloud?limit=500 → 178 个标签，
-// 这里取热门那几个）。
+/// 这里取热门那几个）。
 final cloud = <TagCount>[
   const TagCount(tag: '女性', count: 7580),
   const TagCount(tag: '男女性交', count: 1554),
@@ -36,8 +41,8 @@ final cloud = <TagCount>[
 Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
-  group('打 # 后弹标签推荐', () {
-    testWidgets('打 # 立刻列出热门标签（还没打词也给起手推荐）', (tester) async {
+  group('不输入 # 也能搜标签', () {
+    testWidgets('直接打「女」就出标签候选', (tester) async {
       await tester.pumpWidget(wrap(SearchBarWidget(
         onChanged: (_) {},
         tagCloud: cloud,
@@ -45,16 +50,30 @@ void main() {
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), '#');
+      await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
 
       expect(find.text('标签推荐'), findsOneWidget);
-      // 热门里按热度取前 kTagSuggestLimit 条。
-      expect(find.text('#女性'), findsOneWidget);
-      expect(find.text('#男女性交'), findsOneWidget);
+      expect(find.text('女性'), findsOneWidget);
+      expect(find.text('男女性交'), findsOneWidget);
     });
 
-    testWidgets('打 #女 只出匹配的标签', (tester) async {
+    testWidgets('候选行不带 #（符号不该再出现在界面上）', (tester) async {
+      await tester.pumpWidget(wrap(SearchBarWidget(
+        onChanged: (_) {},
+        tagCloud: cloud,
+        onPickTag: (_) {},
+      )));
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), '女');
+      await tester.pump();
+
+      expect(find.text('#女性'), findsNothing);
+      expect(find.text('#男女性交'), findsNothing);
+    });
+
+    testWidgets('打 # 仍然能搜（老写法不破坏）', (tester) async {
       await tester.pumpWidget(wrap(SearchBarWidget(
         onChanged: (_) {},
         tagCloud: cloud,
@@ -65,10 +84,25 @@ void main() {
       await tester.enterText(find.byType(TextField), '#女');
       await tester.pump();
 
-      expect(find.text('#女性'), findsOneWidget);
-      expect(find.text('#男女性交'), findsOneWidget);
-      // 「二次元」不含「女」，不该出现在候选里。
-      expect(find.text('#二次元'), findsNothing);
+      expect(find.text('标签推荐'), findsOneWidget);
+      expect(find.text('女性'), findsOneWidget);
+      // '#' 只是被剥掉的前缀，不该作为匹配内容参与匹配。
+      expect(find.text('#女'), findsNothing);
+    });
+
+    testWidgets('输入框空着时给热门标签当起手', (tester) async {
+      // 既然不用打 #，用户刚点进搜索框就该看到点什么；否则推荐等于要用户
+      // 先想好标签名才生效。
+      await tester.pumpWidget(wrap(SearchBarWidget(
+        onChanged: (_) {},
+        tagCloud: cloud,
+        onPickTag: (_) {},
+      )));
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+
+      expect(find.text('标签推荐'), findsOneWidget);
+      expect(find.text('女性'), findsOneWidget);
     });
 
     testWidgets('一个都没命中时不弹空框（不假装还能搜）', (tester) async {
@@ -79,7 +113,7 @@ void main() {
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), '#zzz不存在');
+      await tester.enterText(find.byType(TextField), 'zzz不存在');
       await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
@@ -93,7 +127,7 @@ void main() {
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), '#女');
+      await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
@@ -107,16 +141,15 @@ void main() {
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), '#');
+      await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
     });
 
-    testWidgets('标签表异步到货后，已经打好的 # 立刻开始推荐', (tester) async {
-      // 真实时序：标签云是异步请求回来的，用户很可能在它回来之前就打了 #。
-      // 若没有 didUpdateWidget 重算，这种时序下推荐面板**永远不出现**，
-      // 症状是「打了 # 一点反应都没有」。
+    testWidgets('标签表异步到货后，已经打好的词立刻开始推荐', (tester) async {
+      // 真实时序：标签云是异步请求回来的，用户很可能在它回来之前就开始打字。
+      // 若没有 didUpdateWidget 重算，那种时序下推荐面板**永远不出现**。
       await tester.pumpWidget(wrap(SearchBarWidget(
         onChanged: (_) {},
         tagCloud: const <TagCount>[],
@@ -124,7 +157,7 @@ void main() {
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), '#女');
+      await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
       expect(find.text('标签推荐'), findsNothing, reason: '前置：表还没来');
 
@@ -137,45 +170,31 @@ void main() {
       await tester.pump();
 
       expect(find.text('标签推荐'), findsOneWidget);
-      expect(find.text('#女性'), findsOneWidget);
+      expect(find.text('女性'), findsOneWidget);
     });
+  });
 
-    testWidgets('不打 # 时不弹推荐（普通账号搜索不受影响）', (tester) async {
+  group('点标签 → 立即进入 tag 查找模式', () {
+    testWidgets('点候选：回调拿到不带 # 的标签名', (tester) async {
+      final picked = <String>[];
       await tester.pumpWidget(wrap(SearchBarWidget(
         onChanged: (_) {},
         tagCloud: cloud,
-        onPickTag: (_) {},
+        onPickTag: picked.add,
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
 
-      expect(find.text('标签推荐'), findsNothing);
-      expect(find.text('#女性'), findsNothing);
-    });
-  });
-
-  group('点标签 → 立即进入 tag 查找模式', () {
-    testWidgets('点推荐标签：回调拿到不带 # 的标签名', (tester) async {
-      final picked = <String>[];
-      await tester.pumpWidget(wrap(SearchBarWidget(
-        onChanged: (_) {},
-        tagCloud: cloud,
-        onPickTag: picked.add,
-      )));
-      await tester.tap(find.byType(TextField));
-      await tester.pump();
-      await tester.enterText(find.byType(TextField), '#女');
-      await tester.pump();
-
-      await tester.tap(find.text('#女性'));
+      await tester.tap(find.text('女性'));
       await tester.pump();
 
       expect(picked, ['女性'], reason: '回调必须传裸标签名，不带 #');
     });
 
-    testWidgets('点推荐标签后输入框回填 #标签名', (tester) async {
+    testWidgets('点候选后输入框回填裸标签名（不再塞 # 回用户眼前）',
+        (tester) async {
       final picked = <String>[];
       await tester.pumpWidget(wrap(SearchBarWidget(
         onChanged: (_) {},
@@ -184,14 +203,14 @@ void main() {
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), '#女');
+      await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
-      await tester.tap(find.text('#女性'));
+      await tester.tap(find.text('女性'));
       await tester.pump();
 
       final ctrl = tester.widget<TextField>(find.byType(TextField)).controller!;
-      expect(ctrl.text, '#女性',
-          reason: '回填要让用户看见「我在按标签搜」，而不是输入框突然被清空');
+      expect(ctrl.text, '女性',
+          reason: '回填裸标签名：这次改动的方向就是不让用户看见 #');
     });
 
     testWidgets('点完推荐下拉收起（不糊住列表）', (tester) async {
@@ -202,11 +221,11 @@ void main() {
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), '#女');
+      await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
       expect(find.text('标签推荐'), findsOneWidget);
 
-      await tester.tap(find.text('#女性'));
+      await tester.tap(find.text('女性'));
       await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
@@ -221,7 +240,7 @@ void main() {
       )));
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), '#');
+      await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
 
       expect(find.text('热度 7580'), findsOneWidget);
@@ -231,20 +250,27 @@ void main() {
   });
 
   group('与搜索历史的互斥', () {
-    testWidgets('打了 # 就优先弹推荐，不弹历史', (tester) async {
+    testWidgets('有标签命中时弹推荐，不弹历史', (tester) async {
       await tester.pumpWidget(wrap(SearchBarWidget(
         onChanged: (_) {},
         tagCloud: cloud,
         onPickTag: (_) {},
       )));
-      // 先制造一条历史并提交，让它落进 StorageService。
       await tester.tap(find.byType(TextField));
       await tester.pump();
-      await tester.enterText(find.byType(TextField), 'qianxi041015');
-      await tester.testTextInput.receiveAction(TextInputAction.done);
-      await tester.pump();
 
-      await tester.enterText(find.byType(TextField), '#女');
+      // 直接写一条历史（不经过提交动作，见文件头说明）。
+      StorageService.saveSearchHistory(['qianxi041015']);
+      await StorageService.debugFlushPending();
+      // 重建一次让 _loadHistory 重新读。
+      await tester.pumpWidget(wrap(SearchBarWidget(
+        onChanged: (_) {},
+        tagCloud: cloud,
+        onPickTag: (_) {},
+      )));
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
 
       expect(find.text('标签推荐'), findsOneWidget);
@@ -253,10 +279,7 @@ void main() {
   });
 
   tearDown(() async {
-    // 搜索历史是**写盘**的静态状态：提交一次搜索会走
-    // `StorageService.saveSearchHistory` → `_write` → `unawaited(_flush())`。
-    //
-    // 两件事都要做，缺一不可：
+    // 搜索历史是**写盘**的静态状态。两件事都要做，缺一不可：
     //  1) 等挂起的写盘落定（`debugFlushPending`）—— 库里的写盘是串行链，
     //     不等就 reset 的话，链上的回调会在 reset 之后才跑，把已清空的
     //     内存态又写回去；
@@ -264,9 +287,9 @@ void main() {
     //     会看到本条留下的历史。
     //
     // CI 那条「写盘测试必须重置静态状态」闸门只认
-    // `StorageService.<写方法>(` 这种**直接调用**，本文件是通过 widget 间接触
-    // 发（`saveSearchHistory` 不出现在本文件里），闸门查不到——所以这里必须
-    // 自觉写全，不能指望闸门兜底。
+    // `StorageService.<写方法>(` 这种**直接调用**，本文件现在有了直接调用
+    // （`saveSearchHistory`），闸门会查得到——但保留 `debugFlushPending`
+    // 仍必要，因为闸门只查「有没有重置」，查不出「有没有等写盘链」。
     await StorageService.debugFlushPending();
     StorageService.resetForTests();
   });

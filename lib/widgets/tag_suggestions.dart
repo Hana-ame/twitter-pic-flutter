@@ -28,18 +28,31 @@ const int kTagSuggestLimit = 8;
 ///     `性感` 的 index 0 稍差——中文里靠前的字通常更接近标签的主干）；
 ///  3. 前缀命中数/热度更高者在前。
 ///
+/// 空 [query] 返回**按热度排序的热门标签**（最多 [limit] 个）——这是本次改动的
+/// 关键：既然不再要求用户打 `#`，那么用户**刚点进搜索框、一个字还没打**时就该
+/// 看到点什么，否则推荐功能等于要用户先想好标签名才生效，那还是「记得住 `#`
+/// 才用得了」的同一个毛病，只是换了个符号。
+///
 /// 大小写不敏感：标签表里有 COS / cosplay 这类拉丁字母标签，用户按习惯
 /// 可能打小写。中文没有大小写，统一 `toLowerCase` 不影响它们。
-///
-/// 空 [query] 返回空列表——调用方自己决定要不要退化成「按热度推荐热门标签」，
-/// 这里不替它决定（空输入时弹一列热门标签很吵）。
 List<TagCount> rankTagSuggestions(
   List<TagCount> cloud,
   String query, {
   int limit = kTagSuggestLimit,
 }) {
+  if (limit <= 0) return const <TagCount>[];
   final q = query.trim().toLowerCase();
-  if (q.isEmpty || limit <= 0) return const <TagCount>[];
+
+  if (q.isEmpty) {
+    // 空查询 = 「我还没想好要找什么」→ 给热门榜当起手。复用同一份标签表、
+    // 同一个上限，不新增状态。
+    final hot = List<TagCount>.of(cloud)
+      ..sort((a, b) {
+        final byCount = b.count.compareTo(a.count);
+        return byCount != 0 ? byCount : a.tag.compareTo(b.tag);
+      });
+    return hot.take(limit).toList(growable: false);
+  }
 
   final hits = <({TagCount item, bool prefix, int at})>[];
   for (final item in cloud) {
