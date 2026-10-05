@@ -18,6 +18,37 @@ import '../models/user.dart';
 /// ProxyManager + EchUrl.rewrite 走 ECH。
 const kApiBase = 'https://x.moonchan.xyz/api/twitter';
 
+/// 画廊端点 `GET /api/tag/<tag>` 的一页结果。
+///
+/// 实测 `users` 是**裸用户名字符串数组**（不是 `[]User`），且 `page` 参数是
+/// 摆设（page=1/2/3 回的数组一模一样，只有 `offset` 生效），所以翻页**只能**
+/// 靠 offset 递增。
+class TagUserPage {
+  /// 本页的裸用户名。
+  final List<String> usernames;
+
+  /// 本页的 offset，便于调用方继续翻页。
+  final int offset;
+
+  /// 服务端声称这个标签下总共有多少个用户（与标签云里的 Count 同源）。
+  ///
+  /// ⚠️ 这是**票数**口径，不是"我能列出多少用户"：实测 `女性` total=7579，
+  /// 而 `by=tag` 对同一标签只回 15 条。
+  final int? total;
+
+  const TagUserPage({
+    required this.usernames,
+    required this.offset,
+    this.total,
+  });
+
+  /// 本页是否已到末尾（返回条数 < 请求 limit 即认为结束）。
+  ///
+  /// 画廊端点**不返回** hasMore 字段，只能拿条数与请求 limit 比；满页时
+  /// 上层继续请求一次，拿到空页（0 < limit）后由这条判定收住，不会死循环。
+  bool isLastPage(int requested) => usernames.length < requested;
+}
+
 /// 结构化 API 异常，包装 Dio 错误供 UI 层使用。
 sealed class ApiException implements Exception {
   final String message;
@@ -133,6 +164,109 @@ class TwitterApi {
     return _decodeUserList(resp.data, 'getUserList');
   }
 
+  /// 标签云：`GET /api/tag-cloud?limit=N`（别名 `/api/tags/cloud`）。
+  ///
+  /// **公开接口，不要 auth。** 实测返回 `[{"Tag":"女性","Count":7579}, ...]`，
+  /// 键是**大写** `Tag`/`Count`（Go 结构体没写 json tag），由
+  /// [TagCount.fromJson] 大小写不敏感地解析。
+  ///
+  /// ⚠️ [TagCount.count] 是**票数/热度，不是用户数**：`女性` 的 Count=7579，
+  /// 而 `by=tag` 只回 11 个用户。UI 不得把它标成"N 人"。
+  ///
+  /// 按 Count **升序**返回（低热度在前），让调用方想要"热门在前"时自己
+  /// reverse；返回顺序本身没有产品含义，排稳只是为了渲染不抖。
+  Future<List<TagCount>> getTagCloud({int limit = 100}) async {
+    final resp = await _dio.get(
+      '/tag-cloud',
+      queryParameters: {'limit': limit},
+    );
+    return TagCount.listFromJson(resp.data);
+  }
+
+  /// 某个标签下的**完整**用户名单（分页）：`GET /api/tag/<tag>?limit=&offset=`。
+  ///
+  /// 为什么要它而不是 [searchUsersByTag]：`by=tag` 硬上限 15 且**无游标**
+  /// （见 [kTagSearchLimit]），拿它当"这个标签下的用户"会静默只显示前 15 个
+  /// 却让人以为已经看全。画廊端点能一直翻到 total（实测 女性 total=7579）。
+  ///
+  /// 两个实测到的坑，写在这里免得下一个人再踩：
+  ///  1. **`page` 参数是摆设**：传 page=1/2/3 回的 `users` 一模一样，只有
+  ///     `offset` 真正生效（`offset` 是 0 起的行偏移：offset=24 与 offset=25
+  ///     返回的首个用户不同）。所以翻页**只能**用 offset。
+  ///  2. **`users` 是裸用户名字符串数组**，不是 `[]User` 对象 —— 没有 tags、
+  ///     nick、avatar。要权重/昵称还得另查（见 [hydrateUsernames]）。
+  ///
+  /// [offset] 是条数偏移，[limit] 是本页条数上限。
+  Future<TagUserPage> getUsersByTagPage(
+    String tag, {
+    int limit = 25,
+    int offset = 0,
+  }) async {
+    final resp = await _dio.get(
+      // 标签名含中文/空格等必须按 UTF-8 百分号编码 —— Dio 不会替你转义
+      // query 参数里的路径段，这里手动拼 Uri.encodeComponent。
+      '/tag/${Uri.encodeComponent(tag)}',
+      queryParameters: {'limit': limit, 'page': 1, 'offset': offset},
+    );
+    final data = _asJsonMap(resp.data, 'getUsersByTagPage($tag)');
+    final usernames = _asStringList(data['users']);
+    return TagUserPage(
+      usernames: usernames,
+      total: _asInt(data['total']),
+      offset: offset,
+    );
+  }
+
+  /// 把 [getUsersByTagPage] 给的裸用户名补成带 `tags` 的 [TwitterUser]。
+  ///
+  /// 画廊端点只给名字，而本地过滤**必须**看 `tags` 键才能判定命中，所以
+  /// 选中标签后需要把用户补齐。
+  ///
+  /// ⚠️ 权重**只能**从 `GET /tags/<username>` 拿：`?list=users` 返回的每项都
+  /// 带 `tags`，但那是**另一个接口的响应**；元数据接口的 `account_info` 里
+  /// **没有** tags 字段（实测 account_info 只有 name/nick/date/followers/
+  /// friends/profile_image/statuses_count），拿它补 tags 会得到一堆空 Map，
+  /// 于是"按标签过滤"永远过滤不出东西。
+  ///
+  /// 逐项吞错：某个用户 404/500 不该让整页白拉，失败的那个直接跳过。
+  /// 返回值因此可能**短于**输入长度 —— 调用方必须以返回值为准。
+  Future<List<TwitterUser>> hydrateUsernames(
+    List<String> usernames, {
+    int concurrency = 6,
+  }) async {
+    final out = <TwitterUser>[];
+    for (var i = 0; i < usernames.length; i += concurrency) {
+      final chunk = usernames.skip(i).take(concurrency);
+      final settled = await Future.wait(chunk.map(_hydrateOne));
+      for (final u in settled) {
+        if (u != null) out.add(u);
+      }
+    }
+    return out;
+  }
+
+  /// 单个用户补齐：元数据（昵称/头像）与权重（tags）分两个接口，各自带一份
+  /// 兜底 —— 任一失败都不该让这个用户名整个消失。
+  Future<TwitterUser?> _hydrateOne(String username) async {
+    UserMetaData? meta;
+    Map<String, int>? tags;
+    try {
+      meta = await getMetaData(username);
+    } catch (_) {}
+    try {
+      tags = await getTagWeights(username);
+    } catch (_) {}
+    if (meta == null && tags == null) return null;
+    final info = meta?.accountInfo;
+    return TwitterUser(
+      username: username,
+      nick: info?.nick,
+      avatar: info?.avatar,
+      totalUrls: info?.totalUrls,
+      tags: tags ?? const <String, int>{},
+    );
+  }
+
   /// 搜索用户：`GET /?by=<by>&search=<search>`（by 现有取值：username / nick / tag）。
   Future<List<TwitterUser>> searchUserList(String by, String search) async {
     if (search.isEmpty) return [];
@@ -212,8 +346,26 @@ class TwitterApi {
       } catch (_) {}
     }
     throw UnknownException(
-      '$context 返回非 JSON 响应（实际类型 ${raw.runtimeType}）',
+    '$context 返回非 JSON 响应（实际类型 ${raw.runtimeType}）',
     );
+  }
+
+  /// 取字符串列表：`users` 字段实测是裸用户名字符串数组。缺字段/类型不符
+  /// 走空列表，绝不抛异常打乱整页渲染。
+  static List<String> _asStringList(dynamic raw) {
+    if (raw is! List) return const <String>[];
+    final out = <String>[];
+    for (final e in raw) {
+      if (e is String && e.isNotEmpty) out.add(e);
+    }
+    return out;
+  }
+
+  /// 取可空 int（缺失时返回 null，允许上游用 0 兜底）。
+  static int? _asInt(dynamic v) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse('$v');
   }
 
   /// 解析用户列表类响应（getUserList / searchUserList / searchUsersByTag 共用）。
