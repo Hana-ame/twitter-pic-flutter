@@ -321,7 +321,8 @@ class TwitterApi {
     try {
       weights = await getTagWeightsBatch(unique);
     } catch (e) {
-      throw ApiException('批量取标签权重失败：$e');
+      // ⚠️ 必须抛**具体**子类：ApiException 是 sealed class，不能直接实例化。
+      throw UnknownException('批量取标签权重失败：$e');
     }
 
     // ② 逐个取昵称/头像，失败降级为只有用户名 + 权重。
