@@ -90,8 +90,9 @@ void main() {
 
       expect(find.text('标签推荐'), findsOneWidget);
       expect(find.text('女性'), findsOneWidget);
-      // '#' 只是被剥掉的前缀，不该作为匹配内容参与匹配。
-      expect(find.text('#女'), findsNothing);
+      // 不在此处断言 find.text('#女') 为空：输入框里用户自己打的「#女」
+      // 本身就是一棵 _TextWidget，find.text 会命中它，与「候选里有没有
+      // 带 # 的行」是两件事。
     });
 
     testWidgets('输入框空着时给热门标签当起手', (tester) async {
