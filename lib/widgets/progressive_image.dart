@@ -371,9 +371,21 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
     }
 
     final client = HttpClient()..connectionTimeout = timeout;
+    client.idleTimeout = timeout;
+    // HttpClient 没有请求级超时，只有 connectionTimeout，它只管建连。建连之后
+    // 等响应头这一段没有任何上限：代理把连接接了却一直不吐头，await 就永远
+    // 挂着，completer 既不 succeed 也不 error，卡片就一直灰着，errorBuilder
+    // 和 proxy_avatar 的重试都等不到。这里用定时器强关 client：force close 会
+    // 让在途请求以错误结束，await 抛错后走下面的 catch 上报给 reportError。
+    final deadline = Timer(timeout, () {
+      client.close(force: true);
+    });
     try {
       final request = await client.getUrl(Uri.parse(url));
       final response = await request.close();
+      // 头已到手，剩下的耗时交给下面 chunk 流的 30s 卡死超时管，别让建连预算
+      // 把慢速下载的大图误杀。
+      deadline.cancel();
       if (response.statusCode != 200) {
         throw HttpException('HTTP ${response.statusCode}', uri: Uri.parse(url));
       }
@@ -413,6 +425,7 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
     } catch (e, s) {
       reportError(exception: e, stack: s);
     } finally {
+      deadline.cancel();
       client.close(force: true);
     }
   }
