@@ -453,6 +453,10 @@ class UserListScreenState extends State<UserListScreen> {
       children: [
         SearchBarWidget(
           onChanged: _onSearchChanged,
+          // 标签表是标签云那次请求的副产品，同一份数据。传它不是为了「多一个
+          // 数据源」，而是为了让「# 就弹推荐」这件事不需要第二次网络往返。
+          tagCloud: _tagCloud,
+          onPickTag: _enterTagSearch,
         ),
         _TagFilterBar(
           cloud: _tagCloud,
@@ -465,6 +469,39 @@ class UserListScreenState extends State<UserListScreen> {
         ),
       ],
     );
+  }
+
+  /// 点了某个标签（搜索框推荐下拉）→ **立刻**按这个标签查找。
+  ///
+  /// 走 [_loadTagUsers] 那条图站全量分页的路（`/api/tag/<tag>`），不是搜索框
+  /// `#` 那条 `by=tag`：后者 LIMIT 15 且无游标，点了「女性」只看到 11 个人却
+  /// 像看全了（实测 女性 total=7580）。
+  ///
+  /// 三个状态必须一次写齐，且**不复用 [_onSearchChanged] 的 300ms 防抖**：
+  /// 用户已经用鼠标明确指了标签，再等 300ms 是白等，而且防抖里那套
+  /// `if (key == _appliedQuery) return` 短路会把「连点同一个标签想重新查一遍」
+  /// 直接吃掉。
+  void _enterTagSearch(String tag) {
+    final picked = tag.trim().replaceFirst(RegExp(r'^#+'), '').trim();
+    if (picked.isEmpty) return;
+    setState(() {
+      // 清掉搜索态相关的字段：标签查找是**筛选**，不是搜索。若留着 _appliedQuery
+      // 非空，build 会走 _buildSearchResults，于是点了推荐看到的仍是旧的
+      // 「#词」搜索结果——点标签却没换内容，正是本条要修的症状。
+      _appliedQuery = '';
+      _search = '';
+      _searchByTag = false;
+      _searchFuture = null;
+      // 单选语义：点推荐就是「我要看这个标签」，不是「把它加进多选」。
+      // 多选仍由标签云筛选条负责（那里能看到当前选中了哪几个）。
+      _selectedTags = <String>{picked};
+      _tagUsers = const <TwitterUser>[];
+      _tagError = null;
+      _tagPages.clear();
+      _tagMergedTotal = null;
+      _failedTags.clear();
+    });
+    _loadTagUsers();
   }
 
   Widget _buildSearchResults() {
