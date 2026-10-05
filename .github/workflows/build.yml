@@ -165,6 +165,20 @@ jobs:
       # 挂死真因已修（测试体内不再有真实文件 IO：setUp 不调
       # ensureInitialized，_file 保持 null，_doFlush 首行即短路），
       # 所以按最严格条件跑：带覆盖率、整包、必须全绿。
+      #
+      # 【本步骤把上面那段注释变成可执行断言】注释拦不住人，断言可以。
+      # 它拦住的具体行为是：拿「逐文件跑通了」当验收——那是第 1 级绿色，
+      # 不构成验收（跨文件的相互作用只有整包才现形）。
+      - name: Acceptance gate (whole-suite, not per-file)
+        run: |
+          cd /tmp/test_project
+          n_test=$(ls test/*.dart 2>/dev/null | wc -l)
+          if [ "$n_test" -eq 0 ]; then
+            echo "::error::找不到任何测试文件，整包验收无从谈起"
+            exit 1
+          fi
+          echo "整包验收对象：$n_test 个测试文件（必须在下面 Run tests 那一次运行里全部被执行）"
+
       - name: Run tests
         run: |
           cd /tmp/test_project
@@ -197,7 +211,12 @@ jobs:
         with:
           name: coverage
           path: /tmp/test_project/coverage/lcov.info
-          if-no-files-found: warn
+          # `error`（原先 `warn`）：warn 意味着**产物不存在时这一步照样绿**——
+          # 于是「整包测试跑完、CI 全绿、但覆盖率数据根本没落盘」不会有任何信号。
+          # 这一级的意义就是「产物真的落地」，产物缺失必须**失败**。
+          # 注意这不能替代上面那道 `Coverage artifact must actually exist`
+          # （它查内容非空）：这里是查文件在不在，那里是查有没有内容。
+          if-no-files-found: error
           retention-days: 30
 
 
@@ -625,6 +644,29 @@ jobs:
         run: |
           echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
 
+      # 产物校验和：与产物一起发布，供下载方核对完整性。
+      #
+      # 为什么加：此前 v0.6.4 及以前的 release 只有裸产物，没有任何校验和，
+      # 下载方无法确认拿到的是完整文件。校验和必须在**发布这一步**算——
+      # 事后从本地算不算数，因为无法证明算的是 CI 传上去的那一份。
+      - name: Generate checksums
+        if: ${{ steps.is_release.outputs.publish == 'true' }}
+        run: |
+          cd artifact
+          # 用 awk 剥掉目录前缀，而不是 sed：sha256sum 的输出是 `<hash><两个空格><path>`，
+          # sed 里 `s#^apk/#` 锚在行首**匹配不到**（行首是 hash），
+          # 实测会原样留下 `apk/app-release.apk` —— 于是 SHA256SUMS.txt 里的
+          # 文件名与 release 里实际挂的名字对不上，下载方按它核对会找不到文件。
+          sha256sum apk/app-release.apk windows/twitter_pic_flutter_windows_amd64.zip \
+            | awk '{n=$2; sub(/^apk\//,"",n); sub(/^windows\//,"",n); print $1"  "n}' \
+            > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          # 行数不对 = 校验和没算出来，必须失败而不是发一个空壳
+          [ "$(wc -l < SHA256SUMS.txt)" -eq 2 ] || { echo "::error::SHA256SUMS.txt 行数异常"; exit 1; }
+          # 文件名必须与 release 里挂的产物名一致（错位了下载方核对不到）
+          grep -q '  app-release.apk$' SHA256SUMS.txt || { echo "::error::SHA256SUMS.txt 未含 app-release.apk"; exit 1; }
+          grep -q '  twitter_pic_flutter_windows_amd64.zip$' SHA256SUMS.txt || { echo "::error::SHA256SUMS.txt 未含 windows zip"; exit 1; }
+
       - name: Create Release
         if: ${{ steps.is_release.outputs.publish == 'true' }}
         uses: softprops/action-gh-release@v2
@@ -635,5 +677,6 @@ jobs:
           files: |
             ./artifact/apk/app-release.apk
             ./artifact/windows/twitter_pic_flutter_windows_amd64.zip
+            ./artifact/SHA256SUMS.txt
           generate_release_notes: false
           make_latest: true
