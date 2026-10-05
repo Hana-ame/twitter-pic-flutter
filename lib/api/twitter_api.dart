@@ -18,6 +18,29 @@ import '../models/user.dart';
 /// ProxyManager + EchUrl.rewrite 走 ECH。
 const kApiBase = 'https://x.moonchan.xyz/api/twitter';
 
+/// 图站（gallery）的 origin —— **与 [kApiBase] 不是同一个 base**。
+///
+/// 为什么必须单独一个 base：`/api/twitter` 这组路由是 gin 的
+/// `r.Group("/api/twitter")` + `twitter.AddToGroup`（go/server/main.go），
+/// 它只注册了 `GET /`、`GET /:fn`、`GET /tags/:username`、`GET /emojis*` 等
+/// **固定几条**路由；而 `/api/tag/{tag}`、`/api/tag-cloud` 这些反查/标签云端点
+/// 注册在 **gallery 自己的 `http.ServeMux`** 上（go/gallery/main.go 的
+/// `galleryMux`）。`setupRouter` 用 `r.NoRoute` 把所有 API 之外的路径交回
+/// gallery handler，所以图站端点真实路径是 `/api/tag/<tag>`、
+/// **不带** `/api/twitter` 前缀。
+///
+/// ⚠️ 实测（2026-10-05，线上 `x.moonchan.xyz`）：
+/// ```
+/// GET /api/twitter/tag/%E5%A5%B3%E6%80%A7?limit=5   → 404 page not found
+/// GET /api/twitter/tag-cloud?limit=3               → 404 {"error":"查询用户失败: 没有进入 rows.Next()"}
+/// GET /api/tag/%E5%A5%B3%E6%80%A7?limit=5           → 200 {"count":5,"total":7580,"users":[...]}
+/// GET /api/tag-cloud?limit=3                       → 200 [{"Tag":"女性","Count":7580}, ...]
+/// ```
+/// 也就是说把图站端点挂在 [kApiBase] 下会**静默 404**：gin 先在
+/// `/api/twitter` 组里找不到匹配路由，落到 `NoRoute` 再交给 gallery，
+/// 而 gallery 的 mux 又匹配不上 `/api/twitter/...`，最终 404。
+const kGalleryBase = 'https://x.moonchan.xyz';
+
 /// 画廊端点 `GET /api/tag/<tag>` 的一页结果。
 ///
 /// 实测 `users` 是**裸用户名字符串数组**（不是 `[]User`），且 `page` 参数是
@@ -32,7 +55,7 @@ class TagUserPage {
 
   /// 服务端声称这个标签下总共有多少个用户（与标签云里的 Count 同源）。
   ///
-  /// ⚠️ 这是**票数**口径，不是"我能列出多少用户"：实测 `女性` total=7579，
+  /// ⚠️ 这是**票数**口径，不是"我能列出多少用户"：实测 `女性` total=7580，
   /// 而 `by=tag` 对同一标签只回 15 条。
   final int? total;
 
@@ -46,6 +69,12 @@ class TagUserPage {
   ///
   /// 画廊端点**不返回** hasMore 字段，只能拿条数与请求 limit 比；满页时
   /// 上层继续请求一次，拿到空页（0 < limit）后由这条判定收住，不会死循环。
+  ///
+  /// ⚠️ 这条判定**只能在服务端按稳定全序返回时**成立。反查 SQL 是
+  /// `ORDER BY cnt DESC, username ASC`（go/tags/tags.go 的
+  /// `UsersForTagPaged`），username 唯一所以确实是全序；实测把 offset=0…725
+  /// 逐页拉过一遍，每页都是满 25 条且与相邻页首尾不重叠，无空洞也无重复。
+  /// 真正的兜底在 UI 侧：跨页按 username 去重（`_loadMoreTagUsers`）。
   bool isLastPage(int requested) => usernames.length < requested;
 }
 
@@ -106,6 +135,13 @@ class TwitterApi {
 
   late final Dio _dio;
 
+  /// 图站专用客户端：base 是**站点 origin**（[kGalleryBase]），不带
+  /// `/api/twitter` 前缀。见 [kGalleryBase] 的路由说明与实测记录。
+  ///
+  /// 与 [_dio] 共用同一套拦截器（路径归一化 + 异常映射），所以注入测试用的
+  /// 假适配器时**两个实例都要注入**，否则图站请求会真发出去。
+  late final Dio _gallery;
+
   /// [adapter] 仅供测试注入假适配器（不发真实请求），生产代码不传。
   TwitterApi({HttpClientAdapter? adapter}) {
     _dio = Dio(BaseOptions(
@@ -114,9 +150,18 @@ class TwitterApi {
       receiveTimeout: const Duration(seconds: 15),
       headers: {'User-Agent': 'TwitterPic/1.0'},
     ));
-    if (adapter != null) _dio.httpClientAdapter = adapter;
+    _gallery = Dio(BaseOptions(
+      baseUrl: kGalleryBase,
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 15),
+      headers: {'User-Agent': 'TwitterPic/1.0'},
+    ));
+    if (adapter != null) {
+      _dio.httpClientAdapter = adapter;
+      _gallery.httpClientAdapter = adapter;
+    }
 
-    // 全局拦截器：路径归一化。
+    // 路径归一化：拼到两个实例上，图站端点同样受益。
     //
     // Dio 拼接 baseUrl 与 path 时**不会**自动补斜杠：
     // baseUrl = 'https://x.moonchan.xyz/api/twitter' + path = 'x.json.gz'
@@ -126,7 +171,7 @@ class TwitterApi {
     // emojis 全部 403。之前只有 getUserList 用了 '/' 所以只有它正常，
     // 详情页"暂无内容"、头像全空、标签空都是这一个原因。
     // 这里统一补前导斜杠，避免以后新增调用再次踩坑。
-    _dio.interceptors.add(InterceptorsWrapper(
+    InterceptorsWrapper normalize() => InterceptorsWrapper(
       onRequest: (options, handler) {
         final p = options.path;
         final absolute = p.startsWith('http://') || p.startsWith('https://');
@@ -135,10 +180,12 @@ class TwitterApi {
         }
         handler.next(options);
       },
-    ));
+    );
+    _dio.interceptors.add(normalize());
+    _gallery.interceptors.add(normalize());
 
-    // 全局拦截器：统一异常映射
-    _dio.interceptors.add(InterceptorsWrapper(
+    // 统一异常映射（两个实例共用同一个映射函数）。
+    InterceptorsWrapper mapErrors() => InterceptorsWrapper(
       onError: (e, handler) {
         if (e.error is ApiException) {
           handler.reject(e);
@@ -150,7 +197,9 @@ class TwitterApi {
           ));
         }
       },
-    ));
+    );
+    _dio.interceptors.add(mapErrors());
+    _gallery.interceptors.add(mapErrors());
   }
 
   Future<List<TwitterUser>> getUserList({String? after}) async {
@@ -175,9 +224,12 @@ class TwitterApi {
   ///
   /// 按 Count **升序**返回（低热度在前），让调用方想要"热门在前"时自己
   /// reverse；返回顺序本身没有产品含义，排稳只是为了渲染不抖。
+  ///
+  /// ⚠️ 走 [_gallery]（图站 origin），**不是** [_dio]：这个端点注册在
+  /// gallery 自己的 mux 上，挂在 `/api/twitter` 下实测 404。
   Future<List<TagCount>> getTagCloud({int limit = 100}) async {
-    final resp = await _dio.get(
-      '/tag-cloud',
+    final resp = await _gallery.get(
+      '/api/tag-cloud',
       queryParameters: {'limit': limit},
     );
     return TagCount.listFromJson(resp.data);
@@ -187,14 +239,18 @@ class TwitterApi {
   ///
   /// 为什么要它而不是 [searchUsersByTag]：`by=tag` 硬上限 15 且**无游标**
   /// （见 [kTagSearchLimit]），拿它当"这个标签下的用户"会静默只显示前 15 个
-  /// 却让人以为已经看全。画廊端点能一直翻到 total（实测 女性 total=7579）。
+  /// 却让人以为已经看全。画廊端点能一直翻到 total（实测 女性 total=7580）。
   ///
-  /// 两个实测到的坑，写在这里免得下一个人再踩：
+  /// ⚠️ 走 [_gallery]（图站 origin），**不是** [_dio]：`/api/twitter/tag/<tag>`
+  /// 实测 404（见 [kGalleryBase]）。
+  ///
+  /// 三个实测到的坑，写在这里免得下一个人再踩：
   ///  1. **`page` 参数是摆设**：传 page=1/2/3 回的 `users` 一模一样，只有
   ///     `offset` 真正生效（`offset` 是 0 起的行偏移：offset=24 与 offset=25
   ///     返回的首个用户不同）。所以翻页**只能**用 offset。
   ///  2. **`users` 是裸用户名字符串数组**，不是 `[]User` 对象 —— 没有 tags、
   ///     nick、avatar。要权重/昵称还得另查（见 [hydrateUsernames]）。
+  ///  3. **`total` 与标签云 Count 同源，是票数不是人数**，不要当"人数"显示。
   ///
   /// [offset] 是条数偏移，[limit] 是本页条数上限。
   Future<TagUserPage> getUsersByTagPage(
@@ -202,11 +258,14 @@ class TwitterApi {
     int limit = 25,
     int offset = 0,
   }) async {
-    final resp = await _dio.get(
+    if (tag.isEmpty) {
+      return const TagUserPage(usernames: <String>[], offset: 0);
+    }
+    final resp = await _gallery.get(
       // 标签名含中文/空格等必须按 UTF-8 百分号编码 —— Dio 不会替你转义
-      // query 参数里的路径段，这里手动拼 Uri.encodeComponent。
-      '/tag/${Uri.encodeComponent(tag)}',
-      queryParameters: {'limit': limit, 'page': 1, 'offset': offset},
+      // 路径段里的 query 参数，这里手动拼 Uri.encodeComponent。
+      '/api/tag/${Uri.encodeComponent(tag)}',
+      queryParameters: {'limit': limit, 'offset': offset},
     );
     final data = _asJsonMap(resp.data, 'getUsersByTagPage($tag)');
     final usernames = _asStringList(data['users']);
@@ -222,49 +281,102 @@ class TwitterApi {
   /// 画廊端点只给名字，而本地过滤**必须**看 `tags` 键才能判定命中，所以
   /// 选中标签后需要把用户补齐。
   ///
-  /// ⚠️ 权重**只能**从 `GET /tags/<username>` 拿：`?list=users` 返回的每项都
-  /// 带 `tags`，但那是**另一个接口的响应**；元数据接口的 `account_info` 里
-  /// **没有** tags 字段（实测 account_info 只有 name/nick/date/followers/
-  /// friends/profile_image/statuses_count），拿它补 tags 会得到一堆空 Map，
-  /// 于是"按标签过滤"永远过滤不出东西。
+  /// ## 两段式补齐，各走最便宜的那个端点
   ///
-  /// 逐项吞错：某个用户 404/500 不该让整页白拉，失败的那个直接跳过。
-  /// 返回值因此可能**短于**输入长度 —— 调用方必须以返回值为准。
+  /// 1. **权重**走批量 `GET /api/tags?keys=a,b,c`（图站，别名 `/api/account-tags`），
+  ///    **一次请求拿整页**。实测响应是 `{"Puppy_yua":{"女性":4,...}, ...}`，
+  ///    被封账号会被服务端直接从 map 里省略（等价于"没有这个账号"）。
+  /// 2. **昵称/头像**走 `GET /api/twitter/<user>.json.gz` 逐个（`account_info`
+  ///    **没有** tags 字段——实测只有 name/nick/date/followers/friends/
+  ///    profile_image/statuses_count，所以权重必须另找接口，不能拿它顶）。
+  ///
+  /// ⚠️ 这一步是**旧实现最贵的部分**：原 `hydrateUsernames` 对每个用户名发
+  /// **两个**请求（元数据 + `getTagWeights`），一页 25 个用户名就是 50 次往返；
+  /// 而列表行 `_UserTile` 还会**各自再拉一次** `getMetaData`（有 10 分钟进程内
+  /// 缓存兜底，但首屏仍是 25 次）。权重改批量后，每页从 50 次降到 25 次，
+  /// 且这一步现在是唯一还需要的逐个请求。
+  ///
+  /// 逐项吞错：某个用户的元数据 404/500 不该让整页白拉，失败的那个直接跳过
+  /// （标签页列表只需要能渲染用户名 + 标签）。返回值因此可能**短于**输入长度
+  /// —— 调用方必须以返回值为准。
+  ///
+  /// [concurrency] 是逐个元数据请求的并发度，默认 6。
   Future<List<TwitterUser>> hydrateUsernames(
     List<String> usernames, {
     int concurrency = 6,
   }) async {
+    if (usernames.isEmpty) return const <TwitterUser>[];
+    // 去重后再发：反查分页可能跨页重复（服务端排序在同权重时按 username，
+    // 但并发写入会让 offset 分页漏/重），重复的 key 只会白占批量请求长度。
+    final unique = <String>[];
+    final seen = <String>{};
+    for (final u in usernames) {
+      if (u.isNotEmpty && seen.add(u)) unique.add(u);
+    }
+
+    // ① 批量取权重。失败不致命：退化成"没有 tags"，此时标签过滤会因
+    //    `tags` 为空而过滤不出任何人 —— 所以要把失败如实抛给 UI，
+    //    否则表现为"选了这个标签但一条都搜不到"，静默假空。
+    Map<String, Map<String, int>> weights;
+    try {
+      weights = await getTagWeightsBatch(unique);
+    } catch (e) {
+      throw ApiException('批量取标签权重失败：$e');
+    }
+
+    // ② 逐个取昵称/头像，失败降级为只有用户名 + 权重。
     final out = <TwitterUser>[];
-    for (var i = 0; i < usernames.length; i += concurrency) {
-      final chunk = usernames.skip(i).take(concurrency);
-      final settled = await Future.wait(chunk.map(_hydrateOne));
-      for (final u in settled) {
-        if (u != null) out.add(u);
-      }
+    for (var i = 0; i < unique.length; i += concurrency) {
+      final chunk = unique.skip(i).take(concurrency);
+      final settled = await Future.wait(chunk.map((name) async {
+        UserMetaData? meta;
+        try {
+          meta = await getMetaData(name);
+        } catch (_) {}
+        final info = meta?.accountInfo;
+        return TwitterUser(
+          username: name,
+          nick: info?.nick,
+          avatar: info?.avatar,
+          totalUrls: info?.totalUrls,
+          // 键存在即命中的口径下，服务端省略的键（被封 / 不存在）与"权重 0"
+          // 都只能读成"没有这个标签"，用空表兜住，不让它去读 undefined。
+          tags: weights[name] ?? const <String, int>{},
+        );
+      }));
+      out.addAll(settled);
     }
     return out;
   }
 
-  /// 单个用户补齐：元数据（昵称/头像）与权重（tags）分两个接口，各自带一份
-  /// 兜底 —— 任一失败都不该让这个用户名整个消失。
-  Future<TwitterUser?> _hydrateOne(String username) async {
-    UserMetaData? meta;
-    Map<String, int>? tags;
-    try {
-      meta = await getMetaData(username);
-    } catch (_) {}
-    try {
-      tags = await getTagWeights(username);
-    } catch (_) {}
-    if (meta == null && tags == null) return null;
-    final info = meta?.accountInfo;
-    return TwitterUser(
-      username: username,
-      nick: info?.nick,
-      avatar: info?.avatar,
-      totalUrls: info?.totalUrls,
-      tags: tags ?? const <String, int>{},
-    );
+  /// 批量取多个账号的标签权重：`GET /api/tags?keys=a,b,c`（图站）。
+  ///
+  /// 实测响应 `{"userA":{"tag":w,...}, "userB":{...}}`；**被封账号的键会被服务端
+  /// 直接省略**（go/gallery/main.go 的 `handleGetAccountTags` 调
+  /// `cfg.vis.hidden(u)` 跳过），所以查不到的键一律回落空表，不当成错误。
+  ///
+  /// 分批以免 URL 过长：每批 [chunk] 个 key（默认 50），批次之间串行，
+  /// 避免把 URL 顶到几 KB——那既可能撞服务端/网关上限，也让 Cloudflare 缓存
+  /// 命中率崩掉。
+  Future<Map<String, Map<String, int>>> getTagWeightsBatch(
+    List<String> usernames, {
+    int chunk = 50,
+  }) async {
+    final out = <String, Map<String, int>>{};
+    if (usernames.isEmpty) return out;
+    final size = chunk <= 0 ? usernames.length : chunk;
+    for (var i = 0; i < usernames.length; i += size) {
+      final part = usernames.skip(i).take(size).toList();
+      final resp = await _gallery.get(
+        '/api/tags',
+        // keys 是逗号分隔的**用户名**。Twitter 用户名只含 [A-Za-z0-9_]，
+        // 拼进 query 不会引入分隔符歧义；仍交给 Dio 做编码。
+        queryParameters: {'keys': part.join(',')},
+      );
+      final raw = _asJsonMap(resp.data, 'getTagWeightsBatch');
+      raw.forEach((k, v) => out[k] = parseTagWeights(v));
+    }
+    return out;
   }
 
   /// 搜索用户：`GET /?by=<by>&search=<search>`（by 现有取值：username / nick / tag）。
@@ -521,6 +633,9 @@ class TwitterApi {
 
   void dispose() {
     _dio.close(force: true);
+    // 图站客户端也是这个实例建的，不关就是漏一个连接池（测试里逐例 new 一个
+    // api 时尤其明显）。
+    _gallery.close(force: true);
   }
 
 

@@ -55,16 +55,31 @@ class UserListScreenState extends State<UserListScreen> {
 
   /// 选中标签后拉到的**全量**用户（走画廊端点分页），已补齐 tags。
   /// 为空且 [_tagLoading] 为 false 时才回落到本地已加载的 _users 上过滤。
+  ///
+  /// 多选时是**各标签名册的并集**：每个选中的标签都翻自己的全量，合并去重。
+  /// 早先只拉第一个标签的名册，等于把并集当交集算（见 [_toggleTag] 的注释）。
   List<TwitterUser> _tagUsers = const <TwitterUser>[];
 
-  /// 画廊端点声称的该标签 total（**票数口径**，不是人数）。
-  int? _tagTotal;
+  /// **逐标签**的翻页进度：标签名 → 已翻到的 offset 与是否还有下一页。
+  ///
+  /// 必须按标签分开记：多选下每个标签的名册长度不同、末页时刻不同，只有
+  /// 分别记账才能让「加载更多」在并集语义下正确收住（任一还有下一页就继续）。
+  final Map<String, _TagPaging> _tagPages = <String, _TagPaging>{};
 
-  /// 画廊端点这一批是否还有下一页。
+  /// 本轮加载里**失败**的标签名。空 = 全部成功。
+  ///
+  /// 部分失败要让 UI 如实区分「这个标签挂了」与「这个标签下没人」——多选时
+  /// 一个冷门标签失败不该把已取回的热门结果一起清掉。
+  final Set<String> _failedTags = <String>{};
+
+  /// 各标签 `total` 的最大值（**票数口径**，不是人数）。
+  ///
+  /// 各标签的 total 不相加（同一账号可同时算进多个标签，加起来会重复计数），
+  /// 也不当成人数展示，只作为「热度量级」的一个参考值。null = 服务端没给。
+  int? _tagMergedTotal;
+
+  /// 画廊端点这一批是否还有下一页（多选下 = 任一选中标签还有下一页）。
   bool _tagHasMore = false;
-
-  /// 已经被 offset 翻到第几页（下一页的 offset）。
-  int _tagOffset = 0;
 
   bool _tagLoading = false;
   String? _tagError;
@@ -101,15 +116,20 @@ class UserListScreenState extends State<UserListScreen> {
         _selectedTags.add(tag);
       }
       _tagUsers = const <TwitterUser>[];
-      _tagOffset = 0;
-      _tagHasMore = false;
-      _tagTotal = null;
       _tagError = null;
+      _tagPages.clear();
+      _tagMergedTotal = null;
     });
     _refreshVisible();
     if (_selectedTags.isNotEmpty) {
-      // 只拉"选中的第一个标签"的全量：多选是并集，任意一个标签的全量列表
-      // 都足以覆盖大部分交集场景，再多拉就是纯流量浪费。
+      // **每个**选中的标签都要拉第一页。
+      //
+      // 原实现只拉 `_selectedTags.first` 一个标签（注释写「多选是并集，任意一个
+      // 标签的全量列表都足以覆盖大部分交集场景」）——那是把并集当交集算：一个
+      // 只带 B 不带 A 的账号，在选中 A+B 时按 `filterUsersByTags` 的 OR 口径
+      // **应该命中**，却因为它压根不在 A 的名单里而永远看不见。多选这时给的是
+      // 「A 的全量 ∩ 本地再按 A/B 过滤」，即 A 的子集，并集口径名存实亡。
+      // 现在按标签各拉各的，页码/末页状态存在 [_tagPages] 里分别记账。
       _loadTagUsers();
     }
   }
@@ -118,81 +138,171 @@ class UserListScreenState extends State<UserListScreen> {
     setState(() {
       _selectedTags = <String>{};
       _tagUsers = const <TwitterUser>[];
-      _tagOffset = 0;
       _tagHasMore = false;
-      _tagTotal = null;
       _tagError = null;
+      _tagPages.clear();
+      _tagMergedTotal = null;
+      _failedTags.clear();
     });
     _refreshVisible();
   }
 
-  /// 拉选中标签的全量用户（**第一页**，清空重来）。
+  /// 拉选中**所有**标签的第一页（清空重来），合并去重后写入 [_tagUsers]。
   ///
-  /// 为什么不用 `by=tag`：它硬上限 15 且无游标（[kTagSearchLimit]），拿它
-  /// 冒充"这个标签下的全部用户"会静默只显示前 15 个却让人以为看全了。
-  /// 画廊端点 `/api/tag/<tag>` 能一直翻到 total（实测 女性 total=7579）。
+  /// 为什么不用 `by=tag`：它硬上限 15 且无游标，拿它冒充"这个标签下的用户"
+  /// 会静默只显示前 15 个却让人以为看全了。画廊端点 `/api/tag/<tag>` 能一直
+  /// 翻到 total（实测 女性 total=7580）。
+  ///
+  /// 多选时每个标签各发一次、**并行**取第一页；任一标签失败只记它自己
+  /// （[_failedTags] 里点名），全部失败才算整体失败 —— 否则加选一个冷门标签
+  /// 就会把热门标签已经拉到的结果整个清空。
   Future<void> _loadTagUsers() async {
-    final tag = _selectedTags.isEmpty ? '' : _selectedTags.first;
-    if (tag.isEmpty) return;
+    final tags = _selectedTags.toList(growable: false);
+    if (tags.isEmpty) return;
     setState(() {
       _tagLoading = true;
       _tagError = null;
       _tagUsers = const <TwitterUser>[];
-      _tagOffset = 0;
+      _tagPages.clear();
+      _tagMergedTotal = null;
+      _failedTags.clear();
     });
-    try {
-      final page = await _api.getUsersByTagPage(tag,
-          limit: _kTagPageSize, offset: 0);
-      final hydrated = await _api.hydrateUsernames(page.usernames);
-      if (!mounted) return;
+    final settled = await Future.wait(tags.map((tag) async {
+      try {
+        final page = await _api.getUsersByTagPage(tag,
+            limit: _kTagPageSize, offset: 0);
+        final hydrated = await _api.hydrateUsernames(page.usernames);
+        return (
+          tag: tag,
+          page: page,
+          users: hydrated,
+          error: null as String?,
+        );
+      } catch (e) {
+        return (
+          tag: tag,
+          page: null as TagUserPage?,
+          users: const <TwitterUser>[],
+          error: '$e',
+        );
+      }
+    }));
+    if (!mounted) return;
+    final failures =
+        settled.where((r) => r.error != null).map((r) => r.tag).toList();
+    if (failures.length == settled.length) {
+      // 全挂 → 走错误态（带重试），不要显示成「这个标签下没人」。
       setState(() {
-        _tagUsers = hydrated;
-        _tagOffset = _kTagPageSize;
-        _tagTotal = page.total;
-        _tagHasMore = !page.isLastPage(_kTagPageSize);
+        _tagError = settled.first.error;
+        _failedTags
+          ..clear()
+          ..addAll(failures);
         _tagLoading = false;
       });
-      _refreshVisible();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _tagError = e.toString();
-        _tagLoading = false;
-      });
+      return;
     }
+    setState(() {
+      _tagPages.clear();
+      var mergedTotal = 0;
+      var sawTotal = false;
+      for (final r in settled) {
+        final page = r.page;
+        if (page == null) continue;
+        final hasMore = !page.isLastPage(_kTagPageSize);
+        _tagPages[r.tag] = _TagPaging(
+          // 短页（含空页）offset 不再前进：否则空页会让 offset 一直涨，
+          // 「加载更多」永远点得动。
+          offset: hasMore ? _kTagPageSize : 0,
+          hasMore: hasMore,
+        );
+        final t = page.total;
+        if (t != null) {
+          sawTotal = true;
+          if (t > mergedTotal) mergedTotal = t;
+        }
+      }
+      // 各标签 total 是**票数**口径，相加没有产品含义（同一账号可同时算进
+      // 两个标签）。取最大值只作为「热度量级」参考，UI 一律不写「N 人」
+      // ——见 [_TagLoadMore] 的 heatText。
+      _tagMergedTotal = sawTotal ? mergedTotal : null;
+      _tagUsers = dedupeByUsername(
+        settled.expand((r) => r.users).toList(growable: false),
+      );
+      _failedTags
+        ..clear()
+        ..addAll(failures);
+      _tagError = failures.isEmpty
+          ? null
+          : '部分标签加载失败：${failures.join('、')}（其余标签的结果已显示）';
+      _tagHasMore = _tagPages.values.any((s) => s.hasMore);
+      _tagLoading = false;
+    });
+    _refreshVisible();
   }
 
-  /// 「加载更多」：按 offset 翻下一页。
+  /// 「加载更多」：**每个**还没到末页的标签各翻一页。
+  ///
+  /// 逐标签记账（[_tagPages]），因此「加载更多」在多选下也是并集：任一标签还
+  /// 有下一页就继续，全部翻完才收住。
   Future<void> _loadMoreTagUsers() async {
-    if (_tagLoading || !_tagHasMore) return;
-    final tag = _selectedTags.isEmpty ? '' : _selectedTags.first;
-    if (tag.isEmpty) return;
+    if (_tagLoading || _selectedTags.isEmpty) return;
+    final pending = _selectedTags
+        .where((t) => _tagPages[t]?.hasMore ?? true)
+        .toList(growable: false);
+    if (pending.isEmpty) return;
     setState(() => _tagLoading = true);
-    try {
-      final page = await _api.getUsersByTagPage(tag,
-          limit: _kTagPageSize, offset: _tagOffset);
-      final hydrated = await _api.hydrateUsernames(page.usernames);
-      if (!mounted) return;
-      setState(() {
-        // 去重：服务端翻页顺序可能变化，同一个用户名可能跨页重复出现。
-        final seen = <String>{for (final o in _tagUsers) o.username};
-        _tagUsers = [
-          ..._tagUsers,
-          ...hydrated.where((u) => seen.add(u.username)),
-        ];
-        _tagOffset += _kTagPageSize;
-        _tagTotal = page.total ?? _tagTotal;
-        _tagHasMore = !page.isLastPage(_kTagPageSize);
-        _tagLoading = false;
-      });
-      _refreshVisible();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _tagError = e.toString();
-        _tagLoading = false;
-      });
-    }
+    final settled = await Future.wait(pending.map((tag) async {
+      final st = _tagPages[tag] ?? const _TagPaging(offset: 0, hasMore: true);
+      try {
+        final page = await _api.getUsersByTagPage(tag,
+            limit: _kTagPageSize, offset: st.offset);
+        final hydrated = await _api.hydrateUsernames(page.usernames);
+        return (
+          tag: tag,
+          page: page,
+          users: hydrated,
+          error: null as String?,
+        );
+      } catch (e) {
+        return (
+          tag: tag,
+          page: null as TagUserPage?,
+          users: const <TwitterUser>[],
+          error: '$e',
+        );
+      }
+    }));
+    if (!mounted) return;
+    setState(() {
+      for (final r in settled) {
+        if (r.error != null) {
+          _failedTags.add(r.tag);
+          continue;
+        }
+        _failedTags.remove(r.tag);
+        final page = r.page;
+        if (page == null) continue;
+        final st = _tagPages[r.tag] ?? const _TagPaging(offset: 0, hasMore: true);
+        final hasMore = !page.isLastPage(_kTagPageSize);
+        _tagPages[r.tag] = _TagPaging(
+          // 短页（含空页）offset 不再前进：否则「加载更多」永远点得动。
+          offset: hasMore ? st.offset + _kTagPageSize : st.offset,
+          hasMore: hasMore,
+        );
+      }
+      final failures = pending.where(_failedTags.contains).toList();
+      // 跨页去重：服务端在并发写入下 offset 分页可能重复或漏，同一个用户名
+      // 跨页出现要去掉，否则撞 `ValueKey(u.username)` 的 Duplicate keys。
+      _tagUsers = dedupeByUsername(
+        [..._tagUsers, ...settled.expand((r) => r.users)],
+      );
+      _tagHasMore = _tagPages.values.any((s) => s.hasMore);
+      _tagError = failures.isEmpty
+          ? null
+          : '继续加载失败：${failures.join('、')}（可再次点击重试）';
+      _tagLoading = false;
+    });
+    _refreshVisible();
   }
 
   void _onSearchChanged(String v) {
@@ -605,20 +715,34 @@ class UserListScreenState extends State<UserListScreen> {
       backgroundColor: Colors.white,
       onRefresh: _loadTagUsers,
       child: ListView.builder(
-        itemCount: _visibleUsers.length + 1,
+        // +1 是末尾的「加载更多」；有标签加载失败时再 +1 放告警条。
+        itemCount: _visibleUsers.length + 1 + (_tagError != null ? 1 : 0),
         itemBuilder: (_, i) {
-          if (i == _visibleUsers.length) {
+          // 列表顶部插一条"部分标签没加载出来"的告警。它必须排在用户行**之前**
+          // ——放末尾会被用户当成"加载更多的脚注"，而它的含义是"你看到的这份
+          // 结果不完整"，属于该在看之前就知道的事。
+          if (_tagError != null && i == 0) {
+            return _PartialTagFailureBanner(
+              message: _tagError!,
+              failedTags: _failedTags.toList(growable: false),
+              onRetry: _loadTagUsers,
+            );
+          }
+          final idx = _tagError != null ? i - 1 : i;
+          if (idx == _visibleUsers.length) {
             return _TagLoadMore(
               loading: _tagLoading,
               hasMore: _tagHasMore,
               loadedCount: _tagUsers.length,
               // ⚠️ 绝不说"N 人"：total 是标签云的**票数**，不是能列出的用户数
-              // （女性 total=7579，而 by=tag 只能回 15）。措辞刻意含糊成"热度"。
-              heatText: _tagTotal == null ? null : '$_tagTotal',
+              // （女性 total=7580，而 by=tag 只能回 15）。措辞刻意含糊成"热度"。
+              // 多选时取各标签 total 的最大值——相加会重复计数（同一账号可同时
+              // 命中多个标签）。
+              heatText: _tagMergedTotal == null ? null : '$_tagMergedTotal',
               onMore: _loadMoreTagUsers,
             );
           }
-          final u = _visibleUsers[i];
+          final u = _visibleUsers[idx];
           return _UserTile(
             key: ValueKey(u.username),
             username: u.username,
@@ -862,12 +986,96 @@ class _TagCapFooter extends StatelessWidget {
   }
 }
 
+/// 「部分标签没加载出来」的告警条。
+///
+/// 存在的理由是多选语义：选 A+B 时若只有 B 挂了，A 的结果**仍然要显示**
+/// （否则加选一个冷门标签会把已取回的热门结果整个清掉），但必须说清楚
+/// 「下面这份结果不完整，缺 B」——否则用户会以为这就是全部。
+class _PartialTagFailureBanner extends StatelessWidget {
+  final String message;
+  final List<String> failedTags;
+  final VoidCallback onRetry;
+
+  const _PartialTagFailureBanner({
+    super.key,
+    required this.message,
+    required this.failedTags,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF4E5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFFC978)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.warning_amber_rounded, size: 18, color: Color(0xFFE08600)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  failedTags.isEmpty
+                      ? message
+                      : '标签「${failedTags.join('、')}」没加载出来，下面是其余标签的结果',
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF7A4B00)),
+                ),
+                const SizedBox(height: 6),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh, size: 14),
+                    label: const Text('重试失败标签'),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 单个标签的翻页进度（多选时每个标签各记一份，见 [_TagPaging] 的用法）。
+/// 两个字段都是「下一页该怎么发」所需的最小信息：
+/// - [offset]：下一请求要带的行偏移；
+/// - [hasMore]：还有没有下一页 —— 由「本页条数 < 请求 limit」推出，图站端点
+///   不返回 hasMore 字段。
+class _TagPaging {
+  /// 下一请求要带的行偏移。
+  final int offset;
+
+  /// 该标签还有下一页。false = 已经到末页（或拿到短页/空页）。
+  final bool hasMore;
+
+  const _TagPaging({required this.offset, required this.hasMore});
+}
+
 /// 标签筛选条：横向滚动的标签 cloud 芯片，点一下选中/取消。
 ///
 /// **多选（并集）而非单选**，理由：标签天然是多维的——"女性"和"二次元"是
 /// 正交的两个维度，单选强迫用户在"只要女性"和"只要二次元"之间二选一，而
 /// "女性 + 二次元"这个组合恰恰是最常用的一类查询。多选还让"清空即全部"
 /// 成为唯一需要的一个操作，交互更少。
+///
+/// 并集是**真的**并集：每个选中的标签都翻自己的全量名册，合并去重后展示
+/// （见 UserListScreenState._loadTagUsers），不是只取第一个标签的名册再去
+/// 本地过滤。
 class _TagFilterBar extends StatelessWidget {
   final List<TagCount> cloud;
   final Set<String> selected;
