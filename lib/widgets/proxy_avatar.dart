@@ -108,7 +108,11 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
 
   /// 自动重试一次。调用方必须保证已经在帧后（postFrame 回调），
   /// 或已确认不在 build 期间。
-  void _retry() {
+  ///
+  /// 方法名不能叫 [_retry]：那是 [int _retry] 这个字段的名字，两者同名会在
+  /// 分析期直接报 `duplicate_definition`，且 `WidgetsBinding.addPostFrameCallback`
+  /// 里那个闭包会把方法调用解析成对 int 的调用 → `invocation_of_non_function_expression`。
+  void _autoRetryOnce() {
     if (!mounted) return;
     setState(() {
       // retry 参与 ProgressiveImageProvider 的相等性判据：+1 等于换缓存 key，
@@ -164,7 +168,8 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
             // 必须推迟到帧后：errorBuilder 是 Image 在 build 期间回调的，
             // 这里直接 setState 会抛 "setState() called during build"。
             if (!_autoRetried) {
-              WidgetsBinding.instance.addPostFrameCallback((_) => _retry());
+              WidgetsBinding.instance
+                  .addPostFrameCallback((_) => _autoRetryOnce());
               return _buildFallbackInner();
             }
             // 当前通道失败 → 试下一个候选通道。

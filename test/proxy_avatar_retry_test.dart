@@ -24,6 +24,7 @@
 // 有界 pump 而非 pumpAndSettle：本项目为此付过「挂死 22 分钟」的代价，
 // 逐文件/整包的判据差异见 .github/workflows/build.yml 的绿色分级注释。
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twitter_pic_flutter/services/proxy_manager.dart';
