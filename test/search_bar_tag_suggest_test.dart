@@ -13,10 +13,14 @@
 // 本组件的每一处 setState 都是**同步**的（没有 setState 里 await 网络），
 // 所以固定 pump 一次就够了。
 //
-// ⚠️ `tester.testTextInput.receiveAction(...)` 也必须不碰：它会走到
+// ⚠️ `tester.testTextInput.receiveAction(...)` 也不许碰：它会走到
 // `_onSubmitted` → `StorageService.saveSearchHistory` → `unawaited(_flush())`，
-// 在整包跑（32 个测试文件共用静态状态）时把整包拖到 10 分钟超时。判「有没有
-// 历史」改成直接断言 UI，不靠提交动作。
+// 在整包跑（32 个测试文件共用静态状态）时把整包拖到超时。
+//
+// ⚠️ `await StorageService.debugFlushPending()` 在 tearDown 里同样不许碰：
+// 那个 future 靠 `.then` 推进，而 tearDown 里没有 pump 来推进它，于是
+// 「等它」本身变成新的挂起点（CI run 37326211845 实测卡到 42 分钟）。
+// 正确做法见文件末尾 tearDown 的注释。
 //
 // ## 这组测试拦的是什么
 //
@@ -251,18 +255,8 @@ void main() {
 
   group('与搜索历史的互斥', () {
     testWidgets('有标签命中时弹推荐，不弹历史', (tester) async {
-      await tester.pumpWidget(wrap(SearchBarWidget(
-        onChanged: (_) {},
-        tagCloud: cloud,
-        onPickTag: (_) {},
-      )));
-      await tester.tap(find.byType(TextField));
-      await tester.pump();
-
-      // 直接写一条历史（不经过提交动作，见文件头说明）。
+      // 直接写一条历史，**不调 debugFlushPending**。
       StorageService.saveSearchHistory(['qianxi041015']);
-      await StorageService.debugFlushPending();
-      // 重建一次让 _loadHistory 重新读。
       await tester.pumpWidget(wrap(SearchBarWidget(
         onChanged: (_) {},
         tagCloud: cloud,
@@ -278,19 +272,22 @@ void main() {
     });
   });
 
-  tearDown(() async {
-    // 搜索历史是**写盘**的静态状态。两件事都要做，缺一不可：
-    //  1) 等挂起的写盘落定（`debugFlushPending`）—— 库里的写盘是串行链，
-    //     不等就 reset 的话，链上的回调会在 reset 之后才跑，把已清空的
-    //     内存态又写回去；
-    //  2) `resetForTests()` 清内存态并解除「已加载」标记 —— 否则下一条用例
-    //     会看到本条留下的历史。
+  tearDown(() {
+    // 只用 resetForTests，**不调 debugFlushPending**。
     //
-    // CI 那条「写盘测试必须重置静态状态」闸门只认
-    // `StorageService.<写方法>(` 这种**直接调用**，本文件现在有了直接调用
-    // （`saveSearchHistory`），闸门会查得到——但保留 `debugFlushPending`
-    // 仍必要，因为闸门只查「有没有重置」，查不出「有没有等写盘链」。
-    await StorageService.debugFlushPending();
+    // `saveSearchHistory` → `_write` → `unawaited(_flush())` 会在
+    // `_flushChain` 上挂一个 future。`flutter_test` 跑在**假异步时钟**下，
+    // 那个 future 靠 `.then` 推进；await 它就等于要求「测试体内有一次 pump」
+    // 来推进，而 tearDown 里没有 pump —— CI run 37326211845 实测在这里卡到
+    // 42 分钟未结束（健康基线 3–7 分钟）。
+    //
+    // resetForTests 直接复位 `_loaded`/`_file`/`_flushChain`，不碰 IO、
+    // 不留挂起任务 —— 这正是同仓库 `block_default_resurrect_test.dart:46-58`
+    // 与 `tag_rule_consistency_test.dart:141-150` 的做法。
+    //
+    // ⚠️ 上一版这里写的是 `await StorageService.debugFlushPending()`，
+    // 那是**反模式**：它正是旧版文档里"逐处排空 pending future"的修法，
+    // 但那些用例是在 pump 之后排空的；放在 tearDown 里只会把挂起留在原地。
     StorageService.resetForTests();
   });
 }
