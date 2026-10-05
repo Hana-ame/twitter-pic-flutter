@@ -283,10 +283,6 @@ class UserListScreenState extends State<UserListScreen> {
     }
   }
 
-  /// 搜索态的候选用户：有标签筛选时用全量标签列表，否则用 `_users`。
-  List<TwitterUser> get _searchUsers =>
-      _selectedTags.isNotEmpty && _tagUsers.isNotEmpty ? _tagUsers : _users;
-
   /// 把服务端新返回的一页并进 [_users]，**按 username 去重**（保序）。
   ///
   /// ⚠️ 这不是可有可无的保险，是一个真实的线上 bug：分页锚点 `after` 是
@@ -389,7 +385,15 @@ class UserListScreenState extends State<UserListScreen> {
         }
         // 统一走 shouldHideUser（权威判定在 StorageService 里）+ 标签筛选，
 // 同样**先算完再渲染**，不再在 ListView 里逐项过滤。
-        final results = _searchVisibleUsers;
+        final results = visibleUsers(
+          // ⚠️ 数据源必须是本次搜索的结果 outcome.users，**不是** _users（默认列表
+          // 已加载的那几页）。这里曾误用 _users，于是搜索命中的人根本没进过
+          // _users（默认列表可能是空的），结果一条都渲染不出来 ——
+          // search_merge_test 的「#词只走 tag 路」当场红。
+          outcome.users,
+          _selectedTags,
+          StorageService.shouldHideUser,
+        );
         // 下拉刷新：**搜索态也必须有**。原来只有默认列表包了
         // RefreshIndicator，搜索结果是一个裸 ListView —— 用户下拉毫无反应，
         // 看起来像卡住了。搜索结果同样会过期（比如刚在详情页改了标签），
@@ -516,7 +520,9 @@ class UserListScreenState extends State<UserListScreen> {
             return _LoadMoreButton(
               after: _users.last.username,
               api: _api,
-              onLoaded: (newUsers) => setState(_appendUsers),
+              // setState 的回调返回 void，这里用闭包把 newUsers 转进去
+              // （直接传 _appendUsers 会因返回 List<TwitterUser> 而类型不符）。
+              onLoaded: (newUsers) => setState(() => _appendUsers(newUsers)),
             );
           }
           final u = _visibleUsers[i];
@@ -594,7 +600,6 @@ class UserListScreenState extends State<UserListScreen> {
         ),
       );
     }
-    final hidden = _tagUsers.length - _visibleUsers.length;
     return RefreshIndicator(
       color: const Color(0xFF4F6CFF),
       backgroundColor: Colors.white,
@@ -609,7 +614,7 @@ class UserListScreenState extends State<UserListScreen> {
               loadedCount: _tagUsers.length,
               // ⚠️ 绝不说"N 人"：total 是标签云的**票数**，不是能列出的用户数
               // （女性 total=7579，而 by=tag 只能回 15）。措辞刻意含糊成"热度"。
-              heatText: _tagTotal == null ? null : '票数 ${_tagTotal}',
+              heatText: _tagTotal == null ? null : '$_tagTotal',
               onMore: _loadMoreTagUsers,
             );
           }
@@ -639,13 +644,6 @@ class UserListScreenState extends State<UserListScreen> {
   ///
   /// 现在过滤在 [_refreshVisible] 里一次算完，itemBuilder 只负责渲染。
   List<TwitterUser> _visibleUsers = const <TwitterUser>[];
-
-  /// 标签过滤 + 本地屏蔽/Gay 规则合并后的结果；随搜索态/标签选择变化重算。
-  List<TwitterUser> get _searchVisibleUsers => visibleUsers(
-        _searchUsers,
-        _selectedTags,
-        StorageService.shouldHideUser,
-      );
 
   /// _users 的可见切片（默认列表：本地规则 + 标签过滤）。
   ///

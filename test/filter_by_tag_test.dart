@@ -19,9 +19,13 @@
 // 渲染层（_TagFilterBar）依赖真实 api 实例，不值得在这里拉进来；
 // 真要测它另开 widget 测试。
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:twitter_pic_flutter/models/user.dart';
 import 'package:twitter_pic_flutter/screens/user_list_screen.dart';
+import 'package:twitter_pic_flutter/services/storage_service.dart';
 
 TwitterUser u(String username, [Map<String, int> tags = const {}]) =>
     TwitterUser(username: username, tags: tags);
@@ -34,7 +38,34 @@ bool Function(String, Map<String, int>) hideFn(
     (username, tags) =>
         blocked.contains(username) || (blockedTag != null && tags.containsKey(blockedTag));
 
+/// StorageService 的假平台实现（规则落盘到临时目录，不碰真实文件系统）。
+class _FakePathProvider extends PathProviderPlatform {
+  final String dir;
+  _FakePathProvider(this.dir);
+
+  @override
+  Future<String?> getApplicationSupportPath() async => dir;
+}
+
 void main() {
+  // 真实 StorageService 的用例需要文件系统（它把规则写进 storage.json）。
+  // 用假 path_provider 指向临时目录，setUp/tearDown 成对 resetForTests 隔离 ——
+  // 见 block_tag_filter_test.dart：必须 resetForTests 而不是 clearAll，
+  // 后者不会把进程级 _loaded 置回 false，单跑绿、整包红。
+  late Directory tmpDir;
+
+  setUp(() async {
+    tmpDir = await Directory.systemTemp.createTemp('filter_by_tag');
+    PathProviderPlatform.instance = _FakePathProvider(tmpDir.path);
+    StorageService.resetForTests();
+    await StorageService.ensureInitialized();
+  });
+
+  tearDown(() async {
+    StorageService.resetForTests();
+    if (tmpDir.existsSync()) tmpDir.deleteSync(recursive: true);
+  });
+
   group('TagCount 解析', () {
     test('吃线上真实的大写键 Tag/Count（按小写取会静默全空）', () {
       final parsed = TagCount.listFromJson([
@@ -219,6 +250,59 @@ void main() {
     test('顺序保持原样（不是 set 顺序）', () {
       final out = dedupeByUsername([u('c'), u('a'), u('b')]);
       expect(out.map((e) => e.username).toList(), ['c', 'a', 'b']);
+    });
+  });
+
+  // 上面那组用 hideFn 替身，只考察纯函数；这一组走**真实**的
+  // StorageService.shouldHideUser，证明标签筛选接上真实规则后仍然成立
+  // —— 两套规则互相覆盖时（屏蔽标签恰好就是被筛的那个标签）最容易出问题。
+  group('与真实 StorageService 规则叠加', () {
+    test('屏蔽标签命中的用户，在标签筛选后仍然被藏掉', () {
+      StorageService.setBlockTags(['无关内容']);
+      final users = [
+        u('alice', {'女性': 5, '无关内容': 2}),
+        u('bob', {'女性': 1}),
+      ];
+      final out = visibleUsers(users, {'女性'}, StorageService.shouldHideUser);
+      expect(out.map((e) => e.username).toList(), ['bob'],
+          reason: '屏蔽规则优先级高于标签筛选');
+    });
+
+    test('按用户名的屏蔽在标签筛选后仍然生效', () {
+      StorageService.toggleBlock('alice');
+      final out = visibleUsers(
+          [u('alice', {'女性': 5}), u('bob', {'女性': 1})],
+          {'女性'},
+          StorageService.shouldHideUser);
+      expect(out.map((e) => e.username).toList(), ['bob']);
+    });
+
+    test('Gay 模式开启：只留带 Gay 标签（正权）的用户', () {
+      StorageService.setGayMode(true);
+      final users = [
+        u('alice', {'女性': 1, '男娘': 2}),
+        u('bob', {'女性': 1, '男娘': -1}), // 负权：hasGayTag 只认正权
+      ];
+      final out = visibleUsers(users, {'女性'}, StorageService.shouldHideUser);
+      expect(out.map((e) => e.username).toList(), ['alice'],
+          reason: 'Gay 模式判据是正权，与筛选的「键存在即命中」是两套口径');
+    });
+
+    test('Gay 模式关闭：带 Gay 标签的用户被藏掉', () {
+      StorageService.setGayMode(false);
+      final out = visibleUsers(
+        [u('alice', {'女性': 1}), u('bob', {'女性': 1, '男娘': 2})],
+        {'女性'},
+        StorageService.shouldHideUser,
+      );
+      expect(out.map((e) => e.username).toList(), ['alice']);
+    });
+
+    test('屏蔽标签为空时不过滤任何人（连坐防护）', () {
+      StorageService.setBlockTags([]);
+      final out = visibleUsers(
+          [u('alice', {'女性': 1})], {'女性'}, StorageService.shouldHideUser);
+      expect(out, hasLength(1));
     });
   });
 }
