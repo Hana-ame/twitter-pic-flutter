@@ -94,7 +94,10 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
     _focus.addListener(() {
       if (!mounted) return;
       // 聚焦时按当前输入重算下拉；失焦时收掉。
-      setState(() => _focused = _focus.hasFocus ? _computeOverlay() : null);
+      setState(() {
+        _focused = _focus.hasFocus;
+        _overlay = _focused ? _computeOverlay() : null;
+      });
     });
   }
 
@@ -302,7 +305,7 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
         ],
       ),
     );
-  
+  }
 
   /// 搜索历史面板。逻辑与原实现逐字一致，只是从 build 里搬出来——
   /// 让 [build] 只剩「输入框 + 一个下拉」两件事。
@@ -321,11 +324,11 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
           Row(
             children: [
               const Expanded(
-                  child: Text('\u641c\u7d22\u5386\u53f2',
+                  child: Text('搜索历史',
                       style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
               TextButton(
                 onPressed: _clearHistory,
-                child: const Text('\u6e05\u9664', style: TextStyle(fontSize: 11)),
+                child: const Text('清除', style: TextStyle(fontSize: 11)),
               ),
             ],
           ),
