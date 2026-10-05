@@ -17,9 +17,11 @@
 //   3) 换人（URL 变）后重试额度归还给新人，不被上一张图白吃；
 //   4) 端口变化（代理重启）后重试额度同样归还。
 //
-// 不联网：flutter_test 默认把 HttpOverrides 换成 mock 客户端，任何请求都回
-// 400，ProgressiveImageProvider 必然走 reportError —— 正好就是要测的那条失败
-// 路径，不需要真的把代理跑起来。
+// 不联网也不需要起代理：flutter_test 默认把 HttpOverrides 换成 mock 客户端，
+// 请求必然失败，ProgressiveImageProvider 必然走 reportError —— 正好就是要测的
+// 那条失败路径。**但要注意**：这条「必然失败」只在真 I/O 真的跑起来之后才成立。
+// 见下面 _settle 的注释：第一版就是因为只 pump 不 runAsync，errorBuilder 一次
+// 都没被调用，4 条用例全红——看起来像「重试逻辑写错了」，其实是失败路径没被触发。
 //
 // 有界 pump 而非 pumpAndSettle：本项目为此付过「挂死 22 分钟」的代价，
 // 逐文件/整包的判据差异见 .github/workflows/build.yml 的绿色分级注释。
@@ -54,13 +56,27 @@ int _retryOf(WidgetTester tester) {
   return (image.image as ProgressiveImageProvider).retry;
 }
 
-/// 有界 pump：给 mock 客户端的异步往返留出真实事件循环的时间。
+/// 有界等待：让 mock 客户端的**真实**异步往返跑完。
 ///
-/// 不用 pumpAndSettle：Image 的 completer 在 mock 客户端下永远走失败分支，
-/// pumpAndSettle 会一直等「再没有待处理帧」，而失败路径本身不产生新帧的
-/// 时刻并不保证到达——历史上这里挂死过。
-Future<void> _settle(WidgetTester tester, {int maxPumps = 20}) async {
-  for (var i = 0; i < maxPumps; i++) {
+/// 为什么要 `runAsync`：本测试断言的是 errorBuilder 已被调用，而 errorBuilder
+/// 只有在 ProgressiveImageProvider 的 `_pump()` 真正走完才会触发。那条链上
+/// 每一环都是**真 I/O**（ProgressiveDiskCache.load 读文件 → HttpClient 建连
+/// → response.close()），而 `testWidgets` 默认跑在 fake-async 区里，时钟由
+/// pump 推进，**真 I/O 的 Future 永远不会完成**——于是什么都不失败，
+/// errorBuilder 一次都没被调用，retry 停在 0，CircleAvatar 也不出现。
+///
+/// 这就是本文件第一版 4 条用例全红的真实原因：不是重试逻辑写错，是
+/// 失败路径根本没被触发。`runAsync` 把这段挪出 fake-async 才能真跑。
+///
+/// 仍然不用 `pumpAndSettle`：它等的是「再没有待处理帧」，而失败路径不保证
+/// 产生新帧，本项目为此付过挂死的代价。
+Future<void> _settle(WidgetTester tester, {int rounds = 5}) async {
+  for (var i = 0; i < rounds; i++) {
+    // 给真 I/O 真实的事件循环时间（mock 客户端也要走 DNS/连接状态机）。
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    // 再推进一帧，让 setState / errorBuilder 的结果落到树上。
     await tester.pump(const Duration(milliseconds: 50));
   }
 }
