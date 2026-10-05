@@ -43,12 +43,156 @@ class UserListScreenState extends State<UserListScreen> {
   String _appliedQuery = '';
   Future<SearchMergeResult>? _searchFuture;
 
+  // ─── 按标签过滤 ──────────────────────────────────────────────────────────
+
+  /// 标签云（`GET /api/tag-cloud`，公开接口无鉴权）。为空 = 还没加载或加载失败。
+  List<TagCount> _tagCloud = const <TagCount>[];
+
+  /// 当前选中的标签名集合。空集 = 不过滤。
+  ///
+  /// 选单还是选多：**多选（并集）**。见 [_TagFilterBar] 的注释。
+  Set<String> _selectedTags = <String>{};
+
+  /// 选中标签后拉到的**全量**用户（走画廊端点分页），已补齐 tags。
+  /// 为空且 [_tagLoading] 为 false 时才回落到本地已加载的 _users 上过滤。
+  List<TwitterUser> _tagUsers = const <TwitterUser>[];
+
+  /// 画廊端点声称的该标签 total（**票数口径**，不是人数）。
+  int? _tagTotal;
+
+  /// 画廊端点这一批是否还有下一页。
+  bool _tagHasMore = false;
+
+  /// 已经被 offset 翻到第几页（下一页的 offset）。
+  int _tagOffset = 0;
+
+  bool _tagLoading = false;
+  String? _tagError;
+
+  /// 翻页用的单页条数。25 是 `?list=users` 的每页大小，对齐它。
+  static const int _kTagPageSize = 25;
+
   @override
   void initState() {
     super.initState();
     _api = widget.api ?? TwitterApi();
     _ownsApi = widget.api == null;
     _load();
+    _loadTagCloud();
+  }
+
+  /// 标签云：公开接口、无鉴权，失败不打断用户列表（只让筛选条空着）。
+  Future<void> _loadTagCloud() async {
+    try {
+      final cloud = await _api.getTagCloud(limit: 100);
+      if (!mounted) return;
+      setState(() => _tagCloud = cloud);
+    } catch (_) {
+      // 标签云挂了就当没有筛选条，用户列表照常用。不弹错误、不改 _error。
+    }
+  }
+
+  /// 选中/取消一个标签。
+  void _toggleTag(String tag) {
+    setState(() {
+      if (_selectedTags.contains(tag)) {
+        _selectedTags.remove(tag);
+      } else {
+        _selectedTags.add(tag);
+      }
+      _tagUsers = const <TwitterUser>[];
+      _tagOffset = 0;
+      _tagHasMore = false;
+      _tagTotal = null;
+      _tagError = null;
+    });
+    _refreshVisible();
+    if (_selectedTags.isNotEmpty) {
+      // 只拉"选中的第一个标签"的全量：多选是并集，任意一个标签的全量列表
+      // 都足以覆盖大部分交集场景，再多拉就是纯流量浪费。
+      _loadTagUsers();
+    }
+  }
+
+  void _clearTags() {
+    setState(() {
+      _selectedTags = <String>{};
+      _tagUsers = const <TwitterUser>[];
+      _tagOffset = 0;
+      _tagHasMore = false;
+      _tagTotal = null;
+      _tagError = null;
+    });
+    _refreshVisible();
+  }
+
+  /// 拉选中标签的全量用户（**第一页**，清空重来）。
+  ///
+  /// 为什么不用 `by=tag`：它硬上限 15 且无游标（[kTagSearchLimit]），拿它
+  /// 冒充"这个标签下的全部用户"会静默只显示前 15 个却让人以为看全了。
+  /// 画廊端点 `/api/tag/<tag>` 能一直翻到 total（实测 女性 total=7579）。
+  Future<void> _loadTagUsers() async {
+    final tag = _selectedTags.isEmpty ? '' : _selectedTags.first;
+    if (tag.isEmpty) return;
+    setState(() {
+      _tagLoading = true;
+      _tagError = null;
+      _tagUsers = const <TwitterUser>[];
+      _tagOffset = 0;
+    });
+    try {
+      final page = await _api.getUsersByTagPage(tag,
+          limit: _kTagPageSize, offset: 0);
+      final hydrated = await _api.hydrateUsernames(page.usernames);
+      if (!mounted) return;
+      setState(() {
+        _tagUsers = hydrated;
+        _tagOffset = _kTagPageSize;
+        _tagTotal = page.total;
+        _tagHasMore = !page.isLastPage(_kTagPageSize);
+        _tagLoading = false;
+      });
+      _refreshVisible();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _tagError = e.toString();
+        _tagLoading = false;
+      });
+    }
+  }
+
+  /// 「加载更多」：按 offset 翻下一页。
+  Future<void> _loadMoreTagUsers() async {
+    if (_tagLoading || !_tagHasMore) return;
+    final tag = _selectedTags.isEmpty ? '' : _selectedTags.first;
+    if (tag.isEmpty) return;
+    setState(() => _tagLoading = true);
+    try {
+      final page = await _api.getUsersByTagPage(tag,
+          limit: _kTagPageSize, offset: _tagOffset);
+      final hydrated = await _api.hydrateUsernames(page.usernames);
+      if (!mounted) return;
+      setState(() {
+        // 去重：服务端翻页顺序可能变化，同一个用户名可能跨页重复出现。
+        final seen = <String>{for (final o in _tagUsers) o.username};
+        _tagUsers = [
+          ..._tagUsers,
+          ...hydrated.where((u) => seen.add(u.username)),
+        ];
+        _tagOffset += _kTagPageSize;
+        _tagTotal = page.total ?? _tagTotal;
+        _tagHasMore = !page.isLastPage(_kTagPageSize);
+        _tagLoading = false;
+      });
+      _refreshVisible();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _tagError = e.toString();
+        _tagLoading = false;
+      });
+    }
   }
 
   void _onSearchChanged(String v) {
@@ -123,10 +267,13 @@ class UserListScreenState extends State<UserListScreen> {
     try {
       final users = await _api.getUserList();
       if (!mounted) return;
+      // 首屏本身也可能重叠（服务端塞了新号进列表），同样走去重。
+      final fresh = dedupeByUsername(users);
       setState(() {
-        _users = users;
+        _users = fresh;
         _loading = false;
       });
+      _refreshVisible();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -134,6 +281,35 @@ class UserListScreenState extends State<UserListScreen> {
         _loading = false;
       });
     }
+  }
+
+  /// 把服务端新返回的一页并进 [_users]，**按 username 去重**（保序）。
+  ///
+  /// ⚠️ 这不是可有可无的保险，是一个真实的线上 bug：分页锚点 `after` 是
+  /// **用户名**，而**线上部署的版本是闭区间**——第二页的第一项就是第一页的
+  /// 最后一项（实测 2026-10-05：p1.last = NaNa0882，p2.first = NaNa0882）。
+  /// 所以每次「加载更多」都必然重复一个用户。仓库里这版代码是按开区间写的，
+  /// 本地假数据永远测不出来，只有真机连线上才会现形（撞
+  /// `ValueKey(u.username)` 的 "Duplicate keys found" 断言，或列表尾部
+  /// 凭空多出一行重复的同名用户）。
+  ///
+  /// 去重必须同时挡两种重复：
+  ///  1. 与已有列表重复 —— 闭区间锚点必然产生的那一个；
+  ///  2. **新一页内部自己重复** —— 原实现只查 `_users.any(...)`，
+  ///     页面内部的重复会漏过去，同样撞重复 key。
+  ///
+  /// 把服务端新返回的一页并进 [_users]，**按 username 去重**（保序），并重算
+  /// 可见列表。名字为空的用户直接丢（否则空串会挤占 ValueKey）。
+  ///
+  /// 去重必须同时挡两种重复：
+  ///  1. 与已有列表重复 —— 闭区间锚点必然产生的那一个；
+  ///  2. **新一页内部自己重复** —— 原实现只查 `_users.any(...)`，
+  ///     页面内部的重复会漏过去，同样撞重复 key。
+  ///
+  /// `seen.add()` 返回"是否新增"，用它一行完成"保序 + 去重"。
+  void _appendUsers(List<TwitterUser> newUsers) {
+    _users.addAll(dedupeByUsername(newUsers, existing: _users));
+    _refreshVisible();
   }
 
   Future<void> _openDetail(UserMetaData profile) async {
@@ -168,6 +344,12 @@ class UserListScreenState extends State<UserListScreen> {
         SearchBarWidget(
           onChanged: _onSearchChanged,
         ),
+        _TagFilterBar(
+          cloud: _tagCloud,
+          selected: _selectedTags,
+          onToggle: _toggleTag,
+          onClear: _clearTags,
+        ),
         Expanded(
           child: _appliedQuery.isNotEmpty ? _buildSearchResults() : _buildDefaultList(),
         ),
@@ -201,10 +383,17 @@ class UserListScreenState extends State<UserListScreen> {
             onRetry: _retrySearch,
           );
         }
-        // 统一走 shouldHideUser（权威判定在 StorageService 里），不再各抄一份。
-        final results = outcome.users
-            .where((u) => !StorageService.shouldHideUser(u.username, u.tags))
-            .toList();
+        // 统一走 shouldHideUser（权威判定在 StorageService 里）+ 标签筛选，
+// 同样**先算完再渲染**，不再在 ListView 里逐项过滤。
+        final results = visibleUsers(
+          // ⚠️ 数据源必须是本次搜索的结果 outcome.users，**不是** _users（默认列表
+          // 已加载的那几页）。这里曾误用 _users，于是搜索命中的人根本没进过
+          // _users（默认列表可能是空的），结果一条都渲染不出来 ——
+          // search_merge_test 的「#词只走 tag 路」当场红。
+          outcome.users,
+          _selectedTags,
+          StorageService.shouldHideUser,
+        );
         // 下拉刷新：**搜索态也必须有**。原来只有默认列表包了
         // RefreshIndicator，搜索结果是一个裸 ListView —— 用户下拉毫无反应，
         // 看起来像卡住了。搜索结果同样会过期（比如刚在详情页改了标签），
@@ -303,6 +492,7 @@ class UserListScreenState extends State<UserListScreen> {
         ),
       );
     }
+    if (_selectedTags.isNotEmpty) return _buildTagFilteredList();
     if (_users.isEmpty) {
       return Center(
         child: Column(
@@ -324,29 +514,18 @@ class UserListScreenState extends State<UserListScreen> {
         await _load();
       },
       child: ListView.builder(
-        itemCount: _users.length + 1,
+        itemCount: _visibleUsers.length + 1,
         itemBuilder: (_, i) {
-          if (i == _users.length) {
-            if (_users.isEmpty) return const SizedBox.shrink();
+          if (i == _visibleUsers.length) {
             return _LoadMoreButton(
               after: _users.last.username,
               api: _api,
-              onLoaded: (newUsers) => setState(() {
-                // 去重：tile 用 key: ValueKey(u.username)，服务端返回重叠
-                // 用户（after 边界含边界/列表中途变更）会产生重复 Key →
-                // "Duplicate keys found" 断言崩溃。
-                _users.addAll(
-                  newUsers.where(
-                    (n) => !_users.any((o) => o.username == n.username),
-                  ),
-                );
-              }),
+              // setState 的回调返回 void，这里用闭包把 newUsers 转进去
+              // （直接传 _appendUsers 会因返回 List<TwitterUser> 而类型不符）。
+              onLoaded: (newUsers) => setState(() => _appendUsers(newUsers)),
             );
           }
-          final u = _users[i];
-          if (StorageService.shouldHideUser(u.username, u.tags)) {
-            return const SizedBox.shrink();
-          }
+          final u = _visibleUsers[i];
           return _UserTile(
             key: ValueKey(u.username),
             username: u.username,
@@ -359,6 +538,145 @@ class UserListScreenState extends State<UserListScreen> {
     );
   }
 
+  /// 选中标签后的列表：数据源是画廊端点翻页拉来的**全量** [_tagUsers]，
+  /// 末尾是"加载更多标签用户"而不是 `_users` 的 after 游标。
+  Widget _buildTagFilteredList() {
+    final selected = _selectedTags.join(' / ');
+    if (_tagLoading && _tagUsers.isEmpty) {
+      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+    }
+    if (_tagError != null && _tagUsers.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.cloud_off_outlined, size: 48, color: Colors.red),
+            const SizedBox(height: 12),
+            Text('标签「$selected」加载失败',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            SelectableText('$_tagError',
+                style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _loadTagUsers,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
+    // 空态：服务端确实没有带这个标签的用户。必须与"出错"分开。
+    if (_visibleUsers.isEmpty) {
+      return RefreshIndicator(
+        color: const Color(0xFF4F6CFF),
+        backgroundColor: Colors.white,
+        onRefresh: _loadTagUsers,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            const SizedBox(height: 64),
+            const Icon(Icons.sell_outlined, size: 48, color: Colors.grey),
+            const SizedBox(height: 12),
+            Center(
+              child: Text('标签「$selected」下没有可见用户',
+                  style: const TextStyle(fontSize: 14)),
+            ),
+            const SizedBox(height: 4),
+            const Center(
+              child: Text('（可能都被屏蔽标签 / Gay 模式规则隐藏了）',
+                  style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ),
+            const SizedBox(height: 16),
+            Center(
+              child: OutlinedButton.icon(
+                onPressed: _clearTags,
+                icon: const Icon(Icons.clear, size: 16),
+                label: const Text('清除标签筛选'),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return RefreshIndicator(
+      color: const Color(0xFF4F6CFF),
+      backgroundColor: Colors.white,
+      onRefresh: _loadTagUsers,
+      child: ListView.builder(
+        itemCount: _visibleUsers.length + 1,
+        itemBuilder: (_, i) {
+          if (i == _visibleUsers.length) {
+            return _TagLoadMore(
+              loading: _tagLoading,
+              hasMore: _tagHasMore,
+              loadedCount: _tagUsers.length,
+              // ⚠️ 绝不说"N 人"：total 是标签云的**票数**，不是能列出的用户数
+              // （女性 total=7579，而 by=tag 只能回 15）。措辞刻意含糊成"热度"。
+              heatText: _tagTotal == null ? null : '$_tagTotal',
+              onMore: _loadMoreTagUsers,
+            );
+          }
+          final u = _visibleUsers[i];
+          return _UserTile(
+            key: ValueKey(u.username),
+            username: u.username,
+            api: _api,
+            proxy: widget.proxy,
+            onTap: (m) => _openDetail(m),
+          );
+        },
+      ),
+    );
+  }
+
+  /// **已经算好的、该渲染的那一批用户**。绝不在 itemBuilder 里过滤。
+  ///
+  /// 原来的写法是 `itemCount: _users.length + 1`，然后在 itemBuilder 里
+  /// `if (shouldHideUser) return const SizedBox.shrink()` —— 这是错的：
+  /// 被屏蔽的行**仍然占着一个 index**，只是渲染成 0×0，于是
+  ///  - `itemCount` 与真正可见的行数对不上，滚到底部时提前触发"加载更多"；
+  ///  - 屏蔽掉 3 个人，列表尾部就凭空多出 3 段空白（正是 `SizedBox.shrink()`
+  ///    留下的坑）；
+  ///  - 一旦同一 username 进了 _users（闭区间分页，见 [_appendUsers]），
+  ///    重复的 ValueKey 直接触发 "Duplicate keys found" 断言崩溃。
+  ///
+  /// 现在过滤在 [_refreshVisible] 里一次算完，itemBuilder 只负责渲染。
+  List<TwitterUser> _visibleUsers = const <TwitterUser>[];
+
+  /// _users 的可见切片（默认列表：本地规则 + 标签过滤）。
+  ///
+  /// 注意 **不**在这里再按标签分页取全量：`?list=users` 每页 25 个、
+  /// after 游标只能往前走，用户选了个热门标签时只看已加载的那几十个会造成
+  /// "标签下就这么点人"的错觉。选中标签时走 [_loadTagUsers] 那条全量路
+  /// （画廊端点翻页到 total），本方法只负责**在已有数据上**过滤。
+  void _refreshVisible() {
+    // 选中了标签且全量列表已经到手 → 以它为准（_tagUsers 已经过标签过滤，
+    // 这里只需再套一层本地隐藏规则；多选并集在 _tagUsers 里已经成立）。
+    final source = _selectedTags.isNotEmpty && _tagUsers.isNotEmpty
+        ? _tagUsers
+        : _users;
+    final filtered = filterUsersByTags(source, _selectedTags);
+    _visibleUsers =
+        applyVisibleRules(filtered, StorageService.shouldHideUser);
+  }
+
+}
+
+/// 纯函数：按 username 保序去重。[existing] 里的用户名也算已出现。
+///
+/// 两处都用它：首屏 [TwitterApi.getUserList] 与「加载更多」的追加（见
+/// [_appendUsers]）。
+List<TwitterUser> dedupeByUsername(
+  List<TwitterUser> users, {
+  List<TwitterUser> existing = const <TwitterUser>[],
+}) {
+  final seen = <String>{for (final o in existing) o.username};
+  return [
+    for (final u in users)
+      if (u.username.isNotEmpty && seen.add(u.username)) u,
+  ];
 }
 
 // ─── 搜索合并层（纯逻辑，独立可测，见 test/search_merge_test.dart）─────────
@@ -539,6 +857,184 @@ class _TagCapFooter extends StatelessWidget {
             : '共 $serverReturned 个命中（服务端按标签权重降序，上限 $kTagSearchLimit）',
         textAlign: TextAlign.center,
         style: const TextStyle(fontSize: 12, color: Colors.grey),
+      ),
+    );
+  }
+}
+
+/// 标签筛选条：横向滚动的标签 cloud 芯片，点一下选中/取消。
+///
+/// **多选（并集）而非单选**，理由：标签天然是多维的——"女性"和"二次元"是
+/// 正交的两个维度，单选强迫用户在"只要女性"和"只要二次元"之间二选一，而
+/// "女性 + 二次元"这个组合恰恰是最常用的一类查询。多选还让"清空即全部"
+/// 成为唯一需要的一个操作，交互更少。
+class _TagFilterBar extends StatelessWidget {
+  final List<TagCount> cloud;
+  final Set<String> selected;
+  final void Function(String tag) onToggle;
+  final VoidCallback onClear;
+
+  const _TagFilterBar({
+    required this.cloud,
+    required this.selected,
+    required this.onToggle,
+    required this.onClear,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // 标签云为空 = 接口挂了或还没回来：整条隐藏，不给用户一排空壳。
+    if (cloud.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (selected.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.filter_alt, size: 14, color: Colors.blue),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    '已筛选：${selected.join(' / ')}',
+                    style: const TextStyle(fontSize: 12, color: Colors.blue),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                TextButton(
+                  onPressed: onClear,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text('清除', style: TextStyle(fontSize: 12)),
+                ),
+              ],
+            ),
+          ),
+        SizedBox(
+          height: 38,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            children: [
+              for (final t in cloud)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: _TagChip(
+                    tag: t.tag,
+                    // 如实标注：Count 是**票数**，不是用户数。
+                    heatText: '${t.count}',
+                    selected: selected.contains(t.tag),
+                    onTap: () => onToggle(t.tag),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 单个筛选芯片。样式对齐 TagDisplayArea 的标签 chip（小圆角、淡底、描边）。
+class _TagChip extends StatelessWidget {
+  final String tag;
+  final String heatText;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _TagChip({
+    required this.tag,
+    required this.heatText,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = selected ? Colors.blue : Colors.grey;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: Container(
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: selected ? 0.15 : 0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected ? color : color.withValues(alpha: 0.3),
+            width: selected ? 1.4 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              tag,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : null,
+                color: selected ? Colors.blue.shade800 : Colors.grey.shade800,
+              ),
+            ),
+            const SizedBox(width: 4),
+            // 票数（热度），不是人数 —— 见 TagCount.count 的注释。
+            Text(
+              heatText,
+              style: TextStyle(fontSize: 10, color: color.withValues(alpha: 0.8)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 标签全量列表尾部的"加载更多" + 如实的截断/热度说明。
+class _TagLoadMore extends StatelessWidget {
+  final bool loading;
+  final bool hasMore;
+  final int loadedCount;
+  final String? heatText;
+  final VoidCallback onMore;
+
+  const _TagLoadMore({
+    required this.loading,
+    required this.hasMore,
+    required this.loadedCount,
+    required this.onMore,
+    this.heatText,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Column(
+        children: [
+          if (hasMore)
+            OutlinedButton.icon(
+              onPressed: loading ? null : onMore,
+              icon: loading
+                  ? const SizedBox(
+                      width: 14, height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.expand_more, size: 16),
+              label: Text(loading ? '加载中...' : '加载更多'),
+            ),
+          const SizedBox(height: 6),
+          Text(
+            heatText == null
+                ? '已列出 $loadedCount 人'
+                : '已列出 $loadedCount 人（该标签热度 $heatText，非人数）',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+        ],
       ),
     );
   }
