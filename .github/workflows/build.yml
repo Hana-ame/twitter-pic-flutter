@@ -89,9 +89,48 @@ jobs:
       - name: Storage-writing tests must reset static state
         run: |
           cd /tmp/test_project
+
+          # 写方法名单**从源码反推**，不硬编码。
+          #
+          # 原来这里是一串写死的方法名（setTagRules/setFavMap/…），实测漏了 6 个
+          # 真实存在的写方法：saveSearchHistory / setCustomTags / setBlockMap /
+          # setDecodeBudget / addGayTag / removeGayTag（另有 toggleGayMode）。
+          # 白名单一漏，闸门对「只用漏掉方法写状态、且从不 reset」的文件
+          # **完全静默**——已构造反例验证：写入数识别为 0，闸门放行。
+          # 硬编码名单的维护成本是「每次给 service 加写方法都要记得改这里」，
+          # 而漏改不会有人发现。反推规则：public static + (set|save|toggle|add|
+          # remove|reset|clear 前缀)，去掉 getter/查询类与已知的复位/调试方法。
+          # 私有（下划线前缀）方法不进名单——测试直接调私有 static 本身就不该发生。
+          # ⚠️ 一律用 {n} 而不是 + / {n,}：GitHub runner 的 `run:` 默认走
+          # **sh（dash）**，dash 的 ERE **不支持 + 与 {n,}**，用了会静默退化成
+          # 字面量匹配，结果是「一条方法都提取不出来」而闸门照样放行。
+          # 本次就踩到了这个坑（提取到 0 个方法却报「所有写盘测试都做了隔离」）。
+          # 所以这条闸门对 POSIX 方言敏感：改它必须用 `sh`（不是 bash）实跑验证。
+          skip_re='^(ensureInitialized|resetForTests|debugFlushPending)$'
+          Storage_methods=$(grep -hoE 'static +[A-Za-z_][A-Za-z0-9_<>]*[ ]+[a-zA-Z_][a-zA-Z0-9_]*[(]' \
+            lib/services/storage_service.dart \
+            | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*[(]$' | tr -d '(' | sort -u \
+            | grep -vE '^_' \
+            | grep -E '(set|save|toggle|add|remove|reset|clear)[A-Za-z]*$' \
+            | grep -vE "$skip_re")
+          n=$(echo "$Storage_methods" | grep -c '[a-zA-Z]' || true)
+          echo "反推出的 StorageService 写方法（$n 个）："
+          echo "$Storage_methods" | tr '\n' ' '; echo
+          # 提取为空必须**失败**：否则「一条都没提取到」与「所有测试都干净」
+          # 在日志里长得一模一样（都是 success 且没有 error），这类闸门就白装了。
+          if [ "$n" -eq 0 ]; then
+            echo "::error::从 storage_service.dart 一个写方法都没反推出来 —— 提取正则与源码方言不符，闸门形同虚设"
+            exit 1
+          fi
+
+          # 用这份名单做匹配（而不是「任何 set* 前缀」）：名单来自源码，
+          # 因此给 service 新增写方法后闸门**自动**覆盖，不需要人记得改这里。
+          alt=$(echo "$Storage_methods" | paste -sd'|')
           bad=0
           for f in test/*.dart; do
-            writes=$(grep -cE 'StorageService[.](setTagRules|setFavMap|setHighlightTags|setBlockTags|setGayTags|setGayMode|resetGayTags|toggleFav|toggleBlock)[(]' "$f" || true)
+            writes=$(grep -cE "StorageService[.]($alt)[(]" "$f" || true)
+            # 只调 resetForTests/debugFlushPending 不算「写状态」——它们是复位与排空，
+            # 恰恰是闸门**鼓励**出现的东西，不能反过来要求「有 reset 才有 reset」。
             if [ "$writes" -gt 0 ]; then
               resets=$(grep -c 'StorageService[.]resetForTests()' "$f" || true)
               if [ "$resets" -eq 0 ]; then
@@ -203,7 +242,53 @@ jobs:
             echo "::error::整包测试跑完但 coverage/lcov.info 不存在或为空 —— 第 3 级判据不成立"
             exit 1
           fi
-          echo "lcov.info 已生成，$(wc -c < coverage/lcov.info) 字节"
+
+          # `-s` 只查「非空」，一个内容不是 lcov 的文件（哪怕有内容）照样过。
+          # 这一层是第 3 级判据里最容易被伪造/静默降级的一级：产物存在 ≠
+          # 产物是覆盖率数据。所以校验结构而不只是存在性：
+          #  - 至少一条 SF:（源文件记录）—— 没有就是空壳
+          #  - 至少一条 DA:（行覆盖记录）—— SF: 有而 DA: 无 = 只有文件名没有数据
+          #  - 以 end_of_record 收尾 —— 截断的 lcov 会被 lcov 工具静默丢弃尾部
+          # 基线读数（v0.7.3, run 37338300730）：SF: 32 条、DA: 3915 条、
+          # 37003 字节、结尾 end_of_record —— 阈值取这些的宽松下界。
+          sf=$(grep -c '^SF:' coverage/lcov.info || true)
+          da=$(grep -c '^DA:' coverage/lcov.info || true)
+          if [ "$sf" -eq 0 ]; then
+            echo "::error::coverage/lcov.info 非空但没有任何 SF: 记录 —— 不是有效的 lcov"
+            exit 1
+          fi
+          if [ "$da" -eq 0 ]; then
+            echo "::error::coverage/lcov.info 有 SF: 但没有任何 DA: 行覆盖记录 —— 只有文件名没有覆盖数据"
+            exit 1
+          fi
+          if ! tail -1 coverage/lcov.info | grep -q '^end_of_record$'; then
+            echo "::error::coverage/lcov.info 未以 end_of_record 收尾 —— 文件被截断"
+            exit 1
+          fi
+          echo "lcov.info 结构有效：SF: $sf 条、DA: $da 条、$(wc -c < coverage/lcov.info) 字节"
+
+          # 退化门槛。原先这里写着「先攒着不加门槛，不知道基线多少」——
+          # **那个前提已经不成立了**：v0.7.3 的产物已稳定落地，基线量得出来。
+          #
+          # 基线（实测 v0.7.3, run 37338300730, 37003 字节 lcov）：
+          #   SF: 32 个文件 / DA: 3915 行可执行 / 命中 1819 行 → **46.46%**
+          # 按 DA 记录逐行统计（hit = DA:行,cnt 中 cnt>0）。
+          #
+          # 门槛定在 **40%**，即基线下方 6.4 个百分点。定这个数的理由：
+          #  - 不贴基线（贴基线等于任何一次正常改动都会红）；
+          #  - 也不是拍脑袋的整数，而是「能兜住一次大规模删除测试」的量级：
+          #    整包删掉 ~250 行测试即跌破 40%。
+          # 覆盖率是**单向上升**的资产：跌破门槛说明有测试被删/失效，
+          # 这比「涨得慢」更值得拦。若日后确实要下调门槛，
+          # 连同本注释里的基线读数一起改，不要单独改数字。
+          hit=$(grep '^DA:' coverage/lcov.info | awk -F',' '$2>0' | wc -l)
+          pct=$(awk -v h="$hit" -v t="$da" 'BEGIN{ if (t>0) printf "%.2f", h*100/t; else print "0.00" }')
+          floor=40.00
+          if awk -v p="$pct" -v f="$floor" 'BEGIN{ exit !(p+0 < f+0) }'; then
+            echo "::error::行覆盖率 $pct% 跌破门槛 $floor%（基线 46.46%）—— 有测试被删或失效了"
+            exit 1
+          fi
+          echo "行覆盖率 $pct%（门槛 $floor%，基线 46.46%）"
 
       - name: Upload coverage
         if: always()
