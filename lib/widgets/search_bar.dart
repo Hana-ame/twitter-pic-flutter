@@ -120,8 +120,12 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
   @override
   void didUpdateWidget(covariant SearchBarWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final cloudChanged = oldWidget.tagCloud.length != widget.tagCloud.length ||
-        !identical(oldWidget.tagCloud, widget.tagCloud);
+    // ⚠️ 只按**长度**判变化，不能用 `identical` 或逐项比较：外层每次 build
+    // 都可能传一个新的 List 实例（`setState` 出来的 tagCloud），若因此认定
+    // 「标签表变了」，就会在每次 build 后再 setState 一次 —— 直接是
+    // 「setState during build」死循环。按长度判既够用（标签表只增不减，
+    // 异步到货是一次性从 0 变到 N）又不会自激。
+    final cloudChanged = oldWidget.tagCloud.length != widget.tagCloud.length;
     if (cloudChanged && mounted && _focused) {
       setState(() => _overlay = _computeOverlay());
     }
@@ -261,48 +265,64 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
 
   Widget _buildSuggestPanel(List<TagCount> items) {
     final showingHot = _tagQuery.isEmpty;
-    return Container(
+    // ⚠️ 背景色必须落在 **Material** 上，不能用 Container(decoration:) 包一层。
+    // ListTile 把自己的背景与水波纹画在**最近的 Material 祖先**上；夹在中间
+    // 的 DecoratedBox 会把那些效果整个盖住 —— 于是按下标签时看不到任何反馈，
+    // 表现得像「点不动」。Flutter 会为此抛断言（"ListTile background color or
+    // ink splashes may be invisible"），widget 测试直接红。
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
       width: double.infinity,
-      constraints: const BoxConstraints(maxHeight: 260),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
+      color: scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Container(
+          constraints: const BoxConstraints(maxHeight: 260),
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Expanded(
-                child: Text('标签推荐',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text('标签推荐',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    ),
+                    if (showingHot)
+                      const Text('热门标签，点一下立即按该标签查找',
+                          style: TextStyle(fontSize: 11)),
+                  ],
+                ),
               ),
-              if (showingHot)
-                const Text('热门标签，点一下立即按该标签查找',
-                    style: TextStyle(fontSize: 11)),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: items.map((t) => ListTile(
+                        dense: true,
+                        // 标签推荐与账号搜索是两种不同的事，用不同的前导图标区分，
+                        // 免得用户以为点了会跳到某个账号页。
+                        leading: const Icon(Icons.sell_outlined, size: 16),
+                        title: Text('#${t.tag}',
+                            style: const TextStyle(fontSize: 13)),
+                        // ⚠️ 显示的是**票数**不是人数（见 TagCount.count 的口径说明），
+                        // 所以标签旁边只写「热度」而不是「N 人」。
+                        subtitle: Text('热度 ${t.count}',
+                            style: const TextStyle(fontSize: 11)),
+                        onTap: () => _pickTag(t.tag),
+                      )).toList(),
+                ),
+              ),
             ],
           ),
-          Flexible(
-            child: ListView(
-              shrinkWrap: true,
-              padding: EdgeInsets.zero,
-              children: items.map((t) => ListTile(
-                    dense: true,
-                    // 标签推荐与账号搜索是两种不同的事，用不同的前导图标区分，
-                    // 免得用户以为点了会跳到某个账号页。
-                    leading: const Icon(Icons.sell_outlined, size: 16),
-                    title: Text('#${t.tag}',
-                        style: const TextStyle(fontSize: 13)),
-                    // ⚠️ 显示的是**票数**不是人数（见 TagCount.count 的口径说明），
-                    // 所以标签旁边只写「热度」而不是「N 人」。
-                    subtitle: Text('热度 ${t.count}',
-                        style: const TextStyle(fontSize: 11)),
-                    onTap: () => _pickTag(t.tag),
-                  )).toList(),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -310,52 +330,63 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
   /// 搜索历史面板。逻辑与原实现逐字一致，只是从 build 里搬出来——
   /// 让 [build] 只剩「输入框 + 一个下拉」两件事。
   Widget _buildHistoryPanel() {
-    return Container(
+    // 同 _buildSuggestPanel：背景色必须在 Material 上，否则 ListTile 的
+    // 水波纹被中间的 DecoratedBox 盖住，按下历史项看不到反馈。
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
       width: double.infinity,
-      constraints: const BoxConstraints(maxHeight: 200),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
+      color: scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Container(
+          constraints: const BoxConstraints(maxHeight: 200),
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Expanded(
-                  child: Text('搜索历史',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
-              TextButton(
-                onPressed: _clearHistory,
-                child: const Text('清除', style: TextStyle(fontSize: 11)),
+              Row(
+                children: [
+                  const Expanded(
+                      child: Text('搜索历史',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
+                  TextButton(
+                    onPressed: _clearHistory,
+                    child: const Text('清除', style: TextStyle(fontSize: 11)),
+                  ),
+                ],
+              ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: _history.map((h) => ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.history, size: 16),
+                        title: Text(h, style: const TextStyle(fontSize: 13)),
+                        onTap: () {
+                          _ctrl.text = h;
+                          widget.onChanged(h);
+                          setState(() => _overlay = null);
+                          FocusScope.of(context).unfocus();
+                        },
+                        trailing: IconButton(
+                          icon: const Icon(Icons.close, size: 14),
+                          onPressed: () {
+                            setState(() => _history.remove(h));
+                            StorageService.saveSearchHistory(_history);
+                          },
+                        ),
+                      )).toList(),
+                ),
               ),
             ],
           ),
-          Flexible(
-            child: ListView(
-              shrinkWrap: true,
-              children: _history.map((h) => ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.history, size: 16),
-                    title: Text(h, style: const TextStyle(fontSize: 13)),
-                    onTap: () {
-                      _ctrl.text = h;
-                      widget.onChanged(h);
-                      setState(() => _overlay = null);
-                      FocusScope.of(context).unfocus();
-                    },
-                    trailing: IconButton(
-                      icon: const Icon(Icons.close, size: 14),
-                      onPressed: () {
-                        setState(() => _history.remove(h));
-                        StorageService.saveSearchHistory(_history);
-                      },
-                    ),
-                  )).toList(),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

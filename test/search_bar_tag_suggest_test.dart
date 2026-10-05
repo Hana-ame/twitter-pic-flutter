@@ -1,5 +1,15 @@
 // 搜索框标签推荐下拉 + 「点标签立即进入 tag 查找模式」的渲染判据。
 //
+// ## 为什么全程用 pump() 而不是 pumpAndSettle()
+//
+// 输入框一旦获得焦点，光标闪烁就是一个**永不停歇**的动画，pumpAndSettle()
+// 会一直等到 10 分钟超时（CI 上实测：整包跑到 15m39s，8 例红）。这个坑与
+// 仓库里已知的「整包挂起」同族——差异在触发条件（这里是焦点动画，不是
+// unawaited(_flush())），症状一样：测试挂住而不是失败。
+//
+// 本组件的每一处 setState 都是**同步**的（没有 setState 里 await 网络），
+// 所以固定 pump 一次就够了；下拉的出现/消失不依赖任何动画时长。
+//
 // ## 这组测试拦的是什么
 //
 // 症状类只有一条：**点了推荐标签，列表没换**。它很难被肉眼抓住，因为推荐下拉
@@ -36,7 +46,7 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('标签推荐'), findsOneWidget);
       // 热门里按热度取前 kTagSuggestLimit 条。
@@ -53,7 +63,7 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#女');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('#女性'), findsOneWidget);
       expect(find.text('#男女性交'), findsOneWidget);
@@ -70,7 +80,7 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#zzz不存在');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
     });
@@ -84,7 +94,7 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#女');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
     });
@@ -98,7 +108,7 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
     });
@@ -115,7 +125,7 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#女');
-      await tester.pumpAndSettle();
+      await tester.pump();
       expect(find.text('标签推荐'), findsNothing, reason: '前置：表还没来');
 
       // 标签表到了，widget 被重建。
@@ -124,7 +134,7 @@ void main() {
         tagCloud: cloud,
         onPickTag: (_) {},
       )));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('标签推荐'), findsOneWidget);
       expect(find.text('#女性'), findsOneWidget);
@@ -139,7 +149,7 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '女');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
       expect(find.text('#女性'), findsNothing);
@@ -157,10 +167,10 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#女');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       await tester.tap(find.text('#女性'));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(picked, ['女性'], reason: '回调必须传裸标签名，不带 #');
     });
@@ -175,9 +185,9 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#女');
-      await tester.pumpAndSettle();
+      await tester.pump();
       await tester.tap(find.text('#女性'));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       final ctrl = tester.widget<TextField>(find.byType(TextField)).controller!;
       expect(ctrl.text, '#女性',
@@ -193,11 +203,11 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#女');
-      await tester.pumpAndSettle();
+      await tester.pump();
       expect(find.text('标签推荐'), findsOneWidget);
 
       await tester.tap(find.text('#女性'));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('标签推荐'), findsNothing);
     });
@@ -212,7 +222,7 @@ void main() {
       await tester.tap(find.byType(TextField));
       await tester.pump();
       await tester.enterText(find.byType(TextField), '#');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('热度 7580'), findsOneWidget);
       expect(find.textContaining('7580 人'), findsNothing);
@@ -232,10 +242,10 @@ void main() {
       await tester.pump();
       await tester.enterText(find.byType(TextField), 'qianxi041015');
       await tester.testTextInput.receiveAction(TextInputAction.done);
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       await tester.enterText(find.byType(TextField), '#女');
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(find.text('标签推荐'), findsOneWidget);
       expect(find.text('搜索历史'), findsNothing);
@@ -243,9 +253,20 @@ void main() {
   });
 
   tearDown(() async {
-    // 搜索历史是写盘的静态状态（StorageService.saveSearchHistory）。不清就会
-    // 让下一条用例看到上一条留下的历史 —— 这正是 CI 那条
-    // 「写盘测试必须重置静态状态」闸门要拦的串味。
+    // 搜索历史是**写盘**的静态状态：提交一次搜索会走
+    // `StorageService.saveSearchHistory` → `_write` → `unawaited(_flush())`。
+    //
+    // 两件事都要做，缺一不可：
+    //  1) 等挂起的写盘落定（`debugFlushPending`）—— 库里的写盘是串行链，
+    //     不等就 reset 的话，链上的回调会在 reset 之后才跑，把已清空的
+    //     内存态又写回去；
+    //  2) `resetForTests()` 清内存态并解除「已加载」标记 —— 否则下一条用例
+    //     会看到本条留下的历史。
+    //
+    // CI 那条「写盘测试必须重置静态状态」闸门只认
+    // `StorageService.<写方法>(` 这种**直接调用**，本文件是通过 widget 间接触
+    // 发（`saveSearchHistory` 不出现在本文件里），闸门查不到——所以这里必须
+    // 自觉写全，不能指望闸门兜底。
     await StorageService.debugFlushPending();
     StorageService.resetForTests();
   });
