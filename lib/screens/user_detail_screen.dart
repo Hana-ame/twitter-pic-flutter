@@ -24,11 +24,24 @@ class UserDetailScreen extends StatefulWidget {
   final UserMetaData profile;
   final ProxyManager proxy;
 
-  /// 「留在用户列表页按标签查找」的请求句柄，由来源页透传。
+  /// 「留在来源页按标签查找」的请求句柄，由来源页透传。
   ///
-  /// 传了（正常路径，从用户列表页点进来）→ 点标签**留在用户列表页**，
-  /// 不再 push 独立的 `TagUserListScreen`。
-  /// 不传 → 退回到旧的 push 独立标签页，并如实说明「此页不支持就地切换」。
+  /// **required + 可空**：取值只有两种，调用方**必须**当场写出来，不许「不写」。
+  ///
+  ///   - 传了句柄（正常路径，从用户列表页点进来）→ 点标签**留在来源页**，
+  ///     不再 push 独立的标签页。
+  ///   - 显式传 `null` → 背后没有能递回的列表页，如实说明「此页不支持就地切换」。
+  ///
+  /// 为什么不写成可选参数：PR #13 把它做成可选，于是「忘了传」和「决定不传」
+  /// 在代码里长得一模一样——仓库里有三处能 push 详情页，只有用户列表页那一处
+  /// 传了句柄，另两处因为漏传而静默落到「不支持」提示（notes/
+  /// discipline-dont-hide-product-decisions：能力依赖「人记得传参」）。
+  /// 改成 `required` 之后，**漏传是编译错误**，只有 `tagBrowse: null` 这一种
+  /// 写法能让「背后没有列表页」进入代码；null 仍然是「没有」的唯一表示。
+  ///
+  /// 唯一显式传 null 的生产调用点是 `lib/widgets/fav_list.dart`（收藏页背后
+  /// 只有 `FavoritesTab`，没有列表页可递回，那里不传是**正确决定**而非缺陷），
+  /// 由 `test/fav_tag_browse_contract_test.dart` 钉住它仍给出明确提示。
   final TagBrowseRequest? tagBrowse;
 
   /// 仅供测试注入（配假 `HttpClientAdapter`）；生产调用点不传。
@@ -38,7 +51,7 @@ class UserDetailScreen extends StatefulWidget {
     super.key,
     required this.profile,
     required this.proxy,
-    this.tagBrowse,
+    required this.tagBrowse,
     this.api,
   });
 
@@ -702,15 +715,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   ///  3. pop 用**本页自己的** Navigator，不传 context 给别人 pop（Flutter
   ///     里 `Navigator.of(本页 context)` 才能保证弹的是压着本页的那一层）。
   ///
-  /// 拿不到请求句柄时（深链直接打开的详情页）退回旧的 push 独立标签页，
-  /// 并如实说明原因，而不是点了没反应。
+  /// 拿不到请求句柄时（如从收藏页进来，背后没有列表页可递回）如实说明，
+  /// 而不是点了没反应。
   void _openTagInPlace(String tag) {
     final req = widget.tagBrowse;
-    if (!canBrowseTagInPlace(req)) {
+    if (req == null) {
       _showTagBrowseUnavailable();
       return;
     }
-    req!.enter(tag, onSwitched: () {
+    enterTagInPlace(req, tag, onDone: () {
       if (!mounted) return;
       // 能 pop 才 pop：若本页已是栈底（例如它被 replace 过），pop 会连带
       // 弹掉列表页，那比不 pop 更糟——此时让标签结果留在列表页即可。
