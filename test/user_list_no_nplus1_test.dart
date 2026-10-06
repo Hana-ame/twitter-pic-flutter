@@ -248,4 +248,79 @@ void main() {
           reason: '头像 URL 期望来自 _metaFor 的 profile_image，实际是 $url');
     }
   });
+
+  // 2026-10-06 用户报「首页、搜索页的 list 依然只有 id，没有头像和昵称」。
+  // 上面那条「复用上游对象时头像不能丢」只测了**标签路径**（tap 女性）——
+  // 首页默认列表路径当时完全是裸的：`getUserList` 只返
+  // `username/last_modify/tags/status`，没有昵称/头像，而列表行直接把它
+  // 渲染出来（`_adopt` 拷贝的也是 null）。
+  //
+  // 修法在**数据进列表前**统一 hydrate：`_hydrateListUsers` 对
+  // `getUserList`/搜索的裸结果调 `hydrateUsernames`（每账号一次元数据请求，
+  // 补上昵称/头像），行内 `_adopt` 直接复用、零请求。本用例钉住的是：
+  //  ① 首页默认列表**真的渲染出昵称**（而不是退化成用户名）；
+  //  ② 头像 URL 非 null（用 profile_image，不是首字母占位）；
+  //  ③ 每账号元数据请求 ≤ 1 次 —— hydrate 是列表层一次，行内不重复。
+  testWidgets('首页默认列表：hydrate 后昵称与头像都渲染，且每账号只请求一次',
+      (tester) async {
+    // 裸用户列表：只带 username/status/tags，**没有 nick/avatar 键**
+    // （线上实测 /?list=users 的 keys 就是这四个）。
+    final bareUsers = jsonEncode(<dynamic>[
+      for (final n in names)
+        <String, dynamic>{
+          'username': n,
+          'last_modify': '2026-10-06T00:00:00Z',
+          'tags': <String, int>{},
+          'status': 'SUCCESS',
+        },
+    ]);
+    final homeAdapter = _RouteAdapter(<String, Object>{
+      // 首页第一屏就是这条：裸用户列表。
+      '/api/twitter/': bareUsers,
+      // hydrate 会打权重批量（getTagWeightsBatch）与每账号元数据。
+      '/api/tags': jsonEncode(<String, dynamic>{
+        for (final n in names) n: <String, int>{'女性': 1},
+      }),
+      for (final n in names) '/api/twitter/$n.json.gz': _metaFor(n),
+      // 标签栏数据源（UserListScreen 启动时会拉 tag-cloud）。
+      '/api/tag-cloud': jsonEncode(<dynamic>[
+        {'Tag': '女性', 'Count': 100},
+        {'Tag': '自拍', 'Count': 80},
+      ]),
+    });
+    final api = TwitterApi(adapter: homeAdapter);
+    addTearDown(api.dispose);
+
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(body: UserListScreen(proxy: ProxyManager(), api: api))));
+    await settle(tester);
+
+    // 前置：默认列表真的渲染出这些行。
+    expect(find.text('@user0'), findsOneWidget,
+        reason: '前置：首页默认列表必须渲染出 user0 这一行');
+    expect(find.text('昵称-user0'), findsOneWidget,
+        reason: '判据①：昵称必须来自 hydrate（_metaFor 的 nick），'
+            '不能退化成只显示用户名 —— 用户报的就是这个');
+
+    // 判据②：头像 URL 来自 profile_image，非 null（不是首字母占位）。
+    final avatars = tester
+        .widgetList<ProxyAvatar>(find.byType(ProxyAvatar))
+        .map((a) => a.url)
+        .toList();
+    expect(avatars, isNotEmpty, reason: '前置：首页必须真的有 ProxyAvatar 节点');
+    for (final url in avatars) {
+      expect(url, isNotNull,
+          reason: 'ProxyAvatar.url 为 null ⇒ 首页渲染的是占位，不是真头像（用户报的症状）');
+      expect(url, contains('example.test'),
+          reason: '首页头像 URL 应来自 _metaFor 的 profile_image，实际是 $url');
+    }
+
+    // 判据③：每账号元数据至多一次 —— hydrate 在列表层收起，行内不再拉。
+    for (final n in names) {
+      final hits = homeAdapter.metaRequestsFor(n);
+      expect(hits, lessThanOrEqualTo(1),
+          reason: '默认列表里 $n 被拉了 $hits 次元数据；'
+              '超过 1 次说明列表行在 hydrate 之外又重复拉（N+1 复活）');
+    }
+  });
 }
