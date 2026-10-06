@@ -118,7 +118,8 @@ Finder backdropFinder() => find.byWidgetPredicate(
 //
 // 被测页面里有**永不停止的动画**：
 //   - UserListScreen 在结果回来前渲染 _SkeletonCircle（AnimationController.repeat）；
-//   - TagUserListScreen 外面包着 RefreshIndicator，转圈动画同样不停。
+//   - UserListScreen 外层/详情页的 RefreshIndicator，转圈动画同样不停
+//     （原先还列了 TagUserListScreen，它已随「同页查看」改造删除）。
 // pumpAndSettle 的语义是「一直 pump 直到没有任何待处理帧」，遇到这种动画
 // **永远不会返回** —— 本次 CI 上就因此挂死了 30 多分钟（正常一轮约 80 秒）。
 // 一律改成 pump(const Duration(...))，自己控制推进多少帧。
