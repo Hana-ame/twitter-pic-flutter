@@ -119,11 +119,15 @@ const String _defaultCloud = '[{"Tag":"自拍","Count":100}]';
 /// 那样用例里的赋值会被这里的写死覆盖掉（我第一版就这么写的，于是
 /// 「降序」用例喂的云根本没生效，CI 实测 4 例红）。所以标签云由**调用方**
 /// 决定，`host` 不碰。
-Widget host(String body, {String cloud = _defaultCloud}) {
+Widget host(String body, {String cloud = _defaultCloud, String? weights}) {
   _TagAdapter.tagPage = body;
   _TagAdapter.tagCloud = cloud;
   // 批量权重：给 u1 带上「自拍」+「男同」，Gay 模式关闭时后者应把它藏掉。
-  _TagAdapter.tagWeights = '{"u1":{"自拍":2,"男同":1}}';
+  //
+  // ⚠️ 用例可覆盖（[weights]）：负分标签那条要的就是「自拍 = -1」，而这里
+  // 原先写死 2 —— 断言「负权不该藏掉账号」时，喂进去的其实是个正权账号，
+  // 测的根本不是负权（CI run 37400431470 实测）。
+  _TagAdapter.tagWeights = weights ?? '{"u1":{"自拍":2,"男同":1}}';
   final api = TwitterApi(adapter: _TagAdapter());
   final proxy = ProxyManager();
   _openApis.add(api);
@@ -263,8 +267,11 @@ void main() {
       (tester) async {
     // 「自拍」权重为负：详情页的 TagDisplayArea 早就把它藏了（commit
     // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
-    await tester.pumpWidget(host(tagUsersPage(['u1'])));
+    await tester.pumpWidget(host(tagUsersPage(['u1']),
+        weights: '{"u1":{"自拍":-1}}'));
     await settle(tester);
+    // 前置：确认权重确实是负的，别让用例在自己没喂对数据时也「通过」。
+    expect(_TagAdapter.tagWeights, contains('-1'));
     await tester.tap(find.descendant(
       of: find.byType(ListView),
       matching: find.text('自拍'),
@@ -273,8 +280,11 @@ void main() {
 
     expect(find.text('@u1'), findsOneWidget,
         reason: '负权只压掉标签本身，不该把账号整条藏掉');
-    expect(find.text('自拍'), findsWidgets,
-        reason: '筛选条上的 chip 仍然在（那是筛选器，不是标签展示）');
+    // 跨屏口径一致的**要害**：负权标签不该被当成「隐藏依据」。
+    // 列表页不该因为一个 -1 的标签把整条账号藏掉——详情页也是这个口径。
+    // 反向断言：也不该出现任何 -1 / 「-1」之类把权重印出来的文案。
+    expect(find.textContaining('-1'), findsNothing,
+        reason: '列表页不应把负权重当展示内容');
   });
 
   testWidgets('筛选条按人数降序：人数最多的标签排在最前', (tester) async {
