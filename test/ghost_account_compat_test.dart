@@ -18,6 +18,7 @@
 //   - `pumpWidget` 之前不 await 真实网络 future（假异步时钟 → 整包超时）。
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
