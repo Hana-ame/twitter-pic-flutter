@@ -36,6 +36,7 @@ import 'package:twitter_pic_flutter/services/proxy_manager.dart';
 import 'package:twitter_pic_flutter/api/twitter_api.dart';
 import 'package:twitter_pic_flutter/screens/user_list_screen.dart';
 import 'package:twitter_pic_flutter/services/storage_service.dart';
+import 'package:twitter_pic_flutter/widgets/proxy_avatar.dart';
 
 String _canonPath(String p) {
   try {
@@ -203,5 +204,48 @@ void main() {
     expect(total, lessThanOrEqualTo(names.length),
         reason: '逐账号元数据请求共 $total 次，超过人数上限 ${names.length} '
             '说明仍有逐行重复拉取。');
+  });
+
+  // 2026-10-06 回归：N+1 那条 commit（f80cd94）顺手把 `_adopt()` 写成
+  // `accountInfo: u`，于是首屏**完全不加载任何头像**。见下方长注释。
+  testWidgets('复用上游对象时头像不能丢（首屏头像回归）', (tester) async {
+    final api = TwitterApi(adapter: adapter);
+    addTearDown(api.dispose);
+
+    await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: UserListScreen(proxy: ProxyManager(), api: api))));
+    await settle(tester);
+
+    // ⚠️ 这条断言的根据是 `_metaFor` 给了 `profile_image`，而
+    // **`/?list=users` 那个路由返回的是空数组**——所以首屏本来就没有行。
+    // 于是这里必须切到标签页才有行可断言（标签页走 hydrate，头像有来源）。
+    await tester.tap(find.descendant(
+      of: find.byType(ListView),
+      matching: find.text('女性'),
+    ));
+    await settle(tester);
+
+    // 前置：行确实渲染了。否则下面的头像断言会在「整页没渲染」时假通过。
+    expect(find.text('@user0'), findsOneWidget,
+        reason: '前置：必须先有行渲染，否则头像断言是空转');
+
+    // 判据：头像用的是 `profile_image` 的 URL，不是首字母占位。
+    //
+    // 修之前的 `accountInfo: u` 之所以丢头像：`u` 来自 hydrate 时**确实**
+    // 带了 avatar，但 `_adopt` 把整个对象当 accountInfo 用，而
+    // `UserMetaData` 是从 `account_info` 这个 **Map** 建的——从对象直接塞进去
+    // 就绕过了「字段齐全」这个前提。首屏那种「u 由 list=users 构造、
+    // 压根没有 avatar 键」的情况于是全渲染成占位。
+    final avatars = tester
+        .widgetList<ProxyAvatar>(find.byType(ProxyAvatar))
+        .map((a) => a.url)
+        .toList();
+    expect(avatars, isNotEmpty, reason: '前置：页面上必须真的有 ProxyAvatar 节点');
+    for (final url in avatars) {
+      expect(url, isNotNull,
+          reason: 'ProxyAvatar.url 为 null ⇒ 该行渲染的是首字母占位，不是真头像');
+      expect(url, contains('example.test'),
+          reason: '头像 URL 期望来自 _metaFor 的 profile_image，实际是 $url');
+    }
   });
 }

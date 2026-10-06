@@ -1381,6 +1381,20 @@ class _UserTileState extends State<_UserTile> {
   /// 分成「有数据 / 没数据」两条路，是因为**大部分列表行根本不需要请求**：
   /// 标签页、默认列表的元数据都由 [TwitterApi.hydrateUsernames] 批量取好了，
   /// 再逐行拉一次就是把同一份数据用两倍的往返取回来。
+  ///
+  /// ⚠️ 但**不能**直接把 [widget.user] 当 `accountInfo`（这是 2026-10-06
+  /// 「首屏完全不加载头像」那个回归的原因）。上游那个对象有两种来源，
+  /// 而**只有 hydrate 出来的那种带头像**：
+  ///
+  /// - `hydrateUsernames` 逐个拉了 `getMetaData`，头像取自
+  ///   `account_info.profile_image`；
+  /// - 但首屏 `getUserList`（`GET /?list=users`）只返
+  ///   `username / last_modify / tags / status` —— **根本没有 avatar 键**
+  ///   （线上实测 keys 就是这四个）。
+  ///
+  /// 直接 `accountInfo: u` ⇒ 首屏 25 行头像全 null ⇒ [ProxyAvatar] 一直
+  /// 渲染首字母占位。所以这里**显式**搬运头像：它只有 `profile_image`
+  /// 这一个来源，字段齐全是巧合而不是契约。
   void _adopt() {
     final u = widget.user;
     if (u == null) {
@@ -1390,7 +1404,13 @@ class _UserTileState extends State<_UserTile> {
       return;
     }
     _meta = UserMetaData(
-      accountInfo: u,
+      accountInfo: TwitterUser(
+        username: u.username,
+        nick: u.nick,
+        avatar: u.avatar,
+        totalUrls: u.totalUrls,
+        tags: u.tags,
+      ),
       timeline: const [],
       totalUrls: u.totalUrls ?? 0,
     );
