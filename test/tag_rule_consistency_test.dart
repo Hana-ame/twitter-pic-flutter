@@ -89,9 +89,18 @@ class _TagAdapter implements HttpClientAdapter {
 final _openApis = <TwitterApi>[];
 final _openProxies = <ProxyManager>[];
 
-Widget host(String body) {
+/// 默认标签云：单个「自拍」标签，供与顺序无关的用例使用。
+const String _defaultCloud = '[{"Tag":"自拍","Count":100}]';
+
+/// [body] 是标签反查响应；[cloud] 覆盖标签云。
+///
+/// ⚠️ 别在 `host()` 里无条件写死 `tagCloud` 再让用例事后再改——
+/// 那样用例里的赋值会被这里的写死覆盖掉（我第一版就这么写的，于是
+/// 「降序」用例喂的云根本没生效，CI 实测 4 例红）。所以标签云由**调用方**
+/// 决定，`host` 不碰。
+Widget host(String body, {String cloud = _defaultCloud}) {
   _TagAdapter.tagPage = body;
-  _TagAdapter.tagCloud = '[{"Tag":"自拍","Count":100}]';
+  _TagAdapter.tagCloud = cloud;
   // 批量权重：给 u1 带上「自拍」+「男同」，Gay 模式关闭时后者应把它藏掉。
   _TagAdapter.tagWeights = '{"u1":{"自拍":2,"男同":1}}';
   final api = TwitterApi(adapter: _TagAdapter());
@@ -138,6 +147,17 @@ String tagUsersPage(List<String> usernames) =>
 // pumpAndSettle 的语义是「一直 pump 直到没有任何待处理帧」，遇到这种动画
 // **永远不会返回** —— 本次 CI 上就因此挂死了 30 多分钟（正常一轮约 80 秒）。
 // 一律改成 pump(const Duration(...))，自己控制推进多少帧。
+/// 推进若干有界帧。
+///
+/// 标签结果要连过 4 段 future（标签云 → tap → `/api/tag/<tag>` →
+/// `/api/tags` 批量权重 → 逐个元数据），每段都要一帧才推进。只 pump 两下
+/// 时结果区还在骨架屏，`@u1` 根本没建出来（CI run 37397930408 实测 4 例红）。
+Future<void> settle(WidgetTester tester, [int times = 6]) async {
+  for (var i = 0; i < times; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
 void main() {
   late Directory tmpDir;
 
@@ -180,14 +200,12 @@ void main() {
       // 前提：Gay 模式确实是关的（默认值）。
       expect(StorageService.isGayMode(), isFalse);
       await tester.pumpWidget(host(tagUsersPage(['u1'])));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
+      await settle(tester);
       await tester.tap(find.descendant(
         of: find.byType(ListView),
         matching: find.text('自拍'),
       ));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
+      await settle(tester);
 
       // 判据是「找不到」：Gay 模式存在的全部意义就是别让它漏出来。
       expect(find.text('@u1'), findsNothing,
@@ -200,14 +218,12 @@ void main() {
     (tester) async {
       StorageService.setGayMode(true);
       await tester.pumpWidget(host(tagUsersPage(['u1'])));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
+      await settle(tester);
       await tester.tap(find.descendant(
         of: find.byType(ListView),
         matching: find.text('自拍'),
       ));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
+      await settle(tester);
 
       expect(find.text('@u1'), findsOneWidget,
           reason: '开了 Gay 模式就该放行 —— 这条防止「过滤写死成永远隐藏」');
@@ -219,11 +235,9 @@ void main() {
     // 「自拍」权重为负：详情页的 TagDisplayArea 早就把它藏了（commit
     // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
     await tester.pumpWidget(host(tagUsersPage(['u1'])));
-    await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 100));
+    await settle(tester);
     await tester.tap(find.text('自拍'));
-    await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 100));
+    await settle(tester);
 
     expect(find.text('@u1'), findsOneWidget,
         reason: '负权只压掉标签本身，不该把账号整条藏掉');
@@ -234,11 +248,9 @@ void main() {
   testWidgets('筛选条按人数降序：人数最多的标签排在最前', (tester) async {
     // 顺序是**数据层不变量**（TagCount.listFromJson 排降序），筛选条照抄
     // 即可。若这里退回升序，用户横向滑动时最先看到的反而是冷门标签。
-    _TagAdapter.tagCloud =
-        '[{"Tag":"自拍","Count":1196},{"Tag":"女性","Count":7591}]';
-    await tester.pumpWidget(host(emptyTagPage));
-    await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpWidget(host(emptyTagPage,
+        cloud: '[{"Tag":"自拍","Count":1196},{"Tag":"女性","Count":7591}]'));
+    await settle(tester);
 
     // 真正判「序」而不是判「在不在」：比两个 chip 的 x 坐标。
     // 只断言「7591 存在」的话，退化成升序时它照样存在——那条断言恒真。
@@ -254,10 +266,9 @@ void main() {
   });
 
   testWidgets('筛选条上的人数标注取自该标签的计数', (tester) async {
-    _TagAdapter.tagCloud = '[{"Tag":"女性","Count":7591}]';
-    await tester.pumpWidget(host(emptyTagPage));
-    await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpWidget(host(emptyTagPage,
+        cloud: '[{"Tag":"女性","Count":7591}]'));
+    await settle(tester);
 
     // 计数是**人数**（实测 tag-cloud Count 与 /api/tag/<tag> 的 total 相等），
     // 所以这里直接印数字；早前印的是「热度」，是错的。
