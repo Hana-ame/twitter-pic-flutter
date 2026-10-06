@@ -26,14 +26,22 @@ class UserDetailScreen extends StatefulWidget {
 
   /// 「留在来源页按标签查找」的请求句柄，由来源页透传。
   ///
-  /// 传了（正常路径，从用户列表页点进来）→ 点标签**留在来源页**，
-  /// 不再 push 独立的标签页。
-  /// 不传 → 背后**没有**能递回的列表页，如实说明「此页不支持就地切换」。
+  /// **required + 可空**：取值只有两种，调用方**必须**当场写出来，不许「不写」。
   ///
-  /// ⚠️ 每个 push 详情页的地方都必须**显式**决定传不传：这是契约，不是
-  /// 「忘了传就当不支持」。`fav_list.dart`（收藏页）故意不传——它背后
-  /// 没有列表页可递回，那里「不能就地切」是合法状态，
-  /// `test/fav_list_test.dart` 会钉住它仍然给出明确提示。
+  ///   - 传了句柄（正常路径，从用户列表页点进来）→ 点标签**留在来源页**，
+  ///     不再 push 独立的标签页。
+  ///   - 显式传 `null` → 背后没有能递回的列表页，如实说明「此页不支持就地切换」。
+  ///
+  /// 为什么不写成可选参数：PR #13 把它做成可选，于是「忘了传」和「决定不传」
+  /// 在代码里长得一模一样——仓库里有三处能 push 详情页，只有用户列表页那一处
+  /// 传了句柄，另两处因为漏传而静默落到「不支持」提示（notes/
+  /// discipline-dont-hide-product-decisions：能力依赖「人记得传参」）。
+  /// 改成 `required` 之后，**漏传是编译错误**，只有 `tagBrowse: null` 这一种
+  /// 写法能让「背后没有列表页」进入代码；null 仍然是「没有」的唯一表示。
+  ///
+  /// 唯一显式传 null 的生产调用点是 `lib/widgets/fav_list.dart`（收藏页背后
+  /// 只有 `FavoritesTab`，没有列表页可递回，那里不传是**正确决定**而非缺陷），
+  /// 由 `test/fav_tag_browse_contract_test.dart` 钉住它仍给出明确提示。
   final TagBrowseRequest? tagBrowse;
 
   /// 仅供测试注入（配假 `HttpClientAdapter`）；生产调用点不传。
@@ -43,7 +51,7 @@ class UserDetailScreen extends StatefulWidget {
     super.key,
     required this.profile,
     required this.proxy,
-    this.tagBrowse,
+    required this.tagBrowse,
     this.api,
   });
 

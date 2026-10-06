@@ -246,7 +246,33 @@ class _FavTileState extends State<_FavTile> {
             await Navigator.push(context, PageRouteBuilder(
               transitionDuration: const Duration(milliseconds: 300),
               reverseTransitionDuration: const Duration(milliseconds: 300),
-              pageBuilder: (_, a, __) => UserDetailScreen(profile: snapshot.data!, proxy: widget.proxy),
+              // ⚠️ `tagBrowse: null` 是**显式决定**，不是漏传（UserDetailScreen.tagBrowse
+              // 是 required，漏传编译不过，代码里不存在「忘了传」这种可能）。
+              //
+              // 详情页点标签时会把请求**递回**背后那个用户列表页、就地切换、然后
+              // pop 自己（widgets/tag_browse.dart 的说明）。收藏页背后**没有**
+              // 列表页——`FavoritesTab` 与 `UserListScreen` 是 IndexedStack 里两个
+              // 平级的 Tab、彼此不可见。所以「不能就地切」在这里是**合法且正确**
+              // 的状态：能递回的只有 UserListScreen，而让它从另一个 Tab 的
+              // Scaffold 里起作用等于跨 Tab 操纵，会造出「用户在收藏 Tab、标签结果
+              // 却出现在用户 Tab」这种比一句提示更糟的状态。另一条路是在收藏页把
+              // 标签查找**再做一份**，那是 tag_browse.dart 开头已否掉的方案
+              // （同一件事两份实现，必然各自漂移）。
+              //
+              // 那为什么保留这个入口？因为它承载用户可见的必要反馈：详情页必须
+              // 明确说「此页不支持标签就地查看，请从用户列表进入」，点了不能静默
+              // 无反应。test/fav_tag_browse_contract_test.dart 走真实点击路径钉住
+              // 三条：提示出现 / 没被 pop / 没多发一个标签反查请求。
+              pageBuilder: (_, a, __) => UserDetailScreen(
+                profile: snapshot.data!,
+                proxy: widget.proxy,
+                tagBrowse: null,
+                // 透传 api：详情页默认**自建**一个 TwitterApi 打真实网络，于是
+                // 它的标签区与外面这个实例无关——注入假适配器的测试永远构造不出
+                // 可点的标签区（tag_same_page_test 靠显式注入才跑得起来）。
+                // 复用同一个实例，也让这一页的请求走同一条连接与同一份缓存。
+                api: widget.api,
+              ),
               transitionsBuilder: (_, a, __, child) {
                 final curved = CurvedAnimation(parent: a, curve: Curves.easeInOutCubic);
                 return FadeTransition(
