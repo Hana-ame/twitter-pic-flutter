@@ -236,7 +236,7 @@ void main() {
       expect(find.text('标签推荐'), findsNothing);
     });
 
-    testWidgets('推荐项显示「热度」而不是「N 人」（票数≠人数）',
+    testWidgets('推荐项显示「N 人」（计数是人数口径，不是热度）',
         (tester) async {
       await tester.pumpWidget(wrap(SearchBarWidget(
         onChanged: (_) {},
@@ -248,9 +248,12 @@ void main() {
       await tester.enterText(find.byType(TextField), '女');
       await tester.pump();
 
-      expect(find.text('热度 7580'), findsOneWidget);
-      expect(find.textContaining('7580 人'), findsNothing);
-      expect(find.textContaining('7580个'), findsNothing);
+      expect(find.text('7580 人'), findsOneWidget);
+      // **反向断言**：此前这里写的是「热度 7580」，理由是「票数≠人数」。
+      // 那个前提经实测是错的（tag-cloud 的 Count 与 /api/tag/<tag> 的 total
+      // 相等，女性均为 7591），所以「热度」必须**不再出现**——只断言正向
+      // 文案的话，改回「热度」时这条也会绿。
+      expect(find.textContaining('热度'), findsNothing);
     });
   });
 

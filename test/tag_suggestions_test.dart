@@ -28,12 +28,15 @@ void main() {
   });
 
   group('空输入退化成热门推荐', () {
-    test('空串返回按热度排序的热门标签——不给起手就等于要用户先想好标签名',
+    test('空串返回人数最多的热门标签——不给起手就等于要用户先想好标签名',
         () {
       final got = rankTagSuggestions(real, '');
       expect(got, isNotEmpty);
       expect(got.first.tag, '女性',
-          reason: '热度最高的就是女性（实测 7580）');
+          reason: '人数最多的就是女性（实测 7591 人）');
+      // 反向断言：必须**人数降序**，不能是升序。
+      expect(got.first.count, greaterThan(got[1].count),
+          reason: '空输入的起手榜是「最热门的」，最大的人数必须排第一');
       expect(got.map((e) => e.tag), containsAll(<String>['女性', '男女性交', '二次元']));
       // 纯空白等同空串。
       expect(rankTagSuggestions(real, '   ').map((e) => e.tag).toList(),
@@ -75,8 +78,8 @@ void main() {
       if (idxN >= 0) expect(idxN, greaterThan(0));
     });
 
-    test('前缀命中内部按热度降序', () {
-      // 造两个同前缀、同位置、不同热度，必须按热度排。
+    test('前缀命中内部按人数降序', () {
+      // 造两个同前缀、同位置、不同人数，必须按人数排。
       final c = cloud(const {'女A': 10, '女B': 99, '女C': 50});
       final got = rankTagSuggestions(c, '女');
       expect(got.map((e) => e.tag).toList(), ['女B', '女C', '女A']);
@@ -132,7 +135,7 @@ void main() {
       expect(rankTagSuggestions(many, '标', limit: -1), isEmpty);
     });
 
-    test('热度相同则按标签名升序（保证稳定，不靠 map 迭代顺序）', () {
+    test('人数相同则按标签名升序（保证稳定，不靠 map 迭代顺序）', () {
       final c = cloud(const {'甲标': 5, '乙标': 5, '丙标': 5});
       final got = rankTagSuggestions(c, '标');
       expect(got.map((e) => e.tag).toList(), ['丙标', '乙标', '甲标']);

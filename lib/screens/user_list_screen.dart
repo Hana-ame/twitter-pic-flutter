@@ -72,10 +72,10 @@ class UserListScreenState extends State<UserListScreen> {
   /// 一个冷门标签失败不该把已取回的热门结果一起清掉。
   final Set<String> _failedTags = <String>{};
 
-  /// 各标签 `total` 的最大值（**票数口径**，不是人数）。
+  /// 各标签 `total` 的最大值（即该标签下的**人数**口径）。
   ///
-  /// 各标签的 total 不相加（同一账号可同时算进多个标签，加起来会重复计数），
-  /// 也不当成人数展示，只作为「热度量级」的一个参考值。null = 服务端没给。
+  /// 各标签的 total 不相加（同一账号可同时算进多个标签，加起来会重复计数）。
+  /// null = 服务端没给。
   int? _tagMergedTotal;
 
   /// 画廊端点这一批是否还有下一页（多选下 = 任一选中标签还有下一页）。
@@ -221,9 +221,9 @@ class UserListScreenState extends State<UserListScreen> {
           if (t > mergedTotal) mergedTotal = t;
         }
       }
-      // 各标签 total 是**票数**口径，相加没有产品含义（同一账号可同时算进
-      // 两个标签）。取最大值只作为「热度量级」参考，UI 一律不写「N 人」
-      // ——见 [_TagLoadMore] 的 heatText。
+      // 各标签 total 是**人数**口径（实测与 tag-cloud 的 Count 相等）。
+      // 相加会重复计数（同一账号可同时算进两个标签），故取最大值。
+      // 展示见 [_TagLoadMore] 的 peopleText。
       _tagMergedTotal = sawTotal ? mergedTotal : null;
       _tagUsers = dedupeByUsername(
         settled.expand((r) => r.users).toList(growable: false),
@@ -771,11 +771,10 @@ class UserListScreenState extends State<UserListScreen> {
               loading: _tagLoading,
               hasMore: _tagHasMore,
               loadedCount: _tagUsers.length,
-              // ⚠️ 绝不说"N 人"：total 是标签云的**票数**，不是能列出的用户数
-              // （女性 total=7580，而 by=tag 只能回 15）。措辞刻意含糊成"热度"。
-              // 多选时取各标签 total 的最大值——相加会重复计数（同一账号可同时
-              // 命中多个标签）。
-              heatText: _tagMergedTotal == null ? null : '$_tagMergedTotal',
+              // total 就是该标签下的**人数**（实测：女性 tag-cloud Count 与
+              // /api/tag/女性 的 total 都是 7591）。多选时取各标签 total 的最大
+              // 值——相加会重复计数（同一账号可同时命中多个标签）。
+              peopleText: _tagMergedTotal == null ? null : '$_tagMergedTotal',
               onMore: _loadMoreTagUsers,
             );
           }
@@ -1169,8 +1168,8 @@ class _TagFilterBar extends StatelessWidget {
                   padding: const EdgeInsets.only(right: 6),
                   child: _TagChip(
                     tag: t.tag,
-                    // 如实标注：Count 是**票数**，不是用户数。
-                    heatText: '${t.count}',
+                    // Count 就是该标签下的**人数**（见 TagCount.count）。
+                    peopleText: '${t.count}',
                     selected: selected.contains(t.tag),
                     onTap: () => onToggle(t.tag),
                   ),
@@ -1186,13 +1185,13 @@ class _TagFilterBar extends StatelessWidget {
 /// 单个筛选芯片。样式对齐 TagDisplayArea 的标签 chip（小圆角、淡底、描边）。
 class _TagChip extends StatelessWidget {
   final String tag;
-  final String heatText;
+  final String peopleText;
   final bool selected;
   final VoidCallback onTap;
 
   const _TagChip({
     required this.tag,
-    required this.heatText,
+    required this.peopleText,
     required this.selected,
     required this.onTap,
   });
@@ -1226,9 +1225,9 @@ class _TagChip extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 4),
-            // 票数（热度），不是人数 —— 见 TagCount.count 的注释。
+            // 该标签下的**人数** —— 见 TagCount.count 的实测口径。
             Text(
-              heatText,
+              peopleText,
               style: TextStyle(fontSize: 10, color: color.withValues(alpha: 0.8)),
             ),
           ],
@@ -1238,12 +1237,12 @@ class _TagChip extends StatelessWidget {
   }
 }
 
-/// 标签全量列表尾部的"加载更多" + 如实的截断/热度说明。
+/// 标签全量列表尾部的"加载更多" + 如实的截断/人数说明。
 class _TagLoadMore extends StatelessWidget {
   final bool loading;
   final bool hasMore;
   final int loadedCount;
-  final String? heatText;
+  final String? peopleText;
   final VoidCallback onMore;
 
   const _TagLoadMore({
@@ -1251,7 +1250,7 @@ class _TagLoadMore extends StatelessWidget {
     required this.hasMore,
     required this.loadedCount,
     required this.onMore,
-    this.heatText,
+    this.peopleText,
   });
 
   @override
@@ -1273,9 +1272,9 @@ class _TagLoadMore extends StatelessWidget {
             ),
           const SizedBox(height: 6),
           Text(
-            heatText == null
+            peopleText == null
                 ? '已列出 $loadedCount 人'
-                : '已列出 $loadedCount 人（该标签热度 $heatText，非人数）',
+                : '已列出 $loadedCount 人（该标签共 $peopleText 人）',
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 12, color: Colors.grey),
           ),

@@ -319,9 +319,10 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
                           leading: const Icon(Icons.sell_outlined, size: 16),
                           title: Text(t.tag,
                               style: const TextStyle(fontSize: 13)),
-                          // ⚠️ 显示的是**票数**不是人数（见 TagCount.count 的口径说明），
-                          // 所以标签旁边只写「热度」而不是「N 人」。
-                          subtitle: Text('热度 ${t.count}',
+                          // 显示的是**人数**（该标签下的账号数），见 TagCount.count
+                          // 的实测口径：tag-cloud 的 Count 与 /api/tag/<tag> 的
+                          // total 相等（女性均为 7591）。
+                          subtitle: Text('${t.count} 人',
                               style: const TextStyle(fontSize: 11)),
                           onTap: () => _pickTag(t.tag),
                         )).toList(),

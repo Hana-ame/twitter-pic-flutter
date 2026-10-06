@@ -107,13 +107,17 @@ void main() {
       expect(TagCount.listFromJson('nope'), isEmpty);
     });
 
-    test('排序稳定：count 升序，同数按标签名升序', () {
+    test('排序：count **降序**（人数多的在前），同数按标签名升序', () {
       final parsed = TagCount.listFromJson([
         {'Tag': '大奶', 'Count': 7},
         {'Tag': '二次元', 'Count': 14},
         {'Tag': 'COS', 'Count': 7},
       ]);
-      expect(parsed.map((e) => e.tag).toList(), ['COS', '大奶', '二次元']);
+      // 降序：二次元(14) → 同数的 COS/大奶 按标签名升序。
+      // 反向断言「不能是升序」——顺序是**数据层不变量**，渲染点默认照抄，
+      // 一旦退回升序，最大的标签就会排到最后。
+      expect(parsed.map((e) => e.tag).toList(), ['二次元', 'COS', '大奶']);
+      expect(parsed.first.count, greaterThan(parsed.last.count));
     });
   });
 
@@ -303,6 +307,60 @@ void main() {
       final out = visibleUsers(
           [u('alice', {'女性': 1})], {'女性'}, StorageService.shouldHideUser);
       expect(out, hasLength(1));
+    });
+  });
+
+  group('标签云顺序是「人数降序」这条不变量', () {
+    // 用户明确要求：「tag 需要倒序给出选项，不能大的 tag 在后面」。
+    // 这里的风险不在推荐排序（rankTagSuggestions 本来就是降序），
+    // 而在**解析层**：渲染点（标签栏、推荐下拉）都直接照抄 listFromJson
+    // 的顺序，所以顺序必须在这里就对，不能推给每个渲染点各自 reverse。
+
+    test('用线上真实数字：最大的标签排第一', () {
+      final parsed = TagCount.listFromJson([
+        {'Tag': '自拍', 'Count': 1196},
+        {'Tag': '男女性交', 'Count': 1558},
+        {'Tag': '女性', 'Count': 7591},
+        {'Tag': '二次元', 'Count': 1456},
+      ]);
+      expect(parsed.map((e) => e.tag).toList(),
+          ['女性', '男女性交', '二次元', '自拍']);
+    });
+
+    test('反向断言：第一条的 count 必须大于最后一条', () {
+      // 光断言顺序数组，若实现整体退化成升序，上面那条会红；
+      // 这条额外钉住「降序」这个方向本身。
+      final parsed = TagCount.listFromJson([
+        {'Tag': '自拍', 'Count': 1196},
+        {'Tag': '女性', 'Count': 7591},
+      ]);
+      expect(parsed.first.tag, '女性');
+      expect(parsed.last.tag, '自拍');
+      expect(parsed.first.count, greaterThan(parsed.last.count));
+    });
+
+    test('整表单调不增（不是只看首尾）', () {
+      final parsed = TagCount.listFromJson([
+        {'Tag': 'a', 'Count': 3},
+        {'Tag': 'b', 'Count': 99},
+        {'Tag': 'c', 'Count': 50},
+        {'Tag': 'd', 'Count': 1},
+      ]);
+      for (var i = 1; i < parsed.length; i++) {
+        expect(parsed[i - 1].count, greaterThanOrEqualTo(parsed[i].count),
+            reason: '第 ${i - 1}→$i 位出现回升，说明不是降序：'
+                '${parsed[i - 1].tag}(${parsed[i - 1].count}) '
+                '→ ${parsed[i].tag}(${parsed[i].count})');
+      }
+    });
+
+    test('count 是人数口径：解析出来的就是用户数，不做任何换算', () {
+      // /api/tag/<tag> 的 total 与 tag-cloud 的 Count 同源（女性均为 7591），
+      // 所以解析层不做任何缩放；UI 直接标「N 人」。
+      final parsed = TagCount.listFromJson([
+        {'Tag': '女性', 'Count': 7591},
+      ]);
+      expect(parsed.single.count, 7591);
     });
   });
 }
