@@ -183,8 +183,12 @@ void main() {
         .map((t) => t.data)
         .where((d) => d != null && d.isNotEmpty)
         .toList();
+    final selectable = tester
+        .widgetList<SelectableText>(find.byType(SelectableText))
+        .map((t) => t.data)
+        .toList();
     final paths = adapter.seen.map((u) => '${u.path}?${u.query}').toList();
-    fail('诊断：\n渲染文本=${rendered.take(25).toList()}\n'
+    fail('诊断：\n错误文本=$selectable\n渲染文本=${rendered.take(25).toList()}\n'
         '请求=${paths.take(15).toList()}\n'
         '已注册路由=${adapter.routes.keys.toList()}');
     expect(find.text('@user0'), findsOneWidget,
