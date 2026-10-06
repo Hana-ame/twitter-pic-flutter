@@ -120,6 +120,45 @@ class TwitterApi {
   static final Map<String, DateTime> _metaCacheTime = {};
   static const Duration _kCacheTtl = Duration(minutes: 10);
 
+  // ── 幽灵账号负缓存（2026-10-06）────────────────────────────────────────
+  //
+  // 标签反查 `/api/tag/<tag>` 会发出一批**点进去必然 404** 的账号：它们在标签
+  // 索引里，却不在服务端的 users 表里。实测一页 25 人里 13~15 个如此（失败率
+  // 29%~60%，随 offset 变化）。
+  //
+  // 原来的行为是「失败不进缓存」（见 [getMetaData] 的 catch），本意是让临时
+  // 故障能自愈；但对这类账号它是**纯浪费**：每次翻页都把同一批注定失败的请求
+  // 重打一遍 —— 这就是「下一页极慢」的机制。一页 25 人 × 15 次注定失败 ×
+  // 每次 1~3 秒，且 hydrate 还要等它们全部超时。
+  //
+  // 所以这里**只对 404 做负缓存**：这类失败是账号自身的状态（不在库里），
+  // 不会因为重试而改变；TTL 取得比正缓存短（账号可能被补录进来）。
+  // 其他失败（超时/5xx/网络）仍然不进缓存，保持可自愈。
+  static final Set<String> _metaMissing = {};
+  static final Map<String, DateTime> _metaMissingTime = {};
+  static const Duration _kMissingTtl = Duration(minutes: 30);
+
+  /// 该账号是否**确定**不存在（404 负缓存命中）。
+  ///
+  /// 供列表层过滤掉注定失败的行，也供 hydrate 跳过它们——这样既不再发请求，
+  /// 也不会在列表里留下一个点进去就报错的行。
+  @visibleForTesting
+  static bool isKnownMissing(String username) {
+    final at = _metaMissingTime[username];
+    if (!_metaMissing.contains(username) || at == null) return false;
+    if (DateTime.now().difference(at) >= _kMissingTtl) {
+      _metaMissing.remove(username);
+      _metaMissingTime.remove(username);
+      return false;
+    }
+    return true;
+  }
+
+  static void _markMissing(String username) {
+    _metaMissing.add(username);
+    _metaMissingTime[username] = DateTime.now();
+  }
+
   /// 仅供测试：清掉静态元数据缓存。
   ///
   /// 缓存是 static final、全实例共享，没有这个入口的话测试之间会互相命中
@@ -131,6 +170,8 @@ class TwitterApi {
   static void resetForTests() {
     _metaCache.clear();
     _metaCacheTime.clear();
+    _metaMissing.clear();
+    _metaMissingTime.clear();
   }
 
   late final Dio _dio;
@@ -337,26 +378,50 @@ class TwitterApi {
     }
 
     // ② 逐个取昵称/头像，失败降级为只有用户名 + 权重。
+    //
+    // ⚠️ 但**404（账号不存在）不再降级**，直接剔除该行（2026-10-06）。
+    // 原来这里是 `catch (_) {}` 一律吞掉，于是「在标签索引里、却不在服务端
+    // users 表里」的幽灵账号照样进列表：点进去必然 404，而用户看到的只是一个
+    // 点了就报错的行。判据是 `e is HttpException && e.statusCode == 404`
+    // —— 只有「这个账号不存在」才剔除，超时/5xx 仍按原样降级保留行，
+    // 避免临时故障把整页洗白。
     final out = <TwitterUser>[];
+    var dropped = 0;
     for (var i = 0; i < unique.length; i += concurrency) {
       final chunk = unique.skip(i).take(concurrency);
       final settled = await Future.wait(chunk.map((name) async {
         UserMetaData? meta;
+        var gone = false;
         try {
           meta = await getMetaData(name);
-        } catch (_) {}
+        } catch (e) {
+          if (e is HttpException && e.statusCode == 404) gone = true;
+        }
         final info = meta?.accountInfo;
-        return TwitterUser(
-          username: name,
-          nick: info?.nick,
-          avatar: info?.avatar,
-          totalUrls: info?.totalUrls,
-          // 键存在即命中的口径下，服务端省略的键（被封 / 不存在）与"权重 0"
-          // 都只能读成"没有这个标签"，用空表兜住，不让它去读 undefined。
-          tags: weights[name] ?? const <String, int>{},
+        return (
+          gone: gone,
+          user: TwitterUser(
+            username: name,
+            nick: info?.nick,
+            avatar: info?.avatar,
+            totalUrls: info?.totalUrls,
+            // 键存在即命中的口径下，服务端省略的键（被封 / 不存在）与"权重 0"
+            // 都只能读成"没有这个标签"，用空表兜住，不让它去读 undefined。
+            tags: weights[name] ?? const <String, int>{},
+          ),
         );
       }));
-      out.addAll(settled);
+      for (final r in settled) {
+        if (r.gone) {
+          dropped++;
+          continue;
+        }
+        out.add(r.user);
+      }
+    }
+    if (dropped > 0) {
+      // 一并记进诊断日志，便于核对「服务端标签索引里有、users 表里没有」的规模。
+      debugPrint('[hydrate] 剔除 $dropped 个 404 账号（本批 ${unique.length} 个）');
     }
     return out;
   }
@@ -419,6 +484,12 @@ class TwitterApi {
   }
 
   Future<UserMetaData> getMetaData(String username, {String? t, bool forceRefresh = false}) async {
+    // 负缓存命中：直接抛，不再发那个注定 404 的请求。
+    // 抛的是 [HttpException] 404，与真实请求失败的形态**一致**——这样
+    // hydrate 的 `catch (_) {}` 照旧能吞掉它，行为差异只有「少一次往返」。
+    if (!forceRefresh && isKnownMissing(username)) {
+      throw HttpException(404, '账号 $username 不存在（已知 404 负缓存命中）');
+    }
     if (!forceRefresh) {
       final cached = _metaCache[username];
       final cachedAt = _metaCacheTime[username];
@@ -438,7 +509,12 @@ class TwitterApi {
     _metaCacheTime[username] = DateTime.now();
     try {
       return await inFlight;
-    } catch (_) {
+    } catch (e) {
+      // **只有 404 进负缓存**（见 [_metaMissing] 的说明）：这类失败是账号自身的
+      // 状态，重试不会改变；超时/5xx/网络失败仍然不进缓存，保持可自愈。
+      if (e is HttpException && e.statusCode == 404) {
+        _markMissing(username);
+      }
       // 失败不进缓存，下次调用重试。
       // 只在"缓存里还是我自己"时才清：TTL 过期时会写入新 future，旧 future
       // 的失败回调若无条件 remove 会把新 future 误删，表现为偶发的重复拉取
