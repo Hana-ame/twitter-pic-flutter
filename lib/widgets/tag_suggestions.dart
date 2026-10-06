@@ -26,9 +26,9 @@ const int kTagSuggestLimit = 8;
 ///  1. 前缀命中（`女性`.startsWith(`女`)）排在子串命中之前；
 ///  2. 匹配到的位置越靠前越好（`女性` 对「性」在 index 1，比
 ///     `性感` 的 index 0 稍差——中文里靠前的字通常更接近标签的主干）；
-///  3. 前缀命中数/热度更高者在前。
+///  3. 同档同位置时，**人数多的在前**（[TagCount.count] 是人数口径）。
 ///
-/// 空 [query] 返回**按热度排序的热门标签**（最多 [limit] 个）——这是本次改动的
+/// 空 [query] 返回**人数最多的热门标签**（最多 [limit] 个）——这是本次改动的
 /// 关键：既然不再要求用户打 `#`，那么用户**刚点进搜索框、一个字还没打**时就该
 /// 看到点什么，否则推荐功能等于要用户先想好标签名才生效，那还是「记得住 `#`
 /// 才用得了」的同一个毛病，只是换了个符号。
@@ -46,6 +46,9 @@ List<TagCount> rankTagSuggestions(
   if (q.isEmpty) {
     // 空查询 = 「我还没想好要找什么」→ 给热门榜当起手。复用同一份标签表、
     // 同一个上限，不新增状态。
+    // 排序走副本：不能就地改调用方持有的标签表（那个 List 会被
+    // UserListScreen 直接拿去渲染标签栏，就地排序会让搜索框的排序
+    // 漏到标签栏上，两处顺序互相污染）。
     final hot = List<TagCount>.of(cloud)
       ..sort((a, b) {
         final byCount = b.count.compareTo(a.count);
@@ -70,7 +73,7 @@ List<TagCount> rankTagSuggestions(
     if (a.prefix != b.prefix) return a.prefix ? -1 : 1;
     // 2) 同一档内，匹配位置越靠前越好。
     if (a.at != b.at) return a.at.compareTo(b.at);
-    // 3) 再看热度；同热度按标签名，保证稳定。
+    // 3) 再看人数；人数相同按标签名，保证稳定不抖。
     final byCount = b.item.count.compareTo(a.item.count);
     return byCount != 0 ? byCount : a.item.tag.compareTo(b.item.tag);
   });
