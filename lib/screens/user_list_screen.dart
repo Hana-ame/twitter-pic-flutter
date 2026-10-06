@@ -171,11 +171,23 @@ class UserListScreenState extends State<UserListScreen> {
       try {
         final page = await _api.getUsersByTagPage(tag,
             limit: _kTagPageSize, offset: 0);
-        final hydrated = await _api.hydrateUsernames(page.usernames);
+        final weights = await _api.getTagWeightsBatch(page.usernames);
+        final users = <TwitterUser>[];
+        for (final name in page.usernames) {
+          final w = weights[name];
+          // 过滤条件：
+          // 1. 服务端省略的键（banned 或不存在于 tags.db）
+          // 2. 当前标签投票 <= 0
+          // 3. 已知 404 账号
+          if (w == null) continue;
+          if ((w[tag] ?? 0) <= 0) continue;
+          if (TwitterApi.isKnownMissing(name)) continue;
+          users.add(TwitterUser(username: name, tags: w));
+        }
         return (
           tag: tag,
           page: page,
-          users: hydrated,
+          users: users,
           error: null as String?,
         );
       } catch (e) {
@@ -256,11 +268,19 @@ class UserListScreenState extends State<UserListScreen> {
       try {
         final page = await _api.getUsersByTagPage(tag,
             limit: _kTagPageSize, offset: st.offset);
-        final hydrated = await _api.hydrateUsernames(page.usernames);
+        final weights = await _api.getTagWeightsBatch(page.usernames);
+        final users = <TwitterUser>[];
+        for (final name in page.usernames) {
+          final w = weights[name];
+          if (w == null) continue;
+          if ((w[tag] ?? 0) <= 0) continue;
+          if (TwitterApi.isKnownMissing(name)) continue;
+          users.add(TwitterUser(username: name, tags: w));
+        }
         return (
           tag: tag,
           page: page,
-          users: hydrated,
+          users: users,
           error: null as String?,
         );
       } catch (e) {
