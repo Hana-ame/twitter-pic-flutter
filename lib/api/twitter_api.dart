@@ -111,6 +111,31 @@ class UnexpectedResponseException extends ApiException {
   const UnexpectedResponseException(super.message);
 }
 
+/// 从抛出的对象里取出真正的 [ApiException]（可能裹在 `DioException.error` 里）。
+///
+/// ⚠️ **调用方判断 HTTP 状态码必须走这个函数**，不能直接 `e is HttpException`：
+///
+/// 异常映射拦截器（[TwitterApi] 构造里那个 `mapErrors()`）做的是
+/// `handler.reject(DioException(..., error: _mapDioErrorToException(e)))` ——
+/// 它把 [HttpException] 塞进 `DioException.error`，而 Dio **不会**把它拆出来重抛。
+/// 于是 `catch (e) { if (e is HttpException && e.statusCode == 404) … }`
+/// 永远为假：判据静默失效，功能看起来「没生效」但没有任何报错。
+///
+/// （我 2026-10-06 的 404 负缓存第一版就是这么写的：三条用例全红，
+///  `Expected: throws HttpException with statusCode 404` / `Actual: <Closure>`，
+///  因为闭包返回的是 `DioException`。既有代码 settings_screen.dart 也是用
+///  `e.error` 解包的，那才是这个仓库的既定写法。）
+///
+/// 返回 null 表示这压根不是 HTTP 层异常（超时、连接失败等）。
+HttpException? asHttpException(Object? e) {
+  if (e is HttpException) return e;
+  if (e is DioException) {
+    final inner = e.error;
+    if (inner is HttpException) return inner;
+  }
+  return null;
+}
+
 class TwitterApi {
   // 缓存存 Future<UserMetaData> 而非结果：同一用户并发 getMetaData 复用
   // 同一个 in-flight 请求，避免并发 miss 全部各自拉取（重复流量）。
@@ -395,7 +420,9 @@ class TwitterApi {
         try {
           meta = await getMetaData(name);
         } catch (e) {
-          if (e is HttpException && e.statusCode == 404) gone = true;
+          // ⚠️ 同上：必须解包 DioException，否则这个判据永远为假，
+          // 幽灵账号会照旧进列表。
+          if (asHttpException(e)?.statusCode == 404) gone = true;
         }
         final info = meta?.accountInfo;
         return (
@@ -512,7 +539,10 @@ class TwitterApi {
     } catch (e) {
       // **只有 404 进负缓存**（见 [_metaMissing] 的说明）：这类失败是账号自身的
       // 状态，重试不会改变；超时/5xx/网络失败仍然不进缓存，保持可自愈。
-      if (e is HttpException && e.statusCode == 404) {
+      // ⚠️ 必须走 asHttpException：拦截器把 HttpException 裹在
+      // DioException.error 里，直接 `e is HttpException` 永远为假。
+      final http = asHttpException(e);
+      if (http != null && http.statusCode == 404) {
         _markMissing(username);
       }
       // 失败不进缓存，下次调用重试。
