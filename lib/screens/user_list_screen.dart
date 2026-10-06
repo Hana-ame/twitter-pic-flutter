@@ -10,7 +10,7 @@ import '../services/storage_service.dart';
 import '../widgets/proxy_avatar.dart';
 import '../widgets/search_bar.dart';
 import '../widgets/tag_selector_modal.dart';
-import 'tag_user_list_screen.dart';
+import '../widgets/tag_browse.dart';
 import 'user_detail_screen.dart';
 
 class UserListScreen extends StatefulWidget {
@@ -426,7 +426,13 @@ class UserListScreenState extends State<UserListScreen> {
     await Navigator.push(context, PageRouteBuilder(
       transitionDuration: const Duration(milliseconds: 300),
       reverseTransitionDuration: const Duration(milliseconds: 300),
-      pageBuilder: (_, a, __) => UserDetailScreen(profile: profile, proxy: widget.proxy),
+      pageBuilder: (_, a, __) => UserDetailScreen(
+        profile: profile,
+        proxy: widget.proxy,
+        // 透传句柄：详情页点标签时把请求递回**本页**执行，留在同一个页面，
+        // 不新开标签页（见 widgets/tag_browse.dart 的说明）。
+        tagBrowse: tagBrowseRequest,
+      ),
       transitionsBuilder: (_, a, __, child) {
         final curved = CurvedAnimation(parent: a, curve: Curves.easeInOutCubic);
         return FadeTransition(
@@ -471,11 +477,40 @@ class UserListScreenState extends State<UserListScreen> {
     );
   }
 
+  /// 递给别人（详情页）的「在本页按标签查找」句柄。
+  ///
+  /// 每次取都是新实例，但行为绑定到本页的 [enterTagSearch]，所以详情页
+  /// 拿到后即使用户已经离开本页，调用也只是驱动本页的状态——不会去操作
+  /// 一个已释放的 State（那时 `_api` 已 dispose）。
+  TagBrowseRequest get tagBrowseRequest =>
+      TagBrowseRequest((tag) => enterTagSearch(tag));
+
+  /// 从**页面外部**进入某个标签的查找模式（供别的页面调用，留在本页不跳转）。
+  ///
+  /// 为什么不另开一个标签页：用户明确要求「tag 页面需要是同一个页面，不能
+  /// 增加认知负担」。另开页面的话，同一个「看某标签下的人」的事就有两个入口、
+  /// 两个返回行为、两套空/错/加载态——多出来的认知负担全在「我刚才是在哪」
+  /// 上。而本页已经把这件事做全了（搜索框点推荐走的就是 [_enterTagSearch]，
+  /// 全量分页、并集筛选、下拉刷新都在本页）。
+  ///
+  /// [callback] 收到是否真的切换了（标签名为空、或与当前选中相同都会返回
+  /// false），调用方可用它决定要不要额外提示。
+  bool enterTagSearch(String tag, {void Function(bool changed)? callback}) {
+    final picked = tag.trim().replaceFirst(RegExp(r'^#+'), '').trim();
+    if (picked.isEmpty) {
+      callback?.call(false);
+      return false;
+    }
+    _enterTagSearch(picked);
+    callback?.call(true);
+    return true;
+  }
+
   /// 点了某个标签（搜索框推荐下拉）→ **立刻**按这个标签查找。
   ///
   /// 走 [_loadTagUsers] 那条图站全量分页的路（`/api/tag/<tag>`），不是搜索框
   /// `#` 那条 `by=tag`：后者 LIMIT 15 且无游标，点了「女性」只看到 11 个人却
-  /// 像看全了（实测 女性 total=7580）。
+  /// 像看全了（实测 女性 total=7591 人）。
   ///
   /// 三个状态必须一次写齐，且**不复用 [_onSearchChanged] 的 300ms 防抖**：
   /// 用户已经用鼠标明确指了标签，再等 300ms 是白等，而且防抖里那套
@@ -998,6 +1033,12 @@ class _PartialFailureBanner extends StatelessWidget {
 }
 
 /// tag 搜索命中非空时的截断说明：服务端 LIMIT 15、无游标，
+/// `?by=tag&search=<tag>` 的服务端返回上限（该接口无游标/offset）。
+///
+/// 原先定义在已删除的 `tag_user_list_screen.dart`，本页仍在用它给「搜索框里
+/// 打了标签名」那条路径标注截断，所以搬到这里。
+const int kTagSearchLimit = 15;
+
 /// 所以这里只有说明文字，没有"加载更多"。
 class _TagCapFooter extends StatelessWidget {
   /// 服务端（合并去重**前**）返回的条数，用于判断是否触顶。

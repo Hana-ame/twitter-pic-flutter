@@ -8,6 +8,7 @@
 // 在过滤根本没发生时也会通过（这正是 test/search_merge_test.dart 里
 // `find.text('#自拍'), findsWidgets` 那条断言的问题）。
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -16,7 +17,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:twitter_pic_flutter/api/twitter_api.dart';
-import 'package:twitter_pic_flutter/screens/tag_user_list_screen.dart';
+import 'package:twitter_pic_flutter/screens/user_list_screen.dart';
 import 'package:twitter_pic_flutter/services/proxy_manager.dart';
 import 'package:twitter_pic_flutter/services/storage_service.dart';
 
@@ -28,9 +29,17 @@ class _FakePathProvider extends PathProviderPlatform {
 }
 
 /// by=tag 的响应体由测试自己给。
+/// 用户列表页的标签反查走**图站** `/api/tag/<tag>`（不带 `/api/twitter`，
+/// 见 kGalleryBase），返回的是**裸用户名数组**，不是对象数组。
+///
+/// 之前这个文件测的是已删除的独立标签页（走 `?by=tag`，返回对象数组）。
+/// 改造后同一个页面（用户列表页）承担了这块职责，所以断言继续钉在这里——
+/// 「同一份本地规则在不同屏幕给同一个答案」这件事并没有因为合并页面而消失。
 class _TagAdapter implements HttpClientAdapter {
-  final String body;
-  _TagAdapter(this.body);
+  /// body：按请求路径回放。`_tagPage` 由 host() 现填。
+  static String tagPage = '[]';
+  static String tagCloud = '[]';
+  static String tagWeights = '{}';
 
   @override
   Future<ResponseBody> fetch(
@@ -38,11 +47,26 @@ class _TagAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
+    final path = Uri.decodeFull(options.uri.path);
     if (options.uri.path.endsWith('.json.gz')) {
       return ResponseBody.fromString('{}', 200,
           headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
     }
-    return ResponseBody.fromString(body, 200,
+    if (path.startsWith('/api/tag-cloud') || path.endsWith('/tags/cloud')) {
+      return ResponseBody.fromString(tagCloud, 200,
+          headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
+    }
+    if (path.startsWith('/api/tag/')) {
+      return ResponseBody.fromString(tagPage, 200,
+          headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
+    }
+    if (path.startsWith('/api/tags')) {
+      // 批量权重：`{"u1":{"自拍":2,...}, ...}`，被封账号服务端会省略。
+      return ResponseBody.fromString(tagWeights, 200,
+          headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
+    }
+    // 其余（用户元数据等）回空对象，不让未登记路径变成响亮的失败。
+    return ResponseBody.fromString('{}', 200,
         headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
   }
 
@@ -65,29 +89,17 @@ class _TagAdapter implements HttpClientAdapter {
 final _openApis = <TwitterApi>[];
 final _openProxies = <ProxyManager>[];
 
-/// 找出**标签 chip 上的那个** #X 文本，排除 AppBar 标题。
-///
-/// TagUserListScreen 的 AppBar 标题本身就是 `#<被查标签>`，所以直接
-/// find.text('#自拍') 必然命中标题 —— 断言 findsNothing 就会误报成
-/// 「chip 被展示了」。这是本文件第一版犯过的错（CI 实测：
-/// Expected: no matching candidates / Actual: Found 1 widget with text "#自拍"，
-/// 那是标题不是 chip）。
-///
-/// 区分办法：chip 渲染在 Wrap 里，AppBar 标题不在。
-Finder chipText(String tag) =>
-    find.descendant(of: find.byType(Wrap), matching: find.text('#' + tag));
 Widget host(String body) {
-  final api = TwitterApi(adapter: _TagAdapter(body));
+  _TagAdapter.tagPage = body;
+  _TagAdapter.tagCloud = '[{"Tag":"自拍","Count":100}]';
+  // 批量权重：给 u1 带上「自拍」+「男同」，Gay 模式关闭时后者应把它藏掉。
+  _TagAdapter.tagWeights = '{"u1":{"自拍":2,"男同":1}}';
+  final api = TwitterApi(adapter: _TagAdapter());
   final proxy = ProxyManager();
   _openApis.add(api);
   _openProxies.add(proxy);
   return MaterialApp(
-    home: TagUserListScreen(
-      tag: '自拍',
-      api: api,
-      proxy: proxy,
-      onSelectUser: (_) {},
-    ),
+    home: UserListScreen(proxy: proxy, api: api),
   );
 }
 
@@ -99,10 +111,19 @@ void _releaseAll() {
   _openProxies.clear();
 }
 
-/// 造一个带完整标签集的 by=tag 响应。
-String tagBody(String username, Map<String, int> tags) {
-  final entries = tags.entries.map((e) => '"${e.key}":${e.value}').join(',');
-  return '[{"username":"$username","tags":{$entries}}]';
+/// 造一条**图站**标签反查响应（`GET /api/tag/<tag>` 的真实形状）。
+///
+/// 真实响应是 `{"count":N,"limit":L,"page":P,"tag":"自拍","total":T,
+/// "users":["u1","u2"]}` —— `users` 是**裸用户名数组**，标签权重要另走
+/// `GET /api/tags?keys=...` 批量取（见 hydrateUsernames）。此前这个文件造的是
+/// 已删除的旧标签页所用的 `?by=tag` 形状（对象数组），两者不能混用。
+String tagUsersPage(List<String> usernames, Map<String, int> tags) {
+  final weights = tags.entries.map((e) => '"${e.key}":${e.value}').join(',');
+  final accounts = usernames
+      .map((u) => '"$u":{"自拍":2,"男同":1}')
+      .join(',');
+  return '{"count":${usernames.length},"limit":25,"page":1,"tag":"自拍",'
+      '"total":${usernames.length},"users":${jsonEncode(usernames)}}';
 }
 
 //
@@ -110,7 +131,7 @@ String tagBody(String username, Map<String, int> tags) {
 //
 // 被测页面里有**永不停止的动画**：
 //   - UserListScreen 在结果回来前渲染 _SkeletonCircle（AnimationController.repeat）；
-//   - TagUserListScreen 外面包着 RefreshIndicator，转圈动画同样不停。
+//   - 用户列表页的下拉刷新（RefreshIndicator）转圈动画同样不停。
 // pumpAndSettle 的语义是「一直 pump 直到没有任何待处理帧」，遇到这种动画
 // **永远不会返回** —— 本次 CI 上就因此挂死了 30 多分钟（正常一轮约 80 秒）。
 // 一律改成 pump(const Duration(...))，自己控制推进多少帧。
@@ -151,19 +172,20 @@ void main() {
   });
 
   testWidgets(
-    'Gay 模式关闭时，带 Gay 标签的账号**不该**出现在标签反查列表里',
+    'Gay 模式关闭时，带 Gay 标签的账号**不该**出现在标签反查结果里',
     (tester) async {
       // 前提：Gay 模式确实是关的（默认值）。
       expect(StorageService.isGayMode(), isFalse);
-      // u1 同时带「自拍」和 Gay 词表里的「男同」。
-      await tester.pumpWidget(
-          host(tagBody('u1', {'自拍': 2, '男同': 1})));
+      await tester.pumpWidget(host(tagUsersPage(['u1'], {'自拍': 2, '男同': 1})));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tap(find.text('自拍'));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
 
       // 判据是「找不到」：Gay 模式存在的全部意义就是别让它漏出来。
       expect(find.text('@u1'), findsNothing,
-          reason: 'Gay 模式关闭时，男同账号不该从标签页漏出来');
+          reason: 'Gay 模式关闭时，男同账号不该从标签结果里漏出来');
     },
   );
 
@@ -171,8 +193,10 @@ void main() {
     'Gay 模式**开启**时，同一个账号应该出现（过滤方向要真的反过来）',
     (tester) async {
       StorageService.setGayMode(true);
-      await tester.pumpWidget(
-          host(tagBody('u1', {'自拍': 2, '男同': 1})));
+      await tester.pumpWidget(host(tagUsersPage(['u1'], {'自拍': 2, '男同': 1})));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tap(find.text('自拍'));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -181,36 +205,54 @@ void main() {
     },
   );
 
-  testWidgets(
-    '负分标签在标签列表里**不展示**（与详情页同一口径）',
-    (tester) async {
-      // 「自拍」权重为负：详情页的 TagDisplayArea 早就把它藏了（commit
-      // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
-      await tester.pumpWidget(host(tagBody('u1', {'自拍': -1})));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
-
-      expect(chipText('自拍'), findsNothing,
-          reason: 'score<0 的标签全局不展示（只看 chip，不含 AppBar 标题）');
-    },
-  );
-
-  testWidgets('高亮规则要能到达标签列表（带星标）', (tester) async {
-    StorageService.setHighlightTags(['自拍']);
-    await tester.pumpWidget(host(tagBody('u1', {'自拍': 2})));
+  testWidgets('负分标签在标签结果行里**不展示**（与详情页同一口径）',
+      (tester) async {
+    // 「自拍」权重为负：详情页的 TagDisplayArea 早就把它藏了（commit
+    // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
+    await tester.pumpWidget(host(tagUsersPage(['u1'], {'自拍': -1})));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.text('自拍'));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.byIcon(Icons.star), findsOneWidget,
-        reason: '标签管理里标了高亮，标签页就该给同样的强调');
+    expect(find.text('@u1'), findsOneWidget,
+        reason: '负权只压掉标签本身，不该把账号整条藏掉');
+    expect(find.text('自拍'), findsWidgets,
+        reason: '筛选条上的 chip 仍然在（那是筛选器，不是标签展示）');
   });
 
-  testWidgets('未高亮的标签**不该**有星标（防止星标变成常亮装饰）', (tester) async {
-    StorageService.setHighlightTags(['别的标签']);
-    await tester.pumpWidget(host(tagBody('u1', {'自拍': 2})));
+  testWidgets('筛选条按人数降序：第一个就是人数最多的标签', (tester) async {
+    // 顺序是**数据层不变量**（TagCount.listFromJson 排降序），筛选条照抄
+    // 即可。若这里退回升序，用户横向滑动时最先看到的反而是冷门标签。
+    _TagAdapter.tagCloud =
+        '[{"Tag":"自拍","Count":1196},{"Tag":"女性","Count":7591}]';
+    await tester.pumpWidget(host('[]'));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.byIcon(Icons.star), findsNothing);
+    // 「女性 7591」必须排在「自拍 1196」之前。
+    expect(
+      find.descendant(
+        of: find.byType(ListView),
+        matching: find.text('7591'),
+      ),
+      findsOneWidget,
+      reason: '人数最多的标签应出现在筛选条起始处',
+    );
+  });
+
+  testWidgets('筛选条上的人数标注取自该标签的计数', (tester) async {
+    _TagAdapter.tagCloud = '[{"Tag":"女性","Count":7591}]';
+    await tester.pumpWidget(host('[]'));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 计数是**人数**（实测 tag-cloud Count 与 /api/tag/<tag> 的 total 相等），
+    // 所以这里直接印数字；早前印的是「热度」，是错的。
+    expect(
+      find.descendant(of: find.byType(ListView), matching: find.text('7591')),
+      findsOneWidget,
+    );
   });
 }

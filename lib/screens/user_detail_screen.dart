@@ -18,13 +18,25 @@ import '../widgets/twitter_video.dart';
 import '../widgets/tag_display_area.dart';
 import '../widgets/tag_selector_modal.dart';
 import '../widgets/horizontal_button_row.dart';
-import 'tag_user_list_screen.dart';
+import '../widgets/tag_browse.dart';
 
 class UserDetailScreen extends StatefulWidget {
   final UserMetaData profile;
   final ProxyManager proxy;
 
-  const UserDetailScreen({super.key, required this.profile, required this.proxy});
+  /// 「留在用户列表页按标签查找」的请求句柄，由来源页透传。
+  ///
+  /// 传了（正常路径，从用户列表页点进来）→ 点标签**留在用户列表页**，
+  /// 不再 push 独立的 `TagUserListScreen`。
+  /// 不传 → 退回到旧的 push 独立标签页，并如实说明「此页不支持就地切换」。
+  final TagBrowseRequest? tagBrowse;
+
+  const UserDetailScreen({
+    super.key,
+    required this.profile,
+    required this.proxy,
+    this.tagBrowse,
+  });
 
   @override
   State<UserDetailScreen> createState() => _UserDetailScreenState();
@@ -661,25 +673,47 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       case 8:
         return TagDisplayArea(
           tags: _userTags,
-          onTapTag: (tag) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                // 不再传 onSelectUser：标签页自己 push 详情页，返回键才能
-                // 一步回到这批标签结果。此前由本页用**自己的 context** push，
-                // 新详情页压在标签页之上，标签页被埋进栈里。
-                builder: (_) => TagUserListScreen(
-                  tag: tag,
-                  api: _api,
-                  proxy: widget.proxy,
-                ),
-              ),
-            );
-          },
+          onTapTag: (tag) => _openTagInPlace(tag),
         );
       default:
         return const SizedBox(height: 4);
     }
+  }
+
+  /// 点标签 → **留在用户列表页**按该标签查找，不新开标签页。
+  ///
+  /// 三件事的顺序不能换：
+  ///  1. 先把请求递回用户列表页（它会真的去加载，状态落在它自己身上）；
+  ///  2. 递回成功才 pop 详情页——否则 pop 完却什么都没切换，用户被丢回
+  ///     列表页但看不到任何变化，比不响应更难理解；
+  ///  3. pop 用**本页自己的** Navigator，不传 context 给别人 pop（Flutter
+  ///     里 `Navigator.of(本页 context)` 才能保证弹的是压着本页的那一层）。
+  ///
+  /// 拿不到请求句柄时（深链直接打开的详情页）退回旧的 push 独立标签页，
+  /// 并如实说明原因，而不是点了没反应。
+  void _openTagInPlace(String tag) {
+    final req = widget.tagBrowse;
+    if (!canBrowseTagInPlace(req)) {
+      _showTagBrowseUnavailable();
+      return;
+    }
+    req!.enter(tag, onSwitched: () {
+      if (!mounted) return;
+      // 能 pop 才 pop：若本页已是栈底（例如它被 replace 过），pop 会连带
+      // 弹掉列表页，那比不 pop 更糟——此时让标签结果留在列表页即可。
+      final nav = Navigator.maybeOf(context);
+      if (nav != null && nav.canPop()) nav.pop();
+    });
+  }
+
+  /// 明确告知「此页不支持就地切标签」，并给出仍然可用的旧路径。
+  void _showTagBrowseUnavailable() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('此页不支持标签就地查看，请从用户列表进入'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   Widget _pill(String label, IconData icon, Color color, VoidCallback onTap) {

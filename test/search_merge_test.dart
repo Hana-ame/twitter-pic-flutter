@@ -7,7 +7,7 @@
 //      供 UI 区分「出错 / 部分失败 / 真·空」；
 //   3. widget 级：`#词` 语法只走 tag 路、tag 模式下隐藏"添加此用户"、
 //      200+null（旧服务端不认识 by=tag）必须渲染成错误态而不是空列表、
-//      TagUserListScreen 的三态与截断说明。
+//      标签页的三态与截断说明（标签页已于「同页查看」改造后删除）。
 //
 // 网络全部走假适配器（骨架仿 api_url_test.dart / fav_list_test.dart），
 // 不发真实请求；setUp/tearDown 成对调 TwitterApi.resetForTests() 隔离静态缓存。
@@ -21,7 +21,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:twitter_pic_flutter/api/twitter_api.dart';
 import 'package:twitter_pic_flutter/models/user.dart';
-import 'package:twitter_pic_flutter/screens/tag_user_list_screen.dart';
 import 'package:twitter_pic_flutter/screens/user_list_screen.dart';
 import 'package:twitter_pic_flutter/services/proxy_manager.dart';
 import 'package:twitter_pic_flutter/services/storage_service.dart';
@@ -311,99 +310,4 @@ void main() {
     });
   });
 
-  group('TagUserListScreen', () {
-    late Directory tmp;
-
-    setUp(() async {
-      tmp = await Directory.systemTemp.createTemp('search_merge_test_tag');
-      PathProviderPlatform.instance = _FakePathProvider(tmp.path);
-      StorageService.resetForTests();
-      TwitterApi.resetForTests();
-      await StorageService.ensureInitialized();
-    });
-
-    tearDown(() async {
-      StorageService.resetForTests();
-      TwitterApi.resetForTests();
-      if (await tmp.exists()) await tmp.delete(recursive: true);
-    });
-
-    Widget host(String tag, TwitterApi api, void Function(UserMetaData) onSelect) =>
-        MaterialApp(
-          home: TagUserListScreen(
-            tag: tag,
-            api: api,
-            proxy: ProxyManager(),
-            onSelectUser: onSelect,
-          ),
-        );
-
-    testWidgets('200+null → 错误态；重试可再发请求', (tester) async {
-      final adapter = _ByRouteAdapter(by: {'tag': 'null'});
-      final api = TwitterApi(adapter: adapter);
-      await tester.pumpWidget(host('自拍', api, (_) {}));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
-
-      expect(find.text('标签用户加载失败：服务端可能未就绪'), findsOneWidget);
-      expect(find.textContaining('没有用户命中'), findsNothing);
-
-      final tagReqsBefore =
-          adapter.seen.where((o) => o.uri.queryParameters['by'] == 'tag').length;
-      await tester.tap(find.text('重试'));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
-      final tagReqsAfter =
-          adapter.seen.where((o) => o.uri.queryParameters['by'] == 'tag').length;
-      expect(tagReqsAfter, greaterThan(tagReqsBefore));
-      api.dispose();
-    });
-
-    testWidgets('传入带 # 的标签会被归一化后精确查询', (tester) async {
-      final adapter = _ByRouteAdapter(by: {'tag': '[]'});
-      final api = TwitterApi(adapter: adapter);
-      await tester.pumpWidget(host('#自拍', api, (_) {}));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
-
-      final req = adapter.seen
-          .firstWhere((o) => o.uri.queryParameters['by'] == 'tag');
-      expect(req.uri.queryParameters['search'], '自拍');
-      expect(find.textContaining('没有用户命中'), findsOneWidget);
-      api.dispose();
-    });
-
-    testWidgets('命中列表：用户行显示命中标签；满 15 个如实标注截断且无加载更多',
-        (tester) async {
-      final users = <String>[
-        for (var i = 1; i <= kTagSearchLimit; i++)
-          '{"username":"u$i","tags":{"自拍":${kTagSearchLimit - i}}}',
-      ].join(',');
-      final adapter = _ByRouteAdapter(by: {'tag': '[$users]'});
-      final api = TwitterApi(adapter: adapter);
-      UserMetaData? selected;
-      await tester.pumpWidget(host('自拍', api, (m) => selected = m));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
-
-      expect(find.text('@u1'), findsOneWidget);
-      expect(find.text('#自拍'), findsWidgets); // 至少首行的命中标签 chip
-      // 没有任何"加载更多"按钮。
-      expect(find.text('加载更多'), findsNothing);
-
-      // 点用户 → 外注回调收到已拉好的 UserMetaData。
-      // （必须在 scrollUntilVisible 之前：ListView 懒建，滚到尾部后 u2 行会被回收。）
-      await tester.tap(find.text('@u2'));
-      await tester.pump(const Duration(milliseconds: 100));
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(selected, isNotNull);
-
-      await tester.scrollUntilVisible(
-        find.textContaining('已达服务端返回上限'),
-        100,
-      );
-      expect(find.textContaining('其余命中已被截断'), findsOneWidget);
-      api.dispose();
-    });
-  });
 }
