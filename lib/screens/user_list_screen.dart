@@ -406,6 +406,10 @@ class UserListScreenState extends State<UserListScreen> {
         _loading = false;
       });
       _refreshVisible();
+      // 后台预热（fire-and-forget，不阻塞渲染）：裸列表立即显示，
+      // 同时预热前几行的元数据——用户滚动到时缓存已命中，秒显头像昵称，
+      // 不用等每行各自的 1~2s json.gz 下载（「显示更多太慢」的直接来源）。
+      _prewarmMeta(users);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -442,6 +446,8 @@ class UserListScreenState extends State<UserListScreen> {
   void _appendUsers(List<TwitterUser> newUsers) {
     _users.addAll(dedupeByUsername(newUsers, existing: _users));
     _refreshVisible();
+    // 翻页新增的行同样预热（fire-and-forget），滚动到时缓存已命中。
+    _prewarmMeta(newUsers);
   }
 
   Future<void> _openDetail(UserMetaData profile) async {
@@ -881,6 +887,38 @@ class UserListScreenState extends State<UserListScreen> {
     final filtered = filterUsersByTags(source, _selectedTags);
     _visibleUsers =
         applyVisibleRules(filtered, StorageService.shouldHideUser);
+  }
+
+  /// 后台预热元数据：**不阻塞渲染**（fire-and-forget）。
+  ///
+  /// 列表/翻页拿到裸用户名后立即显示，同时预热前 [_kPrewarmCount] 行的
+  /// 元数据。因为 [TwitterApi.getMetaData] 的缓存存的是 `Future`（10 分钟
+  /// TTL），预热的 in-flight 请求与行内 `_UserTile` 的懒加载**共享同一次
+  /// 网络请求**：
+  ///
+  /// - 用户滚动到某行时，若预热已完成 → 缓存命中 → 头像昵称秒显；
+  /// - 若还没完成 → 行内懒加载命中同一个 in-flight → 不重复请求。
+  ///
+  /// 并发受限（[_kPrewarmConcurrency]）：服务端 `limit.NewFastLimiter(25)`
+  /// 是 25rps 限速，25 行同时懒加载会撞限速（429 → 重试 → 反而更慢更耗）。
+  /// 预热与行内共享限流额度，不再额外叠加。
+  ///
+  /// 404 的账号由 [TwitterApi.getMetaData] 的负缓存兜住（抛错吞掉），
+  /// 行内懒加载会显示用户名占位，不白屏。
+  static const int _kPrewarmCount = 12;
+  static const int _kPrewarmConcurrency = 6;
+
+  void _prewarmMeta(List<TwitterUser> users) {
+    final names =
+        users.take(_kPrewarmCount).map((u) => u.username).toList(growable: false);
+    if (names.isEmpty) return;
+    for (var i = 0; i < names.length; i += _kPrewarmConcurrency) {
+      final chunk = names.skip(i).take(_kPrewarmConcurrency);
+      for (final n in chunk) {
+        // fire-and-forget：错误吞掉（行内懒加载兜底显示用户名）。
+        _api.getMetaData(n).then((_) {}, onError: (_) {});
+      }
+    }
   }
 
 }
