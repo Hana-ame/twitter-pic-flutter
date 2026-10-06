@@ -288,7 +288,7 @@ void main() {
   });
 
   testWidgets('筛选条按人数降序：人数最多的标签排在最前', (tester) async {
-    // 顺序是**数据层不变量**（TagCount.listFromJson 排降序），筛选条照抄
+    // 顺序是**数据层不变量**（sortedByCountDesc 排降序），筛选条照抄
     // 即可。若这里退回升序，用户横向滑动时最先看到的反而是冷门标签。
     await tester.pumpWidget(host(emptyTagPage,
         cloud: '[{"Tag":"自拍","Count":1196},{"Tag":"女性","Count":7591}]'));

@@ -27,6 +27,7 @@
 // **重复**请求（叠加上游那 25 次，每页 50 次）。
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';

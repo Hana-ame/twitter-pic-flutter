@@ -313,16 +313,21 @@ void main() {
   group('标签云顺序是「人数降序」这条不变量', () {
     // 用户明确要求：「tag 需要倒序给出选项，不能大的 tag 在后面」。
     // 这里的风险不在推荐排序（rankTagSuggestions 本来就是降序），
-    // 而在**解析层**：渲染点（标签栏、推荐下拉）都直接照抄 listFromJson
-    // 的顺序，所以顺序必须在这里就对，不能推给每个渲染点各自 reverse。
+    // 而在**数据层**：渲染点（标签栏、推荐下拉）都照抄这里的顺序，
+    // 所以顺序必须对，不能推给每个渲染点各自 reverse。
+    //
+    // ⚠️ 注意必须**显式**调 sortedByCountDesc：`TagCount.listFromJson`
+    // 只负责解析、保持服务端原序（排序是产品决定，不是解析的副作用）。
+    // 曾经把排序藏进 listFromJson，函数名里没有 sort，读代码的人无从得知
+    // 顺序已被改过——这就是这里要显式写出来的原因。
 
     test('用线上真实数字：最大的标签排第一', () {
-      final parsed = TagCount.listFromJson([
+      final parsed = sortedByCountDesc(TagCount.listFromJson([
         {'Tag': '自拍', 'Count': 1196},
         {'Tag': '男女性交', 'Count': 1558},
         {'Tag': '女性', 'Count': 7591},
         {'Tag': '二次元', 'Count': 1456},
-      ]);
+      ]));
       expect(parsed.map((e) => e.tag).toList(),
           ['女性', '男女性交', '二次元', '自拍']);
     });
@@ -330,22 +335,22 @@ void main() {
     test('反向断言：第一条的 count 必须大于最后一条', () {
       // 光断言顺序数组，若实现整体退化成升序，上面那条会红；
       // 这条额外钉住「降序」这个方向本身。
-      final parsed = TagCount.listFromJson([
+      final parsed = sortedByCountDesc(TagCount.listFromJson([
         {'Tag': '自拍', 'Count': 1196},
         {'Tag': '女性', 'Count': 7591},
-      ]);
+      ]));
       expect(parsed.first.tag, '女性');
       expect(parsed.last.tag, '自拍');
       expect(parsed.first.count, greaterThan(parsed.last.count));
     });
 
     test('整表单调不增（不是只看首尾）', () {
-      final parsed = TagCount.listFromJson([
+      final parsed = sortedByCountDesc(TagCount.listFromJson([
         {'Tag': 'a', 'Count': 3},
         {'Tag': 'b', 'Count': 99},
         {'Tag': 'c', 'Count': 50},
         {'Tag': 'd', 'Count': 1},
-      ]);
+      ]));
       for (var i = 1; i < parsed.length; i++) {
         expect(parsed[i - 1].count, greaterThanOrEqualTo(parsed[i].count),
             reason: '第 ${i - 1}→$i 位出现回升，说明不是降序：'
@@ -357,9 +362,9 @@ void main() {
     test('count 是人数口径：解析出来的就是用户数，不做任何换算', () {
       // /api/tag/<tag> 的 total 与 tag-cloud 的 Count 同源（女性均为 7591），
       // 所以解析层不做任何缩放；UI 直接标「N 人」。
-      final parsed = TagCount.listFromJson([
+      final parsed = sortedByCountDesc(TagCount.listFromJson([
         {'Tag': '女性', 'Count': 7591},
-      ]);
+      ]));
       expect(parsed.single.count, 7591);
     });
   });
