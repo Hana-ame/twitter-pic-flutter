@@ -263,13 +263,17 @@ Windows 端走 `video_player_win`（Media Foundation），没有这层回退。
 
 CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 
-1. `flutter_test`：`flutter analyze --no-fatal-infos --no-fatal-warnings` + `flutter test`
-   —— 不过不发版（`create_release` 依赖它）。
+1. `flutter_test`：`flutter analyze --no-fatal-infos --no-fatal-warnings` + `flutter test --coverage`
+   —— 不过不发版（`create_release` 依赖它）。跑在 `flutter create` 生成的
+   `/tmp/test_project` 脚手架里（`lib/` 与 `test/` 拷进去），并额外过 6 道闸门：
+   analyze、写盘测试的静态状态隔离、每个测试文件有 `main()`、**整包**测试
+   （逐文件那轮只作定位，不作判据）、lcov 结构校验、覆盖率退化门槛（当前
+   40%，基线 46.46%）。
 2. `build_android`：Go 交叉编译 `libechproxy.so`（NDK r27，arm64-v8a）→ 注入包名
    `xyz.moonchan.twitterpic`、`INTERNET`、`android:usesCleartextTraffic="true"`（本机 HTTP 代理必需）、
    应用名"推图" → 签名 → `flutter build apk --release`。
 3. `build_windows`：Go 编 `echproxy.dll` → `flutter build windows --release` → 打 zip。
-4. `create_release`：上传 APK + zip。
+4. `create_release`：算 `SHA256SUMS.txt` → 上传 APK + zip + 校验和。
 
 **版本号要自己先 bump**：CI **不会**把 tag 名写进 `pubspec.yaml`（此前这段文档
 写「版本号跟着 tag 走」，与 `build.yml` 不符——`Get version` 步只是把
