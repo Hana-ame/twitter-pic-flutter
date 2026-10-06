@@ -48,6 +48,7 @@ class _TagAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     final path = Uri.decodeFull(options.uri.path);
+    final last = path.split('/').last;
     if (options.uri.path.endsWith('.json.gz')) {
       return ResponseBody.fromString('{}', 200,
           headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
@@ -65,7 +66,27 @@ class _TagAdapter implements HttpClientAdapter {
       return ResponseBody.fromString(tagWeights, 200,
           headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
     }
-    // 其余（用户元数据等）回空对象，不让未登记路径变成响亮的失败。
+    if (path.endsWith('.json.gz')) {
+      // 元数据：给一个最小合法体，否则 hydrate 降级成「只有用户名」，
+      // 虽仍能渲染，但与真实形态不符、容易掩盖别的问题。
+      return ResponseBody.fromString(
+        '{"account_info":{"username":"$last"},"timeline":[],"urls":[]}',
+        200,
+        headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]},
+      );
+    }
+    // 首屏 `?list=users`：回**空数组**。
+    //
+    // ⚠️ 这里绝不能回 `{}`——那会让解码抛 UnexpectedResponseException、_error
+    // 非空，于是 _buildDefaultList 一直停在「加载失败」分支，**根本走不到**
+    // `_selectedTags.isNotEmpty → _buildTagFilteredList`（我为此debug 了两轮
+    // CI：症状永远是「@u1 找不到」，而真因在首屏请求上）。
+    // ⚠️ 查询串**不在** path 里：`Uri.path` 只有路径，query 要看 `.query`。
+    if (options.uri.query.contains('list=users')) {
+      return ResponseBody.fromString('[]', 200,
+          headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
+    }
+    // 其余回空对象。
     return ResponseBody.fromString('{}', 200,
         headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
   }
