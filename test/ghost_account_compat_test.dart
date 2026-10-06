@@ -20,28 +20,30 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twitter_pic_flutter/api/twitter_api.dart';
 import 'package:twitter_pic_flutter/services/storage_service.dart';
 
 /// 会记录命中次数、并按用户名决定返回 200 还是 404 的适配器。
+///
+/// ⚠️ 必须用 `options.uri.path`（含 base URL 前缀），不能用 `options.path`
+/// （那是不带 base 的裸路径）。否则 `/api/twitter/...` 与 `/api/tags` 全都
+/// 匹配不到，所有请求都掉进 500 兜底。
 class _CountingAdapter implements HttpClientAdapter {
   _CountingAdapter(this.ghost);
 
   /// 判定为「幽灵」的账号集合：这些名字打元数据必然 404。
   final Set<String> ghost;
 
+  /// 用户名 → 元数据被请求的次数。
   final Map<String, int> metaHits = <String, int>{};
+
+  /// 记录所有请求（用于诊断）。
   final List<String> paths = <String>[];
 
   /// `/api/tags` 的权重响应。真实服务端**不区分**幽灵与正常账号
   /// （实测 vivi1213813 在 /api/tags 里同样有权重），所以这里给所有人同一份。
-  late final String weights = jsonEncode({
-    for (final n in allNames) n: <String, int>{'女性': 1},
-  });
-
-  late final List<String> allNames;
+  String weights = '{}';
 
   @override
   Future<ResponseBody> fetch(
@@ -49,37 +51,33 @@ class _CountingAdapter implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
-    final path = options.path;
-    paths.add(path);
+    final uri = options.uri;
+    final full = uri.toString();
+    paths.add(full);
 
-    ResponseBody ok(String body) => ResponseBody.fromString(
+    ResponseBody json(int code, String body) => ResponseBody.fromString(
           body,
-          200,
+          code,
           headers: <String, List<String>>{
             'content-type': <String>['application/json; charset=utf-8'],
           },
         );
 
-    if (path.contains('/api/tags?') || path.contains('/api/tags&')) {
-      return ok(weights);
+    // 权重端点在 gallery 客户端上（base 是站点 origin，不带 /api/twitter 前缀）。
+    if (uri.path == '/api/tags' || uri.path == '/api/account-tags') {
+      return json(200, weights);
     }
 
-    // 元数据：路径形如 /api/twitter/<name>.json.gz
-    final m = RegExp(r'/api/twitter/([^/?]+)\.json\.gz').firstMatch(path);
+    // 元数据端点在 twitter 客户端上（base 含 /api/twitter 前缀）。
+    final m = RegExp(r'^/api/twitter/([^/?]+)\.json\.gz$').firstMatch(uri.path);
     if (m != null) {
       final name = Uri.decodeComponent(m.group(1)!);
       metaHits[name] = (metaHits[name] ?? 0) + 1;
       if (ghost.contains(name)) {
         // 与线上实测一致：200 之外是带 error 字段的 JSON 404。
-        return ResponseBody.fromString(
-          jsonEncode({'error': '查询用户失败: 没有进入 rows.Next()'}),
-          404,
-          headers: <String, List<String>>{
-            'content-type': <String>['application/json; charset=utf-8'],
-          },
-        );
+        return json(404, jsonEncode({'error': '查询用户失败: 没有进入 rows.Next()'}));
       }
-      return ok(jsonEncode({
+      return json(200, jsonEncode({
         'total_urls': 3,
         'timeline': <dynamic>[],
         'account_info': <String, dynamic>{
@@ -90,18 +88,17 @@ class _CountingAdapter implements HttpClientAdapter {
       }));
     }
 
-    return ResponseBody.fromString(
-      jsonEncode({'error': 'no route registered for $path'}),
-      500,
-      headers: <String, List<String>>{
-        'content-type': <String>['application/json; charset=utf-8'],
-      },
-    );
+    return json(500, jsonEncode({'error': 'no route registered for $full'}));
   }
 
   @override
   void close({bool force = false}) {}
 }
+
+/// 构造一个 `/api/tags` 的权重响应，覆盖 [names] 里的所有人。
+String _weightsFor(Iterable<String> names) => jsonEncode({
+  for (final n in names) n: <String, int>{'女性': 1},
+});
 
 void main() {
   // TwitterApi 的元数据缓存与 404 负缓存都是 static 全实例共享，必须重置。
@@ -113,14 +110,18 @@ void main() {
   test('① 404 进负缓存：第二次调用不再发请求', () async {
     const name = 'vivi1213813';
     final adapter = _CountingAdapter(<String>{name});
-    adapter.allNames = <String>[name];
+    adapter.weights = _weightsFor(<String>[name]);
     final api = TwitterApi(adapter: adapter);
     addTearDown(api.dispose);
 
     // 第一次：真发一次，拿到 404。
     await expectLater(
       () => api.getMetaData(name),
-      throwsA(isA<HttpException>().having((e) => e.statusCode, 'statusCode', 404)),
+      throwsA(isA<DioException>().having(
+        (e) => asHttpException(e)?.statusCode,
+        'statusCode',
+        404,
+      )),
     );
     expect(adapter.metaHits[name], 1,
         reason: '第一次必须真发请求');
@@ -130,26 +131,31 @@ void main() {
     // 第二次：**不应**再发请求 —— 这正是「下一页极慢」的修复点。
     await expectLater(
       () => api.getMetaData(name),
-      throwsA(isA<HttpException>().having((e) => e.statusCode, 'statusCode', 404)),
+      throwsA(isA<DioException>().having(
+        (e) => asHttpException(e)?.statusCode,
+        'statusCode',
+        404,
+      )),
     );
     expect(adapter.metaHits[name], 1,
         reason: '负缓存命中后不该再发第 2 次请求，实际发了 '
             '${adapter.metaHits[name]} 次 —— 「下一页极慢」没修好');
-
-    // 形态一致性：负缓存抛的仍是 404 HttpException，hydrate 的
-    // `e is HttpException && statusCode == 404` 才能同样识别它。
   });
 
   test('①b 非 404 失败不进负缓存（保持可自愈）', () async {
     final adapter = _CountingAdapter(<String>{});
-    adapter.allNames = <String>['alice'];
+    adapter.weights = _weightsFor(<String>['alice']);
     final api = TwitterApi(adapter: adapter);
     addTearDown(api.dispose);
 
     // 未注册路由 → 适配器回 500。
     await expectLater(
       () => api.getMetaData('alice'),
-      throwsA(isA<HttpException>()),
+      throwsA(isA<DioException>().having(
+        (e) => asHttpException(e)?.statusCode,
+        'statusCode',
+        500,
+      )),
     );
     expect(TwitterApi.isKnownMissing('alice'), isFalse,
         reason: '5xx 是临时故障，不该被当成「账号不存在」永久记住');
@@ -161,7 +167,7 @@ void main() {
     final names = <String>[...alive, ...ghosts];
 
     final adapter = _CountingAdapter(ghosts);
-    adapter.allNames = names;
+    adapter.weights = _weightsFor(names);
     final api = TwitterApi(adapter: adapter);
     addTearDown(api.dispose);
 
@@ -182,15 +188,11 @@ void main() {
 
     // 第二次 hydrate（模拟翻页再遇到同一批人）：幽灵账号已在负缓存里，
     // **一个请求都不该再发**。
-    final before = adapter.metaHits.length;
-    final totalBefore =
-        adapter.metaHits.values.fold<int>(0, (a, b) => a + b);
+    final totalBefore = adapter.metaHits.values.fold<int>(0, (a, b) => a + b);
     await api.hydrateUsernames(ghosts.toList());
     final totalAfter = adapter.metaHits.values.fold<int>(0, (a, b) => a + b);
     expect(totalAfter, totalBefore,
         reason: '已 404 的账号在负缓存 TTL 内不该再发请求；'
             '新发次数=${totalAfter - totalBefore}');
-    expect(adapter.metaHits.length, before,
-        reason: '负缓存内的账号不该出现新的命中记录');
   });
 }
