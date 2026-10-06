@@ -241,7 +241,8 @@ class TwitterApi {
       '/api/tag-cloud',
       queryParameters: {'limit': limit},
     );
-    return TagCount.listFromJson(resp.data);
+    // 展示序（人数降序）是**这个调用点**的决定，不是解析的副作用。
+    return sortedByCountDesc(TagCount.listFromJson(resp.data));
   }
 
   /// 某个标签下的**完整**用户名单（分页）：`GET /api/tag/<tag>?limit=&offset=`。

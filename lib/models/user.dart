@@ -74,30 +74,50 @@ class TagCount {
     );
   }
 
-  /// 解析标签云响应。`[tag]` 传给 [TwitterUser.tags] 这类按标签名匹配的判据。
+  /// 解析标签云响应，**保持服务端原序**。
   ///
-  /// **按计数降序**（人数多的在前），同数按标签名升序，保证渲染稳定不抖。
+  /// 这里刻意**不排序**：`fromJson` 的职责是「把 JSON 变成对象」，排序是另一个
+  /// 决定。把它藏进来会让 `listFromJson` 这个名字骗掉所有调用方——读代码的人
+  /// 以为拿到的是服务端顺序，实际拿到的是别人排过的序，而「为什么是这个顺序」
+  /// 只有实现者知道。
   ///
-  /// ⚠️ 为什么这里必须降序而不是升序：服务端 `/api/tag-cloud` 返回的顺序
-  /// 没有产品含义，但**照抄它的顺序就会把「人数最多的标签」放到最后**——
-  /// 用户横向滑动标签栏时最先看到的应该是最热门的。原先这里排的是**升序**
-  /// （低在前），把「要调用方自己 reverse」的责任推给了每个渲染点，于是
-  /// `UserListScreen` 的标签栏就直接按升序画了，最大的标签在最后。
+  /// 要**人数降序**（人数多的在前）的展示序，请显式用 [sortedByCountDesc]：
   ///
-  /// 降序在这里落地而不是在各个渲染点补救，是为了让**顺序成为数据层的不变量**：
-  /// 新的渲染点默认就是对的，不必每个都记得 reverse 一次。
-  static List<TagCount> listFromJson(dynamic raw) {
-    final list = _list(raw)
-        .whereType<Map>()
-        .map((e) => TagCount.fromJson(_map(e)))
-        .where((e) => e.tag.isNotEmpty)
-        .toList();
-    list.sort((a, b) {
-      final byCount = b.count.compareTo(a.count);
-      return byCount != 0 ? byCount : a.tag.compareTo(b.tag);
-    });
-    return list;
-  }
+  /// ```dart
+  /// final cloud = sortedByCountDesc(TagCount.listFromJson(resp.data));
+  /// ```
+  static List<TagCount> listFromJson(dynamic raw) =>
+      _list(raw)
+          .whereType<Map>()
+          .map((e) => TagCount.fromJson(_map(e)))
+          .where((e) => e.tag.isNotEmpty)
+          .toList();
+}
+
+/// **人数降序**（人数多的在前），同数按标签名升序——标签展示的唯一标准序。
+///
+/// ⚠️ 为什么是显式函数，而不是让 [TagCount.listFromJson] 顺手排：
+///
+/// - 上一版把排序塞进 `listFromJson`，函数名里没有 sort，**排序成了解析的
+///   副作用**。两个后果：(a) 读代码的人无法得知顺序已被改过；(b) 只想解析的
+///   调用方被迫拿到一个被排过序的列表，而这个顺序「是谁的决定」无从追溯。
+/// - 顺序是**产品决定**（人数多的排前面），不是解析的必然结果。显式命名后，
+///   「这里要展示序」和「这里只要数据」在调用点上一眼可辨。
+///
+/// **就地排序**并返回同一个引用。传入的列表若还要保留原序，请调用方自己
+/// 先 `List.of(...)` —— 这不是本函数该管的。
+List<TagCount> sortedByCountDesc(List<TagCount> items) {
+  items.sort(compareTagCountDesc);
+  return items;
+}
+
+/// 「人数降序 + 同数按名升序」的**唯一比较器定义**。
+///
+/// 供 [sortedByCountDesc] 使用；其它按「人数」排的判据（如搜索推荐的次级
+/// 排序）也调它，**不要重写一遍**——三处各写一份时，改动规则必然漏一处。
+int compareTagCountDesc(TagCount a, TagCount b) {
+  final byCount = b.count.compareTo(a.count);
+  return byCount != 0 ? byCount : a.tag.compareTo(b.tag);
 }
 
 class TwitterUser {
