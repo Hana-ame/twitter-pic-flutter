@@ -608,6 +608,7 @@ class UserListScreenState extends State<UserListScreen> {
               ...results.map((u) => _UserTile(
                 key: ValueKey(u.username),
                 username: u.username,
+                user: u,
                 api: _api,
                 proxy: widget.proxy,
                 onTap: (m) => _openDetail(m),
@@ -711,6 +712,7 @@ class UserListScreenState extends State<UserListScreen> {
           return _UserTile(
             key: ValueKey(u.username),
             username: u.username,
+            user: u,
             api: _api,
             proxy: widget.proxy,
             onTap: (m) => _openDetail(m),
@@ -817,6 +819,7 @@ class UserListScreenState extends State<UserListScreen> {
           return _UserTile(
             key: ValueKey(u.username),
             username: u.username,
+            user: u,
             api: _api,
             proxy: widget.proxy,
             onTap: (m) => _openDetail(m),
@@ -1326,10 +1329,22 @@ class _TagLoadMore extends StatelessWidget {
 }
 
 class _UserTile extends StatefulWidget {
+  /// 列表行。**优先**用 [user] 里已有的昵称/头像，别再自己拉一遍。
   final String username;
   final TwitterApi api;
   final ProxyManager proxy;
   final void Function(UserMetaData) onTap;
+
+  /// 上游（hydrateUsernames）已经取好的这个账号。给了它本行就**零请求**渲染。
+  ///
+  /// ⚠️ 这不是可选的优化而是修 bug：`_visibleUsers` 本来就是
+  /// `List<TwitterUser>`，`hydrateUsernames` 已经把 nick/avatar/totalUrls 都
+  /// 填好了，但调用方只把 `u.username` 传下来，于是每一行在 `initState` 里
+  /// 又发一次 `getMetaData` —— 一页 25 行就是 25 次**重复**请求
+  /// （此前我还在 hydrateUsernames 里同样拉过一遍，等于每页 50 次）。
+  /// 404 更是致命的：失败的请求**不进缓存**，于是这些行每次重建都会再打一遍
+  /// 注定失败的往返，表现为「下一页极慢」。
+  final TwitterUser? user;
 
   const _UserTile({
     super.key,
@@ -1337,6 +1352,7 @@ class _UserTile extends StatefulWidget {
     required this.api,
     required this.proxy,
     required this.onTap,
+    this.user,
   });
 
   @override
@@ -1350,17 +1366,34 @@ class _UserTileState extends State<_UserTile> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _adopt();
   }
 
   @override
   void didUpdateWidget(_UserTile old) {
     super.didUpdateWidget(old);
-    if (old.username != widget.username) {
+    if (old.username != widget.username) _adopt();
+  }
+
+  /// 用上游已有的 [TwitterUser] 直接渲染；拿不到才自己拉。
+  ///
+  /// 分成「有数据 / 没数据」两条路，是因为**大部分列表行根本不需要请求**：
+  /// 标签页、默认列表的元数据都由 [TwitterApi.hydrateUsernames] 批量取好了，
+  /// 再逐行拉一次就是把同一份数据用两倍的往返取回来。
+  void _adopt() {
+    final u = widget.user;
+    if (u == null) {
       _meta = null;
       _loading = true;
       _load();
+      return;
     }
+    _meta = UserMetaData(
+      accountInfo: u,
+      timeline: const [],
+      totalUrls: u.totalUrls ?? 0,
+    );
+    _loading = false;
   }
 
   Future<void> _load() async {

@@ -49,11 +49,8 @@ List<TagCount> rankTagSuggestions(
     // 排序走副本：不能就地改调用方持有的标签表（那个 List 会被
     // UserListScreen 直接拿去渲染标签栏，就地排序会让搜索框的排序
     // 漏到标签栏上，两处顺序互相污染）。
-    final hot = List<TagCount>.of(cloud)
-      ..sort((a, b) {
-        final byCount = b.count.compareTo(a.count);
-        return byCount != 0 ? byCount : a.tag.compareTo(b.tag);
-      });
+    // 复用 [sortedByCountDesc]（唯一标准序），不要在这里重写一遍比较器。
+    final hot = sortedByCountDesc(List<TagCount>.of(cloud));
     return hot.take(limit).toList(growable: false);
   }
 
@@ -74,8 +71,8 @@ List<TagCount> rankTagSuggestions(
     // 2) 同一档内，匹配位置越靠前越好。
     if (a.at != b.at) return a.at.compareTo(b.at);
     // 3) 再看人数；人数相同按标签名，保证稳定不抖。
-    final byCount = b.item.count.compareTo(a.item.count);
-    return byCount != 0 ? byCount : a.item.tag.compareTo(b.item.tag);
+    //    调 [compareTagCountDesc] 而不是重写一遍——这是「人数降序」的唯一定义。
+    return compareTagCountDesc(a.item, b.item);
   });
 
   return hits.take(limit).map((h) => h.item).toList(growable: false);
