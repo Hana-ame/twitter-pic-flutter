@@ -176,6 +176,17 @@ void main() {
     // 前置 + 反向断言：**行确实渲染出来了**。没有这两条，后面的
     // 「请求数不增加」会在「整页啥都没渲染」时假通过——
     // 这正是 findsNothing 也算通过的坑。
+    // 诊断：把实际渲染出来的文本与请求路径打出来，别再靠猜。
+    // eslint 意义上这是「失败时给出可行动信息」——前几轮我连猜三次都错，
+    // 就是因为报错只说「没找到 @user0」，看不出到底渲染出了什么。
+    final rendered = tester.widgetList<Text>(find.byType(Text))
+        .map((t) => t.data)
+        .where((d) => d != null && d.isNotEmpty)
+        .toList();
+    final paths = adapter.seen.map((u) => '${u.path}?${u.query}').toList();
+    fail('诊断：\n渲染文本=${rendered.take(25).toList()}\n'
+        '请求=${paths.take(15).toList()}\n'
+        '已注册路由=${adapter.routes.keys.toList()}');
     expect(find.text('@user0'), findsOneWidget,
         reason: '前置：标签页必须真的渲染出这些行，否则请求数断言是空转');
     expect(find.text('昵称-user0'), findsOneWidget,
