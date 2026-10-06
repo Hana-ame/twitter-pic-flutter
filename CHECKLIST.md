@@ -277,8 +277,10 @@
       （⚠️ 用例里不许用 `receiveAction`，也不许在 tearDown 里
       `await debugFlushPending()`——`StorageService` 的写盘挂在假异步时钟上，
       会把整包拖到超时；见 facts-flutter-test-whole-suite-hangs-while-per-file-passes）
-- [x] **`tag_suggestions_test.dart`** — 推荐排序：前缀命中 > 子串命中 > 匹配位置 > 热度；
-      空输入返回热门榜（热度降序、标签名升序），排序走副本不就地改
+- [x] **`tag_suggestions_test.dart`** — 推荐排序：前缀命中 > 子串命中 > 匹配位置 > **人数**；
+      空输入返回热门榜（**人数降序**、标签名升序），排序走副本不就地改
+- [x] **`tag_same_page_test.dart`** — 点标签留在**同一个页面**：递回给列表页的是裸标签名、
+      切换成功才 pop、失败不 pop、空标签名不发请求、拿不到句柄时给明确提示
 
 ## CI 闸门（第 3 级判据，v0.7.4 补齐）
 
