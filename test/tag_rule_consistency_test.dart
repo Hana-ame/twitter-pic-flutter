@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:twitter_pic_flutter/api/twitter_api.dart';
+import 'package:twitter_pic_flutter/models/user.dart';
 import 'package:twitter_pic_flutter/screens/user_list_screen.dart';
 import 'package:twitter_pic_flutter/services/proxy_manager.dart';
 import 'package:twitter_pic_flutter/services/storage_service.dart';
@@ -298,18 +299,39 @@ void main() {
     },
   );
 
-  testWidgets('负分标签在标签结果行里**不展示**（与详情页同一口径）',
-      (tester) async {
-    // 「自拍」权重为负：详情页的 TagDisplayArea 早就把它藏了（commit
-    // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
-    // 前置：确认这条用例**自己构造的** fixture 里权重确实是负的，别让它在自己
-    // 没喂对数据时也「通过」。（下一条 commit 会把这条进一步换成断言**解析后**
-    // 的值，因为断言原始字符串仍然不是真正喂进 UI 的数据。）
+  testWidgets('负分标签在标签结果行里**不展示**、也不该把账号整条藏掉'
+      '（与详情页同一口径）', (tester) async {
+    // 可证伪的数据设计（借鉴 go/tags/visible_accounts_contract_test.go 的
+    // 「让两种实现必然分道扬镳」）：同一条用例里**同时**喂两个账号——
+    //   u1: 自拍 = **-1**（负权：键存在、权重为负）
+    //   u2: 自拍 = **+2**（正权）
+    // 「负权只压掉标签 chip、不藏账号」与「负权被当成隐藏依据」这两种实现，
+    // 在这份数据上给出**相反**结果：前者两个账号都可见，后者 u1 被藏掉。
+    // 只喂单账号分不出这两者（一个账号在两种实现下要么都在、要么都不在），
+    // 所以必须凑够负/正两个方向。
+    const tagWeights = '{"u1":{"自拍":-1},"u2":{"自拍":2}}';
     final fx = _fixture(
-      tagPage: tagUsersPage(['u1']),
-      tagWeights: '{"u1":{"自拍":-1}}',
+      tagPage: tagUsersPage(['u1', 'u2']),
+      tagWeights: tagWeights,
     );
-    expect(fx.tagWeights, contains('-1'));
+
+    // **前置断的是真正影响判定的那个值**：把适配器回给 `/api/tags` 的那份
+    // JSON 过一遍 UI 用的同一个解析函数 parseTagWeights（真实数据路径：
+    // getTagWeightsBatch → parseTagWeights → TwitterUser.tags → weightOf /
+    // matchesGayMode / shouldHideUser）。断原始字符串 `contains('-1')` 只能
+    // 证明「fixture 里恰好有这个字面量」，证明不了 UI 真的收到了负权——
+    // 原先那条假前置断言的就是前者。改断解析后的 Map 后，若有人把 fixture
+    // 换成全正权（或解析口径改了），这里会红，用例不会在自己没喂对数据时
+    // 假绿。
+    final parsed = <String, Map<String, int>>{};
+    (jsonDecode(tagWeights) as Map).forEach((k, v) {
+      parsed['$k'] = parseTagWeights(v);
+    });
+    expect(parsed['u1']?['自拍'], -1,
+        reason: '前置：u1 的「自拍」必须解析为负权，否则本用例测的不是负权');
+    expect(parsed['u2']?['自拍'], 2,
+        reason: '前置：u2 的「自拍」必须是正权，作为与负权对照的另一端');
+
     await tester.pumpWidget(host(fx));
     await settle(tester);
     await tester.tap(find.descendant(
@@ -318,11 +340,16 @@ void main() {
     ));
     await settle(tester);
 
+    // 同数据路径的正向断言：先把「确实渲染出了结果行」钉死，否则下面的
+    // findsNothing 在整页没渲染时也会**假通过**。
     expect(find.text('@u1'), findsOneWidget,
-        reason: '负权只压掉标签本身，不该把账号整条藏掉');
-    // 跨屏口径一致的**要害**：负权标签不该被当成「隐藏依据」。
-    // 列表页不该因为一个 -1 的标签把整条账号藏掉——详情页也是这个口径。
-    // 反向断言：也不该出现任何 -1 / 「-1」之类把权重印出来的文案。
+        reason: '负权只压掉标签本身，不该把账号整条藏掉（与 u2 同一口径）');
+    expect(find.text('@u2'), findsOneWidget,
+        reason: '正向对照：正权账号必须可见');
+
+    // 跨屏口径一致的**要害**：负权标签不该被当成「隐藏依据」。若实现把负权
+    // 当屏蔽依据，上面的 findsOneWidget(@u1) 就会红 —— 这就是数据设计成的
+    // 可证伪点。反向断言：也不该出现任何 -1 /「-1」之类把权重印出来的文案。
     expect(find.textContaining('-1'), findsNothing,
         reason: '列表页不应把负权重当展示内容');
   });
