@@ -118,12 +118,19 @@ void main() {
         {'Tag': '女性', 'Count': 100},
         {'Tag': '自拍', 'Count': 80},
       ]),
-      // 首屏 `GET /?list=users`（注意 path 就是 `/`，不带 /api/twitter——
-      // twitter_api.dart:207）。回**空数组**：这一档要的是列表形态，
-      // 回 `{}` 会让 _decodeUserList 抛 UnexpectedResponseException，
-      // 于是 _error 永久非空、后续分支全部走不到。
-      // （与 tag_rule_consistency_test.dart:85 同一个坑。）
-      '/': jsonEncode(<dynamic>[]),
+      // 首屏 `GET /?list=users`。注意**最终 path 是 `/api/twitter/`**：
+      // `getUserList` 传的 path 是 `'/'`（twitter_api.dart:207），但 Dio 的
+      // baseUrl 是 `kApiBase = '.../api/twitter'`（:19），拼出来是
+      // `/api/twitter/` + 空 path = `/api/twitter/`。
+      //
+      // 我上一轮按「path 就是 `/`」只注册了 `/`，于是这条请求 500，
+      // `_error` 永久非空 → `_buildDefaultList` 的第三分支
+      // （`_selectedTags.isNotEmpty` → 标签结果）**根本走不到**，
+      // 症状跑到「没渲染出行」上，与真因隔了三层。
+      //
+      // 回**空数组**而不是 `{}`：这一档要的是列表形态，回对象会抛
+      // UnexpectedResponseException（与 tag_rule_consistency_test.dart:85 同坑）。
+      '/api/twitter/': jsonEncode(<dynamic>[]),
       for (final n in names) '/api/twitter/$n.json.gz': _metaFor(n),
     });
   });
@@ -176,21 +183,6 @@ void main() {
     // 前置 + 反向断言：**行确实渲染出来了**。没有这两条，后面的
     // 「请求数不增加」会在「整页啥都没渲染」时假通过——
     // 这正是 findsNothing 也算通过的坑。
-    // 诊断：把实际渲染出来的文本与请求路径打出来，别再靠猜。
-    // eslint 意义上这是「失败时给出可行动信息」——前几轮我连猜三次都错，
-    // 就是因为报错只说「没找到 @user0」，看不出到底渲染出了什么。
-    final rendered = tester.widgetList<Text>(find.byType(Text))
-        .map((t) => t.data)
-        .where((d) => d != null && d.isNotEmpty)
-        .toList();
-    final selectable = tester
-        .widgetList<SelectableText>(find.byType(SelectableText))
-        .map((t) => t.data)
-        .toList();
-    final paths = adapter.seen.map((u) => '${u.path}?${u.query}').toList();
-    fail('诊断：\n错误文本=$selectable\n渲染文本=${rendered.take(25).toList()}\n'
-        '请求=${paths.take(15).toList()}\n'
-        '已注册路由=${adapter.routes.keys.toList()}');
     expect(find.text('@user0'), findsOneWidget,
         reason: '前置：标签页必须真的渲染出这些行，否则请求数断言是空转');
     expect(find.text('昵称-user0'), findsOneWidget,
