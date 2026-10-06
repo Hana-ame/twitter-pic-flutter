@@ -1,6 +1,6 @@
 # 项目总检清单
 
-> 最后核对：v0.6.0（2026-09-17）。细节见 [README](README.md)、
+> 最后核对：v0.7.4（2026-10-05）。细节见 [README](README.md)、
 > [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
 ## 目标
@@ -237,7 +237,7 @@
       只在图片完成时移除，所以下载期间 listener 数永远不为 0，取消钩子不会触发。
       真要取消得按 URL 维护引用计数，而 provider 按 URL 共享并被缓存，自己不知道还剩几个使用者。
 
-## 测试（CI `flutter_test` job，17 个文件全跑，不过不发版）
+## 测试（CI `flutter_test` job，32 个文件整包全跑，不过不发版）
 - [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）
 - [x] `media_url_test.dart` — `MediaUrl.isImage` 预取判定（只认 pbs 图片，视频不预热）
 - [x] `progressive_image_test.dart` — 解码节流三规则 + provider 缓存标识
