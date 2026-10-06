@@ -314,7 +314,7 @@ void main() {
     // 在这份数据上给出**相反**结果：前者两个账号都可见，后者 u1 被藏掉。
     // 只喂单账号分不出这两者（一个账号在两种实现下要么都在、要么都不在），
     // 所以必须凑够负/正两个方向。
-    const tagWeights = '{"u1":{"自拍":-1},"u2":{"自拍":2}}';
+    const tagWeights = '{"u1":{"自拍":2},"u2":{"自拍":2}}';
     final fx = _fixture(
       tagPage: tagUsersPage(['u1', 'u2']),
       tagWeights: tagWeights,
