@@ -31,11 +31,15 @@ class UserDetailScreen extends StatefulWidget {
   /// 不传 → 退回到旧的 push 独立标签页，并如实说明「此页不支持就地切换」。
   final TagBrowseRequest? tagBrowse;
 
+  /// 仅供测试注入（配假 `HttpClientAdapter`）；生产调用点不传。
+  final TwitterApi? api;
+
   const UserDetailScreen({
     super.key,
     required this.profile,
     required this.proxy,
     this.tagBrowse,
+    this.api,
   });
 
   @override
@@ -45,7 +49,14 @@ class UserDetailScreen extends StatefulWidget {
 class _UserDetailScreenState extends State<UserDetailScreen> {
   static const _kEmojis = ['😍', '😋', '😱', '🤢', '🐷', '😅', '💩'];
 
-  final TwitterApi _api = TwitterApi();
+  /// 生产走默认实例；测试注入假适配器（此前没有注入点，导致本页的标签/
+  /// 表情永远打真实网络，widget 测试根本没法构造出标签区）。
+  final TwitterApi _api;
+
+  /// [_api] 是否由本页创建。注入进来的实例归调用方所有——本页替它 dispose
+  /// 会让调用方（测试里的 setUp/tearDown、或复用同一实例的别处）拿到一个
+  /// 已释放的对象。
+  late final bool _ownsApi;
   late UserMetaData _profile;
   bool _showAll = false;
   int _mediaLimit = 10;
@@ -58,6 +69,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _api = widget.api ?? TwitterApi();
+    _ownsApi = widget.api == null;
     _profile = widget.profile;
     _username = _profile.accountInfo.username;
     _loadTags();
@@ -731,7 +744,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   @override
   void dispose() {
-    _api.dispose();
+    if (_ownsApi) _api.dispose();
     super.dispose();
   }
 }

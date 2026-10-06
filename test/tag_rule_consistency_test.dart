@@ -119,14 +119,15 @@ void _releaseAll() {
 /// "users":["u1","u2"]}` —— `users` 是**裸用户名数组**，标签权重要另走
 /// `GET /api/tags?keys=...` 批量取（见 hydrateUsernames）。此前这个文件造的是
 /// 已删除的旧标签页所用的 `?by=tag` 形状（对象数组），两者不能混用。
-String tagUsersPage(List<String> usernames, Map<String, int> tags) {
-  final weights = tags.entries.map((e) => '"${e.key}":${e.value}').join(',');
-  final accounts = usernames
-      .map((u) => '"$u":{"自拍":2,"男同":1}')
-      .join(',');
-  return '{"count":${usernames.length},"limit":25,"page":1,"tag":"自拍",'
-      '"total":${usernames.length},"users":${jsonEncode(usernames)}}';
-}
+/// 空标签反查响应（合法形状：`users` 是数组，不是对象数组）。
+const String emptyTagPage = '{"count":0,"limit":25,"page":1,"tag":"自拍",'
+    '"total":0,"users":[]}';
+
+/// 造一条标签反查响应。[tags] 单独喂给 `_TagAdapter.tagWeights`
+/// （批量权重端点），因为 `users` 里只有名字、没有标签。
+String tagUsersPage(List<String> usernames) =>
+    '{"count":${usernames.length},"limit":25,"page":1,"tag":"自拍",'
+    '"total":${usernames.length},"users":${jsonEncode(usernames)}}';
 
 //
 // ## 为什么全文只用有界 pump，不用 pumpAndSettle
@@ -178,7 +179,7 @@ void main() {
     (tester) async {
       // 前提：Gay 模式确实是关的（默认值）。
       expect(StorageService.isGayMode(), isFalse);
-      await tester.pumpWidget(host(tagUsersPage(['u1'], {'自拍': 2, '男同': 1})));
+      await tester.pumpWidget(host(tagUsersPage(['u1'])));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.tap(find.descendant(
@@ -198,7 +199,7 @@ void main() {
     'Gay 模式**开启**时，同一个账号应该出现（过滤方向要真的反过来）',
     (tester) async {
       StorageService.setGayMode(true);
-      await tester.pumpWidget(host(tagUsersPage(['u1'], {'自拍': 2, '男同': 1})));
+      await tester.pumpWidget(host(tagUsersPage(['u1'])));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.tap(find.descendant(
@@ -217,7 +218,7 @@ void main() {
       (tester) async {
     // 「自拍」权重为负：详情页的 TagDisplayArea 早就把它藏了（commit
     // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
-    await tester.pumpWidget(host(tagUsersPage(['u1'], {'自拍': -1})));
+    await tester.pumpWidget(host(tagUsersPage(['u1'])));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.tap(find.text('自拍'));
@@ -235,7 +236,7 @@ void main() {
     // 即可。若这里退回升序，用户横向滑动时最先看到的反而是冷门标签。
     _TagAdapter.tagCloud =
         '[{"Tag":"自拍","Count":1196},{"Tag":"女性","Count":7591}]';
-    await tester.pumpWidget(host('[]'));
+    await tester.pumpWidget(host(emptyTagPage));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
 
@@ -254,7 +255,7 @@ void main() {
 
   testWidgets('筛选条上的人数标注取自该标签的计数', (tester) async {
     _TagAdapter.tagCloud = '[{"Tag":"女性","Count":7591}]';
-    await tester.pumpWidget(host('[]'));
+    await tester.pumpWidget(host(emptyTagPage));
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
 

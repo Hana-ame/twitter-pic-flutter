@@ -130,6 +130,9 @@ void main() {
           ),
           proxy: proxy,
           tagBrowse: browse,
+          // ⚠️ 必须注入：详情页默认自建 TwitterApi() 打真实网络，
+          // 标签区永远出不来，测试无从构造 tap 目标。
+          api: api,
         )),
       );
 
