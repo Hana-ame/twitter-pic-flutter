@@ -266,9 +266,17 @@ CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 3. `build_windows`：Go 编 `echproxy.dll` → `flutter build windows --release` → 打 zip。
 4. `create_release`：上传 APK + zip。
 
-**版本号跟着 tag 走**：推 `v*` tag 时把 tag 名写进 `pubspec.yaml` 的 `version`
-（日期 tag `vYYYYMMDD.HHMMSS` 会转成三段式 `YYYYMMDD.0.HHMMSS`）；推 main 分支时
-回退用 pubspec 里的版本，避免写出非法版本号。
+**版本号要自己先 bump**：CI **不会**把 tag 名写进 `pubspec.yaml`（此前这段文档
+写「版本号跟着 tag 走」，与 `build.yml` 不符——`Get version` 步只是把
+`github.ref_name` 写进 `$GITHUB_OUTPUT` 给 Release 用，真正写 `version:` 的
+是 `build_android` 的 `sed`，而它写的是 `version: <pubspec 原值>+<RN>`）。
+所以发版顺序是：**先提交一次版本号 bump → 等 main CI 绿 → 再打 tag 指向
+那个 commit**。
+
+- `BUILD_NUM`（应用内「关于」页显示的版本）来自构建期 `-DBUILD_NUM`
+  （`lib/main.dart:34` 的 `String.fromEnvironment`），**与 pubspec 无关**——
+  所以纯 CI 改动也可以 bump 版本号，用户看到的版本不会变。
+- tag 必须打在 `origin/main` 的 HEAD 上，不是 PR 的 head（squash 后尤其如此）。
 
 发布：`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`
 
