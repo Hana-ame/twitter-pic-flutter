@@ -479,11 +479,12 @@ class UserListScreenState extends State<UserListScreen> {
 
   /// 递给别人（详情页）的「在本页按标签查找」句柄。
   ///
-  /// 每次取都是新实例，但行为绑定到本页的 [enterTagSearch]，所以详情页
-  /// 拿到后即使用户已经离开本页，调用也只是驱动本页的状态——不会去操作
-  /// 一个已释放的 State（那时 `_api` 已 dispose）。
-  TagBrowseRequest get tagBrowseRequest =>
-      TagBrowseRequest((tag) => enterTagSearch(tag));
+  /// 行为绑定到本页的 [enterTagSearch]，所以详情页拿到后即使用户已经离开
+  /// 本页，调用也只是驱动本页的状态——不会去操作一个已释放的 State
+  /// （那时 `_api` 已 dispose）。返回 null 没有对应实现：**本页是唯一
+  /// 持有标签查找状态的地方**，它给了句柄就一定接得住（[enterTagSearch]
+  /// 只在标签名非空时返回 false，那种「拒绝」本来就该如实返回给调用方）。
+  TagBrowseRequest get tagBrowseRequest => enterTagSearch;
 
   /// 从**页面外部**进入某个标签的查找模式（供别的页面调用，留在本页不跳转）。
   ///

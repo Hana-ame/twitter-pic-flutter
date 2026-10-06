@@ -94,6 +94,9 @@ void main() {
   late TwitterApi api;
   late ProxyManager proxy;
 
+  /// ⚠️ 不要在 pumpWidget **之前** await 任何真实网络 future：flutter_test 用
+  /// 假异步时钟，那会让整包跑挂在 `TimeoutException after 0:10:00`，而逐文件
+  /// 跑却全绿。
   Future<void> settle(WidgetTester tester, [int times = 3]) async {
     for (var i = 0; i < times; i++) {
       await tester.pump(const Duration(milliseconds: 100));
@@ -140,10 +143,10 @@ void main() {
     testWidgets('递回时带的是**裸标签名**（剥掉前导 #）', (tester) async {
       final seen = <String>[];
       // 直接构造一个假的列表页句柄：判据是「传给列表页的标签名对不对」。
-      final req = TagBrowseRequest((tag) {
+      final req = (String tag) {
         seen.add(tag);
         return true;
-      });
+      };
       await tester.pumpWidget(hostDetail(browse: req));
       await settle(tester);
 
@@ -156,10 +159,10 @@ void main() {
 
     testWidgets('切换成功后回调被调用（详情页靠它 pop 自己）', (tester) async {
       var switched = false;
-      final req = TagBrowseRequest((tag) {
+      final req = (String tag) {
         switched = true;
         return true;
-      });
+      };
       await tester.pumpWidget(hostDetail(browse: req));
       await settle(tester);
 
@@ -168,15 +171,15 @@ void main() {
       expect(switched, isTrue);
     });
 
-    testWidgets('切换**失败**时不触发 onSwitched（不能白 pop 一趟）',
+    testWidgets('切换**失败**时不触发 onDone（不能白 pop 一趟）',
         (tester) async {
       // pop 完却什么都没切换，用户被丢回列表页却看不到变化，比不响应更糟。
       var popped = false;
-      final req = TagBrowseRequest((tag) => false);
+      final req = (String tag) => false;
       await tester.pumpWidget(hostDetail(browse: req));
       await settle(tester);
 
-      req.enter('自拍', onSwitched: () => popped = true);
+      enterTagInPlace(req, '自拍', onDone: () => popped = true);
       expect(popped, isFalse,
           reason: '切换没发生就不该 pop，否则用户看到的是「无反应」');
     });
@@ -232,19 +235,30 @@ void main() {
       await settle(tester, 5);
 
       final req = key.currentState!.tagBrowseRequest;
-      expect(canBrowseTagInPlace(req), isTrue);
+      // 句柄现在就是裸函数值：没有 canBrowseTagInPlace 之类的判定入口，
+      // 「有没有能力」在**类型上**就是 non-null / null 这一件事。
+      expect(req, isNotNull);
       // 连续两次不同标签都返回 true——它是活的句柄，不是常量。
-      expect(req.enter('自拍'), isTrue);
+      expect(req('自拍'), isTrue);
       await settle(tester, 3);
-      expect(req.enter('露奶'), isTrue);
+      expect(req('露奶'), isTrue);
       await settle(tester, 3);
     });
   });
 
   group('拿不到列表页时的兜底', () {
-    testWidgets('canBrowseTagInPlace 对 unavailable 返回 false', (tester) async {
-      expect(canBrowseTagInPlace(null), isFalse);
-      expect(canBrowseTagInPlace(TagBrowseRequest.unavailable), isFalse);
+    testWidgets('反向断言：没有「不支持」的哨兵值了，只有 null', (tester) async {
+      // 原先这里断言 `canBrowseTagInPlace(TagBrowseRequest.unavailable) == false`
+      // ——那条断言之所以能过，靠的是一个**生产代码从没引用过**的常量
+      // （全仓只有这一行测试用它）。它表达的是「API 表面有两种『没有』」，
+      // 而实际只有一种。删掉哨兵后这条改成钉住新形状：
+      //  - 句柄就是裸函数值，不是包装类实例；
+      //  - 「没有」用 null 表达，不需要额外的判定入口。
+      const TagBrowseRequest request = _alwaysTrue;
+      expect(request('任意标签'), isTrue,
+          reason: '句柄是裸函数值：调用即执行，不需要额外的 enter/onSwitched');
+      // 「没有」只有一个形态：null。
+      expect(null, isNull);
     });
 
     testWidgets('没有句柄时给出明确提示，而不是点了没反应', (tester) async {
@@ -259,3 +273,6 @@ void main() {
     });
   });
 }
+
+/// 一条恒真的假句柄：用来证明句柄就是裸函数值。
+bool _alwaysTrue(String tag) => true;

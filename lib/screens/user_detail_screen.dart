@@ -24,11 +24,16 @@ class UserDetailScreen extends StatefulWidget {
   final UserMetaData profile;
   final ProxyManager proxy;
 
-  /// 「留在用户列表页按标签查找」的请求句柄，由来源页透传。
+  /// 「留在来源页按标签查找」的请求句柄，由来源页透传。
   ///
-  /// 传了（正常路径，从用户列表页点进来）→ 点标签**留在用户列表页**，
-  /// 不再 push 独立的 `TagUserListScreen`。
-  /// 不传 → 退回到旧的 push 独立标签页，并如实说明「此页不支持就地切换」。
+  /// 传了（正常路径，从用户列表页点进来）→ 点标签**留在来源页**，
+  /// 不再 push 独立的标签页。
+  /// 不传 → 背后**没有**能递回的列表页，如实说明「此页不支持就地切换」。
+  ///
+  /// ⚠️ 每个 push 详情页的地方都必须**显式**决定传不传：这是契约，不是
+  /// 「忘了传就当不支持」。`fav_list.dart`（收藏页）故意不传——它背后
+  /// 没有列表页可递回，那里「不能就地切」是合法状态，
+  /// `test/fav_list_test.dart` 会钉住它仍然给出明确提示。
   final TagBrowseRequest? tagBrowse;
 
   /// 仅供测试注入（配假 `HttpClientAdapter`）；生产调用点不传。
@@ -702,15 +707,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   ///  3. pop 用**本页自己的** Navigator，不传 context 给别人 pop（Flutter
   ///     里 `Navigator.of(本页 context)` 才能保证弹的是压着本页的那一层）。
   ///
-  /// 拿不到请求句柄时（深链直接打开的详情页）退回旧的 push 独立标签页，
-  /// 并如实说明原因，而不是点了没反应。
+  /// 拿不到请求句柄时（如从收藏页进来，背后没有列表页可递回）如实说明，
+  /// 而不是点了没反应。
   void _openTagInPlace(String tag) {
     final req = widget.tagBrowse;
-    if (!canBrowseTagInPlace(req)) {
+    if (req == null) {
       _showTagBrowseUnavailable();
       return;
     }
-    req!.enter(tag, onSwitched: () {
+    enterTagInPlace(req, tag, onDone: () {
       if (!mounted) return;
       // 能 pop 才 pop：若本页已是栈底（例如它被 replace 过），pop 会连带
       // 弹掉列表页，那比不 pop 更糟——此时让标签结果留在列表页即可。
