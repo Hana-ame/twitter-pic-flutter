@@ -26,18 +26,19 @@
 /// 因此现在只有一个形态：拿到句柄就调，拿不到（null）就提示。
 typedef TagBrowseRequest = bool Function(String tag);
 
-/// 详情页点标签时：先问来源页「能不能就地切」。
+/// 「切换确实发生了」的回调。
 ///
-/// 返回 true = 标签结果**确实出现在来源页上**（调用方可以 pop 详情页）；
-/// false = 没切（空标签名、与当前选中重复、或根本没给句柄）——调用方**不该**
-/// pop，否则用户被丢回来源页却看不到任何变化，比不响应更难理解。
+/// 详情页用它 pop 自己，让标签结果正好出现在来源页上；「什么都不做」
+/// 由调用方用 null 表达，不需要再单独造一个 no-op 哨兵。
 typedef TagBrowseDone = void Function();
 
 /// 把请求递回来源页，返回是否真的切了过去。
 ///
-/// [onDone] 只在**确实切换之后**执行——详情页靠它 pop 自己，让标签结果
-/// 正好出现在来源页上。回调本身不存在（「什么都不做」的兜底）已由调用方
-/// 用 null 表达。
+/// 返回 true = 标签结果**确实出现在来源页上**（调用方可以 pop 详情页）；
+/// false = 没切（空标签名、与当前选中重复）——调用方**不该** pop，否则用户被
+/// 丢回来源页却看不到任何变化，比不响应更难理解。
+///
+/// [onDone] 只在**确实切换之后**执行。
 bool enterTagInPlace(TagBrowseRequest request, String tag,
     {TagBrowseDone? onDone}) {
   final switched = request(tag);
