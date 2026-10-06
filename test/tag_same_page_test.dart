@@ -122,7 +122,7 @@ void main() {
   });
 
   Widget hostDetail({TagBrowseRequest? browse}) => MaterialApp(
-        home: UserDetailScreen(
+        home: Scaffold(body: UserDetailScreen(
           profile: UserMetaData(
             accountInfo: TwitterUser(username: 'alice', tags: {'自拍': 2}),
             timeline: const [],
@@ -130,7 +130,7 @@ void main() {
           ),
           proxy: proxy,
           tagBrowse: browse,
-        ),
+        )),
       );
 
   group('点标签是同一个页面：请求递回用户列表页', () {
@@ -182,8 +182,12 @@ void main() {
   group('UserListScreen 作为接收方', () {
     testWidgets('enterTagSearch 接受带 # 的标签并剥掉', (tester) async {
       final key = GlobalKey<UserListScreenState>();
+      // ⚠️ 必须 Scaffold 包一层：UserListScreen 的根是 Column + Expanded，
+      // 没有 body 约束会 RenderFlex overflow（CI run 37395999459 实测
+      // overflow by 99416 pixels，11 例全挂在这条上）。不要直接
+      // `MaterialApp(home: UserListScreen(...))` —— 见 add_user_flow_test.dart。
       await tester.pumpWidget(MaterialApp(
-        home: UserListScreen(proxy: proxy, api: api, key: key),
+        home: Scaffold(body: UserListScreen(proxy: proxy, api: api, key: key)),
       ));
       await settle(tester, 5);
 
@@ -198,8 +202,12 @@ void main() {
 
     testWidgets('空标签名/纯 # 返回 false，不触发任何请求', (tester) async {
       final key = GlobalKey<UserListScreenState>();
+      // ⚠️ 必须 Scaffold 包一层：UserListScreen 的根是 Column + Expanded，
+      // 没有 body 约束会 RenderFlex overflow（CI run 37395999459 实测
+      // overflow by 99416 pixels，11 例全挂在这条上）。不要直接
+      // `MaterialApp(home: UserListScreen(...))` —— 见 add_user_flow_test.dart。
       await tester.pumpWidget(MaterialApp(
-        home: UserListScreen(proxy: proxy, api: api, key: key),
+        home: Scaffold(body: UserListScreen(proxy: proxy, api: api, key: key)),
       ));
       await settle(tester, 5);
 
@@ -211,8 +219,12 @@ void main() {
     testWidgets('tagBrowseRequest 绑定本页：调用它就等于在本页进入查找态',
         (tester) async {
       final key = GlobalKey<UserListScreenState>();
+      // ⚠️ 必须 Scaffold 包一层：UserListScreen 的根是 Column + Expanded，
+      // 没有 body 约束会 RenderFlex overflow（CI run 37395999459 实测
+      // overflow by 99416 pixels，11 例全挂在这条上）。不要直接
+      // `MaterialApp(home: UserListScreen(...))` —— 见 add_user_flow_test.dart。
       await tester.pumpWidget(MaterialApp(
-        home: UserListScreen(proxy: proxy, api: api, key: key),
+        home: Scaffold(body: UserListScreen(proxy: proxy, api: api, key: key)),
       ));
       await settle(tester, 5);
 

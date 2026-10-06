@@ -98,8 +98,10 @@ Widget host(String body) {
   final proxy = ProxyManager();
   _openApis.add(api);
   _openProxies.add(proxy);
+  // ⚠️ 必须 Scaffold 包一层：UserListScreen 的根是 Column + Expanded，
+  // 没有 body 约束会 RenderFlex overflow（CI run 37395999459 实测）。
   return MaterialApp(
-    home: UserListScreen(proxy: proxy, api: api),
+    home: Scaffold(body: UserListScreen(proxy: proxy, api: api)),
   );
 }
 
@@ -179,7 +181,10 @@ void main() {
       await tester.pumpWidget(host(tagUsersPage(['u1'], {'自拍': 2, '男同': 1})));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
-      await tester.tap(find.text('自拍'));
+      await tester.tap(find.descendant(
+        of: find.byType(ListView),
+        matching: find.text('自拍'),
+      ));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -196,7 +201,10 @@ void main() {
       await tester.pumpWidget(host(tagUsersPage(['u1'], {'自拍': 2, '男同': 1})));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
-      await tester.tap(find.text('自拍'));
+      await tester.tap(find.descendant(
+        of: find.byType(ListView),
+        matching: find.text('自拍'),
+      ));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -222,7 +230,7 @@ void main() {
         reason: '筛选条上的 chip 仍然在（那是筛选器，不是标签展示）');
   });
 
-  testWidgets('筛选条按人数降序：第一个就是人数最多的标签', (tester) async {
+  testWidgets('筛选条按人数降序：人数最多的标签排在最前', (tester) async {
     // 顺序是**数据层不变量**（TagCount.listFromJson 排降序），筛选条照抄
     // 即可。若这里退回升序，用户横向滑动时最先看到的反而是冷门标签。
     _TagAdapter.tagCloud =
@@ -231,15 +239,17 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
 
-    // 「女性 7591」必须排在「自拍 1196」之前。
-    expect(
-      find.descendant(
-        of: find.byType(ListView),
-        matching: find.text('7591'),
-      ),
-      findsOneWidget,
-      reason: '人数最多的标签应出现在筛选条起始处',
-    );
+    // 真正判「序」而不是判「在不在」：比两个 chip 的 x 坐标。
+    // 只断言「7591 存在」的话，退化成升序时它照样存在——那条断言恒真。
+    Finder inBar(String tag) => find.descendant(
+          of: find.byType(ListView),
+          matching: find.text(tag),
+        );
+    double dxOf(String tag) => tester.getTopLeft(inBar(tag)).dx;
+    expect(dxOf('女性'), lessThan(dxOf('自拍')),
+        reason: '人数最多的标签必须排在最前（实测 女性 7591 > 自拍 1196）');
+    // 反向断言：不得出现「人数少的在前」。
+    expect(dxOf('自拍'), greaterThan(dxOf('女性')));
   });
 
   testWidgets('筛选条上的人数标注取自该标签的计数', (tester) async {
