@@ -249,19 +249,15 @@ void main() {
     }
   });
 
-  // 2026-10-06 用户报「首页、搜索页的 list 依然只有 id，没有头像和昵称」。
-  // 上面那条「复用上游对象时头像不能丢」只测了**标签路径**（tap 女性）——
-  // 首页默认列表路径当时完全是裸的：`getUserList` 只返
-  // `username/last_modify/tags/status`，没有昵称/头像，而列表行直接把它
-  // 渲染出来（`_adopt` 拷贝的也是 null）。
-  //
-  // 修法在**数据进列表前**统一 hydrate：`_hydrateListUsers` 对
-  // `getUserList`/搜索的裸结果调 `hydrateUsernames`（每账号一次元数据请求，
-  // 补上昵称/头像），行内 `_adopt` 直接复用、零请求。本用例钉住的是：
+  // 2026-10-06 首页与搜索页列表项昵称与头像展示。
+  // 首页默认列表端点 `getUserList` 只返 `username/last_modify/tags/status`，
+  // 没有昵称/头像。参考 0.5.x，不在列表入口阻塞式全量 hydrate 20+ 个完整 json，
+  // 而是列表秒开，由 _UserTile 进入视口时按需异步拉取元数据。
+  // 本用例钉住的是：
   //  ① 首页默认列表**真的渲染出昵称**（而不是退化成用户名）；
   //  ② 头像 URL 非 null（用 profile_image，不是首字母占位）；
-  //  ③ 每账号元数据请求 ≤ 1 次 —— hydrate 是列表层一次，行内不重复。
-  testWidgets('首页默认列表：hydrate 后昵称与头像都渲染，且每账号只请求一次',
+  //  ③ 每账号元数据请求 ≤ 1 次 —— 缓存兜底，行内不重复拉。
+  testWidgets('首页默认列表：异步加载后昵称与头像都渲染，且每账号只请求一次',
       (tester) async {
     // 裸用户列表：只带 username/status/tags，**没有 nick/avatar 键**
     // （线上实测 /?list=users 的 keys 就是这四个）。

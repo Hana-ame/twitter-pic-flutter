@@ -340,9 +340,8 @@ class UserListScreenState extends State<UserListScreen> {
       // 错误必须传到 FutureBuilder 显示"失败/未就绪"，而不是假绿成
       // "没有用户命中该标签"。
       next = _api.searchUsersByTag(_search).then(
-        (users) async => SearchMergeResult(
-          // ⚠️ tag 搜索返回的同样是裸用户（无昵称/头像），统一 hydrate。
-          users: await _hydrateListUsers(users),
+        (users) => SearchMergeResult(
+          users: users,
           totalRoutes: 1,
           failedRoutes: 0,
         ),
@@ -354,19 +353,7 @@ class UserListScreenState extends State<UserListScreen> {
         _api.searchUserList('username', _search),
         _api.searchUserList('nick', _search),
         _api.searchUsersByTag(_search),
-      ]).then((merged) async {
-        // ⚠️ 搜索接口返回的同样是裸用户（无昵称/头像）——三路 merge 完
-        // 统一 hydrate 一次，再交给列表渲染。这里**不是** N+1：
-        // hydrateUsernames 每账号只发一次元数据请求，行内零请求，
-        // 且已有 10 分钟进程内缓存兜底（见 _hydrateListUsers 的注释）。
-        final hydrated = await _hydrateListUsers(merged.users);
-        return SearchMergeResult(
-          users: hydrated,
-          totalRoutes: merged.totalRoutes,
-          failedRoutes: merged.failedRoutes,
-          firstError: merged.firstError,
-        );
-      });
+      ]);
     }
     // 换一个搜索词后 FutureBuilder 会退订，此刻仍在飞的 tag 请求若失败就
     // 变成"无监听者的错误"（zone 里刷 UnhandledException）。ignore() 注册
@@ -386,44 +373,14 @@ class UserListScreenState extends State<UserListScreen> {
     super.dispose();
   }
 
-  /// 列表层数据入口：**先 hydrate 再给行渲染**。
-  ///
-  /// ⚠️ 不能直接把 `getUserList`/搜索返回的裸用户交给 `_UserTile`：
-  /// 列表类端点（`?list=users` / `searchUserList` / `searchUsersByTag`）
-  /// **都不返回昵称和头像**（线上实测 keys 只有
-  /// `username / last_modify / tags / status`），昵称/头像只存在于
-  /// `GET /api/twitter/<u>.json.gz` 的 `account_info` 里。
-  ///
-  /// hydrate 的作用正是「每账号一次元数据请求，把昵称/头像补进对象」——
-  /// 补完的行**直接**用上游结果渲染，`_UserTile._adopt()` 不发第二个请求
-  /// （N+1 判据：逐账号元数据请求 ≤ 1 次）。
-  ///
-  /// 404 的账号会在 hydrate 内部被剔除（见 `hydrateUsernames`），
-  /// 顺带把「点进去必然 404」的幽灵账号挡在列表外。
-  ///
-  /// **fail-open**：hydrate 依赖画廊端 `/api/tags`（批量权重）与
-  /// `/api/twitter/<u>.json.gz`。这两个端点任一故障都不该把整个首页/搜索页
-  /// 洗白——退回裸列表（至少用户名可点），昵称/头像留空。
-  /// 与 `gallery/visibility.go` 的 `if !haveView { return names }` 同源。
-  Future<List<TwitterUser>> _hydrateListUsers(List<TwitterUser> raw) async {
-    if (raw.isEmpty) return raw;
-    try {
-      // 元数据有 10 分钟进程内缓存：翻页/刷新时先前 hydrate 过的账号
-      // 不会重复发请求，只对新出现的账号付费。
-      return await _api.hydrateUsernames([for (final u in raw) u.username]);
-    } catch (_) {
-      return raw;
-    }
-  }
-
   Future<void> _load() async {
     try {
       final users = await _api.getUserList();
       if (!mounted) return;
-      final hydrated = await _hydrateListUsers(users);
-      if (!mounted) return;
-      // 首屏本身也可能重叠（服务端塞了新号进列表），同样走去重。
-      final fresh = dedupeByUsername(hydrated);
+      // 参考 0.5.x：首屏获取到用户列表后立即渲染，
+      // 绝不在此处阻塞等待 20+ 个 .json.gz 下载（大幅减轻 API 负担与加载延迟）。
+      // 各行的头像和昵称由 _UserTile 进入视口时异步补充。
+      final fresh = dedupeByUsername(users);
       setState(() {
         _users = fresh;
         _loading = false;
@@ -1441,37 +1398,75 @@ class _UserTileState extends State<_UserTile> {
   /// 渲染首字母占位。所以这里**显式**搬运头像：它只有 `profile_image`
   /// 这一个来源，字段齐全是巧合而不是契约。
   void _adopt() {
-    final u = widget.user;
-    if (u == null) {
-      _meta = null;
-      _loading = true;
-      _load();
+    if (_meta != null &&
+        _meta!.accountInfo.username == widget.username &&
+        (_meta!.accountInfo.avatar != null || _meta!.accountInfo.nick != null)) {
       return;
     }
-    _meta = UserMetaData(
-      accountInfo: TwitterUser(
-        username: u.username,
-        nick: u.nick,
-        avatar: u.avatar,
-        totalUrls: u.totalUrls,
-        tags: u.tags,
-      ),
-      timeline: const [],
-      totalUrls: u.totalUrls ?? 0,
-    );
-    _loading = false;
+
+    final u = widget.user;
+    // 如果上游已带头像或昵称（如标签页 hydrateUsernames 结果），直接复用，零请求渲染。
+    if (u != null && (u.avatar != null || u.nick != null)) {
+      _meta = UserMetaData(
+        accountInfo: TwitterUser(
+          username: u.username,
+          nick: u.nick,
+          avatar: u.avatar,
+          totalUrls: u.totalUrls,
+          tags: u.tags,
+        ),
+        timeline: const [],
+        totalUrls: u.totalUrls ?? 0,
+      );
+      _loading = false;
+      return;
+    }
+
+    // 裸用户（如首页 getUserList / 搜索未 hydrate 的结果）：
+    // 恢复 0.5.x 设计，按需异步拉取元数据，避免在列表层阻塞 20+ 个 json 请求。
+    _meta = null;
+    _loading = true;
+    _load();
   }
 
   Future<void> _load() async {
     try {
       final meta = await widget.api.getMetaData(widget.username);
       if (!mounted) return;
+      final accountInfo = meta.accountInfo;
+      final mergedAccountInfo = TwitterUser(
+        username: accountInfo.username,
+        nick: accountInfo.nick,
+        avatar: accountInfo.avatar,
+        totalUrls: accountInfo.totalUrls ?? widget.user?.totalUrls,
+        tags: (widget.user?.tags.isNotEmpty ?? false)
+            ? widget.user!.tags
+            : accountInfo.tags,
+      );
       setState(() {
-        _meta = meta;
+        _meta = UserMetaData(
+          accountInfo: mergedAccountInfo,
+          timeline: meta.timeline,
+          totalUrls: meta.totalUrls,
+        );
         _loading = false;
       });
     } catch (_) {
       if (!mounted) return;
+      final u = widget.user;
+      if (u != null && _meta == null) {
+        _meta = UserMetaData(
+          accountInfo: TwitterUser(
+            username: u.username,
+            nick: u.nick,
+            avatar: u.avatar,
+            totalUrls: u.totalUrls,
+            tags: u.tags,
+          ),
+          timeline: const [],
+          totalUrls: u.totalUrls ?? 0,
+        );
+      }
       setState(() => _loading = false);
     }
   }
@@ -1837,18 +1832,8 @@ class _LoadMoreButtonState extends State<_LoadMoreButton> {
     try {
       final users = await widget.api.getUserList(after: widget.after);
       if (!mounted) return;
-      // ⚠️ 与首屏同源问题：getUserList 不返昵称/头像，翻页的裸行
-      // 同样要先 hydrate，否则新页头像/昵称整列缺失（与 _load 一致）。
-      // fail-open：hydrate 失败退回裸行，至少用户名可点。
-      List<TwitterUser> hydrated;
-      try {
-        hydrated = await widget.api
-            .hydrateUsernames([for (final u in users) u.username]);
-      } catch (_) {
-        hydrated = users;
-      }
-      if (!mounted) return;
-      widget.onLoaded(hydrated);
+      // 参考 0.5.x：获取到新一页后立即回调更新列表，不阻塞等待 20+ 个 json.gz 下载
+      widget.onLoaded(users);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('加载失败: $e')));
