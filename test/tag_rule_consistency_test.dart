@@ -28,6 +28,33 @@ class _FakePathProvider extends PathProviderPlatform {
   Future<String?> getApplicationSupportPath() async => dir;
 }
 
+/// 一条用例的**全部回放数据**，不可变，由调用方自己构造。
+///
+/// 为什么不放 static：原先 `_TagAdapter` 用 `static String tagPage/tagCloud/
+/// tagWeights` 让测试之间靠**赋值**共享状态，`host()` 再把测试设好的值覆盖掉 ——
+/// 于是用例里的赋值**从未生效**，而用例却因为别的原因变红/变绿（为此浪费过
+/// 三轮 CI）。改成值对象后数据是**参数**，谁构造、构造出什么就一定回放什么。
+///
+/// 三个字段各自对应一条**独立**的响应，改一个不会波及另一个 —— 这正是原先
+/// 那组 static 做不到的：它们共享同一份命名空间，谁最后跑谁说了算。
+class _TagFixture {
+  /// `GET /api/tag/<tag>`（标签反查）的响应体。
+  final String tagPage;
+
+  /// `GET /api/tag-cloud`（标签云）的响应体，形如 `[{"Tag":"自拍","Count":100}]`。
+  final String tagCloud;
+
+  /// `GET /api/tags?keys=...`（批量权重）的响应体，形如
+  /// `{"u1":{"自拍":2}}`；被封账号服务端会省略该键。
+  final String tagWeights;
+
+  const _TagFixture({
+    required this.tagPage,
+    required this.tagCloud,
+    required this.tagWeights,
+  });
+}
+
 /// by=tag 的响应体由测试自己给。
 /// 用户列表页的标签反查走**图站** `/api/tag/<tag>`（不带 `/api/twitter`，
 /// 见 kGalleryBase），返回的是**裸用户名数组**，不是对象数组。
@@ -35,11 +62,13 @@ class _FakePathProvider extends PathProviderPlatform {
 /// 之前这个文件测的是已删除的独立标签页（走 `?by=tag`，返回对象数组）。
 /// 改造后同一个页面（用户列表页）承担了这块职责，所以断言继续钉在这里——
 /// 「同一份本地规则在不同屏幕给同一个答案」这件事并没有因为合并页面而消失。
+///
+/// [fixture] 是 `final`：适配器**只读**它，不持有任何可变 static。
+/// 每个用例构造自己的 [_TagFixture]，因此用例之间零状态残留。
 class _TagAdapter implements HttpClientAdapter {
-  /// body：按请求路径回放。`_tagPage` 由 host() 现填。
-  static String tagPage = '[]';
-  static String tagCloud = '[]';
-  static String tagWeights = '{}';
+  final _TagFixture fixture;
+
+  _TagAdapter(this.fixture);
 
   @override
   Future<ResponseBody> fetch(
@@ -54,16 +83,16 @@ class _TagAdapter implements HttpClientAdapter {
           headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
     }
     if (path.startsWith('/api/tag-cloud') || path.endsWith('/tags/cloud')) {
-      return ResponseBody.fromString(tagCloud, 200,
+      return ResponseBody.fromString(fixture.tagCloud, 200,
           headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
     }
     if (path.startsWith('/api/tag/')) {
-      return ResponseBody.fromString(tagPage, 200,
+      return ResponseBody.fromString(fixture.tagPage, 200,
           headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
     }
     if (path.startsWith('/api/tags')) {
       // 批量权重：`{"u1":{"自拍":2,...}, ...}`，被封账号服务端会省略。
-      return ResponseBody.fromString(tagWeights, 200,
+      return ResponseBody.fromString(fixture.tagWeights, 200,
           headers: {Headers.contentTypeHeader: <String>[Headers.jsonContentType]});
     }
     if (path.endsWith('.json.gz')) {
@@ -113,22 +142,30 @@ final _openProxies = <ProxyManager>[];
 /// 默认标签云：单个「自拍」标签，供与顺序无关的用例使用。
 const String _defaultCloud = '[{"Tag":"自拍","Count":100}]';
 
-/// [body] 是标签反查响应；[cloud] 覆盖标签云。
+/// 空标签反查响应（合法形状：`users` 是数组，不是对象数组）。
 ///
-/// ⚠️ 别在 `host()` 里无条件写死 `tagCloud` 再让用例事后再改——
-/// 那样用例里的赋值会被这里的写死覆盖掉（我第一版就这么写的，于是
-/// 「降序」用例喂的云根本没生效，CI 实测 4 例红）。所以标签云由**调用方**
-/// 决定，`host` 不碰。
-Widget host(String body, {String cloud = _defaultCloud, String? weights}) {
-  _TagAdapter.tagPage = body;
-  _TagAdapter.tagCloud = cloud;
-  // 批量权重：给 u1 带上「自拍」+「男同」，Gay 模式关闭时后者应把它藏掉。
-  //
-  // ⚠️ 用例可覆盖（[weights]）：负分标签那条要的就是「自拍 = -1」，而这里
-  // 原先写死 2 —— 断言「负权不该藏掉账号」时，喂进去的其实是个正权账号，
-  // 测的根本不是负权（CI run 37400431470 实测）。
-  _TagAdapter.tagWeights = weights ?? '{"u1":{"自拍":2,"男同":1}}';
-  final api = TwitterApi(adapter: _TagAdapter());
+/// 造一条**图站**标签反查响应（`GET /api/tag/<tag>` 的真实形状）。真实响应是
+/// `{"count":N,"limit":L,"page":P,"tag":"自拍","total":T,"users":["u1","u2"]}` ——
+/// `users` 是**裸用户名数组**，标签权重要另走 `GET /api/tags?keys=...` 批量取
+/// （见 hydrateUsernames）。此前这个文件造的是已删除的旧标签页所用的 `?by=tag`
+/// 形状（对象数组），两者不能混用。
+const String emptyTagPage = '{"count":0,"limit":25,"page":1,"tag":"自拍",'
+    '"total":0,"users":[]}';
+
+/// 造一条标签反查响应。标签权重要另走 `GET /api/tags?keys=...` 批量端点
+/// （即 [_TagFixture.tagWeights]），因为 `users` 里只有名字、没有标签。
+String tagUsersPage(List<String> usernames) =>
+    '{"count":${usernames.length},"limit":25,"page":1,"tag":"自拍",'
+    '"total":${usernames.length},"users":${jsonEncode(usernames)}}';
+
+/// 用 [fixture] 回放数据构造被测页面。
+///
+/// 三个响应体全部由**调用方**显式给（不给默认值的那个也不给），`host` 自己
+/// **不碰**任何数据 —— 原来它先无条件写死 `tagCloud` 再让用例事后改，于是
+/// 用例的赋值被这里的写死覆盖掉，「降序」用例喂的云根本没生效（CI 实测 4 例红）。
+/// 现在 host 是纯装配：用例构造什么，这里就回放什么。
+Widget host(_TagFixture fixture) {
+  final api = TwitterApi(adapter: _TagAdapter(fixture));
   final proxy = ProxyManager();
   _openApis.add(api);
   _openProxies.add(proxy);
@@ -139,6 +176,21 @@ Widget host(String body, {String cloud = _defaultCloud, String? weights}) {
   );
 }
 
+/// 常用组合：单个「自拍」标签、u1 权重 `自拍=2,男同=1`，与顺序无关的用例用。
+///
+/// 三个字段在这里**一次性**写死并暴露成命名参数，用例要改哪个改哪个 ——
+/// 没有「host 先写死、用例再覆盖」的第二条路径，所以覆盖一定生效。
+_TagFixture _fixture({
+  String tagPage = emptyTagPage,
+  String tagCloud = _defaultCloud,
+  String tagWeights = '{"u1":{"自拍":2,"男同":1}}',
+}) =>
+    _TagFixture(
+      tagPage: tagPage,
+      tagCloud: tagCloud,
+      tagWeights: tagWeights,
+    );
+
 void _releaseAll() {
   for (final a in _openApis) {
     a.dispose();
@@ -147,23 +199,6 @@ void _releaseAll() {
   _openProxies.clear();
 }
 
-/// 造一条**图站**标签反查响应（`GET /api/tag/<tag>` 的真实形状）。
-///
-/// 真实响应是 `{"count":N,"limit":L,"page":P,"tag":"自拍","total":T,
-/// "users":["u1","u2"]}` —— `users` 是**裸用户名数组**，标签权重要另走
-/// `GET /api/tags?keys=...` 批量取（见 hydrateUsernames）。此前这个文件造的是
-/// 已删除的旧标签页所用的 `?by=tag` 形状（对象数组），两者不能混用。
-/// 空标签反查响应（合法形状：`users` 是数组，不是对象数组）。
-const String emptyTagPage = '{"count":0,"limit":25,"page":1,"tag":"自拍",'
-    '"total":0,"users":[]}';
-
-/// 造一条标签反查响应。[tags] 单独喂给 `_TagAdapter.tagWeights`
-/// （批量权重端点），因为 `users` 里只有名字、没有标签。
-String tagUsersPage(List<String> usernames) =>
-    '{"count":${usernames.length},"limit":25,"page":1,"tag":"自拍",'
-    '"total":${usernames.length},"users":${jsonEncode(usernames)}}';
-
-//
 // ## 为什么全文只用有界 pump，不用 pumpAndSettle
 //
 // 被测页面里有**永不停止的动画**：
@@ -225,7 +260,7 @@ void main() {
     (tester) async {
       // 前提：Gay 模式确实是关的（默认值）。
       expect(StorageService.isGayMode(), isFalse);
-      await tester.pumpWidget(host(tagUsersPage(['u1'])));
+      await tester.pumpWidget(host(_fixture(tagPage: tagUsersPage(['u1']))));
       await settle(tester);
       await tester.tap(find.descendant(
         of: find.byType(ListView),
@@ -250,7 +285,7 @@ void main() {
           reason: '前置：Gay 模式必须已开启');
       expect(StorageService.matchesGayMode({'自拍': 2, '男同': 1}), isTrue,
           reason: '前置：规则层应放行带 Gay 标签的账号');
-      await tester.pumpWidget(host(tagUsersPage(['u1'])));
+      await tester.pumpWidget(host(_fixture(tagPage: tagUsersPage(['u1']))));
       await settle(tester);
       await tester.tap(find.descendant(
         of: find.byType(ListView),
@@ -267,11 +302,16 @@ void main() {
       (tester) async {
     // 「自拍」权重为负：详情页的 TagDisplayArea 早就把它藏了（commit
     // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
-    await tester.pumpWidget(host(tagUsersPage(['u1']),
-        weights: '{"u1":{"自拍":-1}}'));
+    // 前置：确认这条用例**自己构造的** fixture 里权重确实是负的，别让它在自己
+    // 没喂对数据时也「通过」。（下一条 commit 会把这条进一步换成断言**解析后**
+    // 的值，因为断言原始字符串仍然不是真正喂进 UI 的数据。）
+    final fx = _fixture(
+      tagPage: tagUsersPage(['u1']),
+      tagWeights: '{"u1":{"自拍":-1}}',
+    );
+    expect(fx.tagWeights, contains('-1'));
+    await tester.pumpWidget(host(fx));
     await settle(tester);
-    // 前置：确认权重确实是负的，别让用例在自己没喂对数据时也「通过」。
-    expect(_TagAdapter.tagWeights, contains('-1'));
     await tester.tap(find.descendant(
       of: find.byType(ListView),
       matching: find.text('自拍'),
@@ -290,8 +330,9 @@ void main() {
   testWidgets('筛选条按人数降序：人数最多的标签排在最前', (tester) async {
     // 顺序是**数据层不变量**（sortedByCountDesc 排降序），筛选条照抄
     // 即可。若这里退回升序，用户横向滑动时最先看到的反而是冷门标签。
-    await tester.pumpWidget(host(emptyTagPage,
-        cloud: '[{"Tag":"自拍","Count":1196},{"Tag":"女性","Count":7591}]'));
+    await tester.pumpWidget(host(_fixture(
+      tagCloud: '[{"Tag":"自拍","Count":1196},{"Tag":"女性","Count":7591}]',
+    )));
     await settle(tester);
 
     // 真正判「序」而不是判「在不在」：比两个 chip 的 x 坐标。
@@ -308,8 +349,9 @@ void main() {
   });
 
   testWidgets('筛选条上的人数标注取自该标签的计数', (tester) async {
-    await tester.pumpWidget(host(emptyTagPage,
-        cloud: '[{"Tag":"女性","Count":7591}]'));
+    await tester.pumpWidget(host(_fixture(
+      tagCloud: '[{"Tag":"女性","Count":7591}]',
+    )));
     await settle(tester);
 
     // 计数是**人数**（实测 tag-cloud Count 与 /api/tag/<tag> 的 total 相等），
