@@ -51,7 +51,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   /// 生产走默认实例；测试注入假适配器（此前没有注入点，导致本页的标签/
   /// 表情永远打真实网络，widget 测试根本没法构造出标签区）。
-  final TwitterApi _api;
+  late final TwitterApi _api;
 
   /// [_api] 是否由本页创建。注入进来的实例归调用方所有——本页替它 dispose
   /// 会让调用方（测试里的 setUp/tearDown、或复用同一实例的别处）拿到一个
