@@ -256,6 +256,29 @@
 - [x] `video_decoder_pool_test.dart` — 分槽/可见优先/urgent 抢占/pump 重入/抓帧不可用兜底
 - [x] `frame_luma_test.dart` — 全黑/全亮/亮像素占比/质数步长不共振
 - [x] `host_match_test.dart` — 通配覆盖判定（防 DoH 通配 CN 回归）
+- [x] `image_viewer_photo_view_test.dart` — 全屏相册（photo_view）行为约束，v0.6.4
+- [x] `progressive_disk_cache_test.dart` — 图片磁盘缓存回归，v0.6.1
+- [x] `proxy_avatar_retry_test.dart` — 「头像概率加载不出」的回归钉子（加载失败自动重试）
+- [x] `add_user_flow_test.dart` — 添加用户的**真实布局**回归（`tag_selector_modal_test.dart`
+      测的是 `Scaffold(body: …)` 的简化布局，两者不能互相替代）
+
+### 标签与搜索（v0.7.x 新增）
+
+- [x] `filter_by_tag_test.dart` — 按标签筛用户，**并集**语义（多选标签合并名册）
+- [x] `gallery_tag_paging_test.dart` — 标签分页走图站 `/api/tag/<tag>`，闭区间翻页不重不漏
+- [x] `tag_rule_consistency_test.dart` — 标签规则读写一致性 + 写盘测试的静态状态隔离范式
+- [x] `block_tag_filter_test.dart` — 屏蔽标签筛选
+- [x] `block_default_resurrect_test.dart` — 用户显式清空屏蔽后，默认标签**不许复活**
+- [x] `gay_tag_contract_test.dart` — 屏蔽词/屏蔽标签的契约
+- [x] `search_merge_test.dart` — 三路搜索合并（用户名 > 昵称 > 标签）
+- [x] `tag_selector_modal_test.dart` — 标签选择弹窗
+- [x] **`search_bar_tag_suggest_test.dart`** — 搜索框标签推荐：**不输入 `#` 也能搜**、
+      点标签**立即进入 tag 查找模式**、与搜索历史互斥
+      （⚠️ 用例里不许用 `receiveAction`，也不许在 tearDown 里
+      `await debugFlushPending()`——`StorageService` 的写盘挂在假异步时钟上，
+      会把整包拖到超时；见 facts-flutter-test-whole-suite-hangs-while-per-file-passes）
+- [x] **`tag_suggestions_test.dart`** — 推荐排序：前缀命中 > 子串命中 > 匹配位置 > 热度；
+      空输入返回热门榜（热度降序、标签名升序），排序走副本不就地改
 
 ## 构建 / 发布
 - [x] `.github/workflows/build.yml`（不可删除）：`flutter_test` → `build_android` → `build_windows` → `create_release`
