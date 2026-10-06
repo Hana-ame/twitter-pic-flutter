@@ -63,6 +63,10 @@ class _RouteAdapter implements HttpClientAdapter {
   ) async {
     final uri = options.uri;
     seen.add(uri);
+    // ⚠️ path `/` 有歧义：首屏是 `GET /?list=users`，而标签页是
+    // `GET /api/tag/女性`——后者的 path 不是 `/`，两者不会撞。
+    // 但同一 path 可能带不同 query（?list=users / ?after=…），按 path 查表即可，
+    // 两者都要空数组。
     final entry = routes[_canonPath(uri.path)];
     final String body;
     if (entry == null) {
@@ -114,7 +118,12 @@ void main() {
         {'Tag': '女性', 'Count': 100},
         {'Tag': '自拍', 'Count': 80},
       ]),
-      '/api/twitter/users': jsonEncode(<dynamic>[]),
+      // 首屏 `GET /?list=users`（注意 path 就是 `/`，不带 /api/twitter——
+      // twitter_api.dart:207）。回**空数组**：这一档要的是列表形态，
+      // 回 `{}` 会让 _decodeUserList 抛 UnexpectedResponseException，
+      // 于是 _error 永久非空、后续分支全部走不到。
+      // （与 tag_rule_consistency_test.dart:85 同一个坑。）
+      '/': jsonEncode(<dynamic>[]),
       for (final n in names) '/api/twitter/$n.json.gz': _metaFor(n),
     });
   });
