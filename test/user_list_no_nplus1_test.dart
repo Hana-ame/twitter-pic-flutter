@@ -109,6 +109,11 @@ void main() {
       '/api/tags': jsonEncode(<String, dynamic>{
         for (final n in names) n: <String, int>{'女性': 1},
       }),
+      // 标签栏的数据源。没有它，标签栏是空的，下面 tap('女性') 找不到目标。
+      '/api/tag-cloud': jsonEncode(<dynamic>[
+        {'Tag': '女性', 'Count': 100},
+        {'Tag': '自拍', 'Count': 80},
+      ]),
       '/api/twitter/users': jsonEncode(<dynamic>[]),
       for (final n in names) '/api/twitter/$n.json.gz': _metaFor(n),
     });
@@ -127,46 +132,50 @@ void main() {
   }
 
   testWidgets('标签页每行不再单独拉元数据（N+1 消除）', (tester) async {
-    // 先把标签页的数据喂到位：hydrateUsernames 已经把元数据取回来了。
+    // api 建在**用例体内**（不是 setUp），dispose 交给 addTearDown：
+    // 与 add_user_flow_test.dart / tag_rule_consistency_test.dart 保持同一结构。
     //
-    // ⚠️ 这条 await 是「逐文件全过、整包却挂 10 分钟」的来源之一：
-    // `flutter_test` 用假异步时钟，pumpWidget 之前挂着的未完成任务会让框架
-    // 判定测试没结束，报 `TimeoutException after 0:10:00`。
+    // ⚠️ 本文件**不在 pumpWidget 之前 await 任何真实 future**。
+    // `hydrateUsernames` 会 await 一串 Dio 请求，而 `flutter_test` 用**假异步
+    // 时钟**：pump 之前挂着的未完成任务会让框架判定「测试没结束」，
+    // 整包跑到 `TimeoutException after 0:10:00`——而**逐文件跑却全绿**，
+    // 两者结论相反，只能靠整包闸门抓到。
     // 见 KB facts-flutter-test-whole-suite-hangs-while-per-file-passes。
-    // api 因此建在用例体内、dispose 交给 addTearDown，与 pump 生命周期对齐。
-    // api 在**用例体内**创建（不是 setUp）：与 add_user_flow_test.dart 保持同一
-    // 结构。这样 tearDown 不需要在 pump 之外 dispose 一个可能被 widget 持有的
-    // 实例——那正是「还有未完成任务」导致整包 10 分钟超时的成因之一。
+    //
+    // 所以 hydrate 不在这里手动调：它由 UserListScreen 自己在 pump 周期里驱动。
     final api = TwitterApi(adapter: adapter);
     addTearDown(api.dispose);
 
-    final hydrated = await api.hydrateUsernames(names);
-    expect(hydrated.length, 25);
-    expect(hydrated.every((u) => u.nick != null && u.nick!.isNotEmpty), isTrue,
-        reason: '前置：hydrateUsernames 必须真的取到了昵称，否则本用例是空转');
-
-    // 记住 hydrate 阶段的请求数，作为基线。
-    final afterHydrate = adapter.seen.length;
-
-    await tester.pumpWidget(MaterialApp(home: Scaffold(body: UserListScreen(proxy: ProxyManager(), api: api))));
+    await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: UserListScreen(proxy: ProxyManager(), api: api))));
     await settle(tester);
 
-    // 再点进标签筛选，走标签页那条路。
+    // 选标签，走标签反查那条路。
     await tester.tap(find.text('女性').first);
     await settle(tester);
 
-    final metaAfterTag = names.fold<int>(
-        0, (sum, n) => sum + adapter.metaRequestsFor(n));
+    // 前置 + 反向断言：**行确实渲染出来了**。没有这两条，后面的
+    // 「请求数不增加」会在「整页啥都没渲染」时假通过——
+    // 这正是 findsNothing 也算通过的坑。
+    expect(find.text('@user0'), findsOneWidget,
+        reason: '前置：标签页必须真的渲染出这些行，否则请求数断言是空转');
+    expect(find.text('昵称-user0'), findsOneWidget,
+        reason: '前置：必须用 hydrateUsernames 取回的昵称渲染，而不是退化成用户名');
 
-    // 判据：**渲染列表行不应该新增任何**逐账号元数据请求。
-    expect(metaAfterTag, lessThanOrEqualTo(afterHydrate),
-        reason: '标签页渲染新增了 $metaAfterTag 次逐账号元数据请求；'
-            '这些数据 hydrateUsernames 已经取过，逐行重拉就是每页多 25 次往返，'
-            '而失败的那些（404）因为不进缓存会被反复重打。');
+    // 判据：**每个账号的元数据至多被拉一次**。
+    //
+    // 改之前：hydrateUsernames 拉一遍（25 次）+ 每行 _UserTile.initState 再拉一遍
+    // （25 次）= 每个账号 2 次。改之后每行直接复用上游数据，只有 1 次。
+    for (final n in names) {
+      expect(adapter.metaRequestsFor(n), lessThanOrEqualTo(1),
+          reason: '$n 的元数据被拉了 ${adapter.metaRequestsFor(n)} 次；'
+              '超过 1 次说明列表行在重复拉上游已经取好的数据。');
+    }
 
-    // 反向断言：确实**渲染出了**这些行（否则上面的断言会空转——整页没渲染
-    // 当然也就没有请求，这正是「findsNothing 也算通过」的坑）。
-    expect(find.text('@user0'), findsOneWidget);
-    expect(find.text('昵称-user0'), findsOneWidget);
+    // 总量判据：25 个账号，逐行重拉会变成 ~50 次。
+    final total = names.fold<int>(0, (a, n) => a + adapter.metaRequestsFor(n));
+    expect(total, lessThanOrEqualTo(names.length),
+        reason: '逐账号元数据请求共 $total 次，超过人数上限 ${names.length} '
+            '说明仍有逐行重复拉取。');
   });
 }
