@@ -108,14 +108,15 @@ void main() {
     });
 
     test('排序：count **降序**（人数多的在前），同数按标签名升序', () {
-      final parsed = TagCount.listFromJson([
+      final parsed = sortedByCountDesc(TagCount.listFromJson([
         {'Tag': '大奶', 'Count': 7},
         {'Tag': '二次元', 'Count': 14},
         {'Tag': 'COS', 'Count': 7},
-      ]);
+      ]));
       // 降序：二次元(14) → 同数的 COS/大奶 按标签名升序。
-      // 反向断言「不能是升序」——顺序是**数据层不变量**，渲染点默认照抄，
+      // 反向断言「不能是升序」——渲染点默认照抄这个顺序，
       // 一旦退回升序，最大的标签就会排到最后。
+      // （排序必须**显式**调 sortedByCountDesc，listFromJson 只解析、不排序。）
       expect(parsed.map((e) => e.tag).toList(), ['二次元', 'COS', '大奶']);
       expect(parsed.first.count, greaterThan(parsed.last.count));
     });

@@ -100,7 +100,6 @@ String _metaFor(String name, {String? nick}) => jsonEncode({
 
 void main() {
   late _RouteAdapter adapter;
-  late TwitterApi api;
 
   final names = List<String>.generate(25, (i) => 'user$i');
 
@@ -113,12 +112,10 @@ void main() {
       '/api/twitter/users': jsonEncode(<dynamic>[]),
       for (final n in names) '/api/twitter/$n.json.gz': _metaFor(n),
     });
-    api = TwitterApi(adapter: adapter);
   });
 
   // TwitterApi 的元数据缓存是 static 全实例共享，必须重置，否则跨文件串味。
   tearDown(() {
-    api.dispose();
     TwitterApi.resetForTests();
     StorageService.resetForTests();
   });
@@ -131,6 +128,18 @@ void main() {
 
   testWidgets('标签页每行不再单独拉元数据（N+1 消除）', (tester) async {
     // 先把标签页的数据喂到位：hydrateUsernames 已经把元数据取回来了。
+    //
+    // ⚠️ 这条 await 是「逐文件全过、整包却挂 10 分钟」的来源之一：
+    // `flutter_test` 用假异步时钟，pumpWidget 之前挂着的未完成任务会让框架
+    // 判定测试没结束，报 `TimeoutException after 0:10:00`。
+    // 见 KB facts-flutter-test-whole-suite-hangs-while-per-file-passes。
+    // api 因此建在用例体内、dispose 交给 addTearDown，与 pump 生命周期对齐。
+    // api 在**用例体内**创建（不是 setUp）：与 add_user_flow_test.dart 保持同一
+    // 结构。这样 tearDown 不需要在 pump 之外 dispose 一个可能被 widget 持有的
+    // 实例——那正是「还有未完成任务」导致整包 10 分钟超时的成因之一。
+    final api = TwitterApi(adapter: adapter);
+    addTearDown(api.dispose);
+
     final hydrated = await api.hydrateUsernames(names);
     expect(hydrated.length, 25);
     expect(hydrated.every((u) => u.nick != null && u.nick!.isNotEmpty), isTrue,
