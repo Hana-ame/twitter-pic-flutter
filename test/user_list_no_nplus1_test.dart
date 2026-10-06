@@ -125,9 +125,12 @@ void main() {
     StorageService.resetForTests();
   });
 
+  /// 有界推进（**不用** `pumpAndSettle`：默认列表的 `_SkeletonCircle` 是
+  /// `AnimationController..repeat(reverse: true)` 常驻动画，`pumpAndSettle`
+  /// 永远等不到「无待处理帧」，会一直转到超时）。
   Future<void> settle(WidgetTester tester) async {
-    for (var i = 0; i < 10; i++) {
-      await tester.pump(const Duration(milliseconds: 50));
+    for (var i = 0; i < 12; i++) {
+      await tester.pump(const Duration(milliseconds: 80));
     }
   }
 
@@ -151,7 +154,14 @@ void main() {
     await settle(tester);
 
     // 选标签，走标签反查那条路。
-    await tester.tap(find.text('女性').first);
+    //
+    // 用 find.descendant(of: ListView) 限定作用域，与 tag_rule_consistency_test
+    // 一致：`女性` 这个字符串在标签栏、结果区等多处都会出现，裸
+    // find.text(...).first 可能点中一个不可点的静态 Text。
+    await tester.tap(find.descendant(
+      of: find.byType(ListView),
+      matching: find.text('女性'),
+    ));
     await settle(tester);
 
     // 前置 + 反向断言：**行确实渲染出来了**。没有这两条，后面的
