@@ -48,10 +48,17 @@ Map<String, int> parseTagWeights(dynamic v) =>
 /// 为了以后后端补上 json tag、或换别的实现，这里 [fromJson] **大小写不敏感**
 /// 地找键，两种写法都能吃。
 ///
-/// ⚠️ [count] **不是**"这个标签下有多少个用户"。实测 `女性` 的 Count=7579，
-/// 而 `?by=tag&search=女性` 只回 11 条 —— Count 统计的是打标签的**票数/权重
-/// 累计**，与「能列出多少个用户」不是一回事。UI 上只准把它当"热度"用，
-/// 永远不要写成"N 人"。
+/// [count] 是**这个标签下有多少个用户**（账号数），不是票数。
+///
+/// 实测三路一致（2026-10-05）：
+/// - tag-cloud `女性` 的 `Count` = 7591；
+/// - `/api/tag/女性` 的 `total`（该标签下账号列表总数）= **7591**，与之相等；
+/// - 178 个标签计数总和 = 23895 ≈ 1.45 × 全站账号数（16427），对应「一个账号
+///   有多个标签就被各标签各计一次」。
+///
+/// ⚠️ 此前这里写的是「票数/权重累计，不是用户数」，**那是错的**：它把标签
+/// 计数和 emoji poll 的投票数混了（`?by=tag` 只回 11 条是**分页上限**，
+/// 不能拿来反推计数口径）。UI 应当标「N 人」。
 class TagCount {
   final String tag;
   final int count;
@@ -67,8 +74,18 @@ class TagCount {
     );
   }
 
-  /// 解析标签云响应。`[tag]` 传给 [TwitterUser.tags] 这类按标签名匹配的判据；
-  /// 计数升序、同数按标签名升序，保证渲染稳定不抖。
+  /// 解析标签云响应。`[tag]` 传给 [TwitterUser.tags] 这类按标签名匹配的判据。
+  ///
+  /// **按计数降序**（人数多的在前），同数按标签名升序，保证渲染稳定不抖。
+  ///
+  /// ⚠️ 为什么这里必须降序而不是升序：服务端 `/api/tag-cloud` 返回的顺序
+  /// 没有产品含义，但**照抄它的顺序就会把「人数最多的标签」放到最后**——
+  /// 用户横向滑动标签栏时最先看到的应该是最热门的。原先这里排的是**升序**
+  /// （低在前），把「要调用方自己 reverse」的责任推给了每个渲染点，于是
+  /// `UserListScreen` 的标签栏就直接按升序画了，最大的标签在最后。
+  ///
+  /// 降序在这里落地而不是在各个渲染点补救，是为了让**顺序成为数据层的不变量**：
+  /// 新的渲染点默认就是对的，不必每个都记得 reverse 一次。
   static List<TagCount> listFromJson(dynamic raw) {
     final list = _list(raw)
         .whereType<Map>()
@@ -76,7 +93,7 @@ class TagCount {
         .where((e) => e.tag.isNotEmpty)
         .toList();
     list.sort((a, b) {
-      final byCount = a.count.compareTo(b.count);
+      final byCount = b.count.compareTo(a.count);
       return byCount != 0 ? byCount : a.tag.compareTo(b.tag);
     });
     return list;
