@@ -60,14 +60,24 @@ static String rewrite(String url, int port, {String host = '127.0.0.1'}) =>
 ## 2. API 链路：直连，绝不进代理
 
 ```
-Dio(baseUrl: 'https://x.moonchan.xyz/api/twitter')
-  → 用户列表 / 元数据 / 标签 / emoji / 排行
+① 根 API —— Dio(baseUrl: 'https://x.moonchan.xyz/api/twitter')
+   → 用户列表 / 元数据 / 标签 / emoji / 排行
+
+② 图站 API —— Dio(baseUrl: 'https://x.moonchan.xyz')   ← 同一 origin，base 不同
+   → /api/tag/<tag>、/api/tag-cloud、/api/tags、/u/<account>
 ```
 
 - 自建域名可直接访问，不需要 ECH，多一跳没有收益。
 - 代理里虽然有 `/api/` 路由（给内置演示页用），但 Flutter 的 API **不走它**。
 - Dio 拼接 `baseUrl + path` **不会补斜杠**，所有 path 必须自己以 `/` 开头；
   构造函数里加了 `onRequest` 拦截器兜底归一化（事故见 troubleshooting 案例 1）。
+- **⚠️ 标签端点挂在 ② 而不是 ①**：它们注册在图站自己的 `http.ServeMux` 上
+  （go/gallery/main.go 的 `galleryMux`），真实路径 `/api/tag/<tag>` **不带
+  `/api/twitter` 前缀**。写成 `/api/twitter/tag/<tag>` 会 404——该路径在根 API
+  的路由组里没有匹配，落到 `NoRoute` 交回 gallery，而 gallery 的 mux 也匹配不
+  上 `/api/twitter/...`，最终 404。**这不是「数据为空」，是「路由不存在」**，
+  两者的现象很像但排查方向完全不同。代码见 `lib/api/twitter_api.dart` 的
+  `kGalleryBase`（与 `kApiBase` 是两个独立常量，注释里记了完整因果链）。
 
 ## 3. 本机代理内部（ech-proxy 仓库的 `flutter/main.go`）
 

@@ -3,7 +3,7 @@
 > 浏览 Twitter（X）图片与视频的 Flutter 客户端。墙内直连 `*.twimg.com` 必死，
 > 媒体统一经**本机 Go ECH 代理**转发到 `video-cf.twimg.com`；API/JSON 直连自建后端。
 
-当前版本 **v0.5.15**（Android arm64 + Windows x64）。
+当前版本 **v0.7.4**（Android arm64 + Windows x64）。
 
 | 平台 | 产物 |
 | --- | --- |
@@ -58,7 +58,11 @@
 
 ## 功能
 
-- 用户列表 / 搜索（按用户名、昵称）
+- 用户列表 / 搜索（按用户名、昵称、**标签**）
+  - 搜索框边打字边给**标签推荐下拉**，**不需要输入 `#`**（打了也兼容）；
+    没打字时给热门标签当起手
+  - 点推荐标签**立即进入该标签的查找模式**，走图站 `/api/tag/<tag>` **全量翻页**
+  - 标签的「热度 N」是**票数**不是人数（图站标签页显示的就是投票数）
 - 用户详情：媒体时间线（图片 + 视频）、标签、emoji 投票
 - 图片全屏预览：**左右滑动或上下滑动翻页**、双击放大、逐块解码（下到哪显示到哪）
 - 视频：Range 边下边播、缓冲进度、倍速、全屏、下载分享
@@ -94,7 +98,8 @@ lib/
 │   ├── proxy_avatar.dart          # 头像
 │   ├── fav_list.dart              # 收藏列表（导出/导入）
 │   ├── report_help.dart           # 反馈弹窗（加群 / 复制日志包）
-│   └── tag_*.dart                 # 标签选择/展示/高亮
+│   └── tag_*.dart                 # 标签选择/展示/高亮/推荐排序
+│       （tag_suggestions.dart 是搜索框的推荐排序，纯客户端匹配）
 └── main.dart                      # 入口、全局错误捕获、ImageCache、底部导航
 
 （ECH 代理实现已迁至 Hana-ame/ech-proxy 仓库的 flutter/，本仓库不再有源码副本）
@@ -258,17 +263,29 @@ Windows 端走 `video_player_win`（Media Foundation），没有这层回退。
 
 CI 全程云端（本地无需 SDK）：`.github/workflows/build.yml`
 
-1. `flutter_test`：`flutter analyze --no-fatal-infos --no-fatal-warnings` + `flutter test`
-   —— 不过不发版（`create_release` 依赖它）。
+1. `flutter_test`：`flutter analyze --no-fatal-infos --no-fatal-warnings` + `flutter test --coverage`
+   —— 不过不发版（`create_release` 依赖它）。跑在 `flutter create` 生成的
+   `/tmp/test_project` 脚手架里（`lib/` 与 `test/` 拷进去），并额外过 6 道闸门：
+   analyze、写盘测试的静态状态隔离、每个测试文件有 `main()`、**整包**测试
+   （逐文件那轮只作定位，不作判据）、lcov 结构校验、覆盖率退化门槛（当前
+   40%，基线 46.46%）。
 2. `build_android`：Go 交叉编译 `libechproxy.so`（NDK r27，arm64-v8a）→ 注入包名
    `xyz.moonchan.twitterpic`、`INTERNET`、`android:usesCleartextTraffic="true"`（本机 HTTP 代理必需）、
    应用名"推图" → 签名 → `flutter build apk --release`。
 3. `build_windows`：Go 编 `echproxy.dll` → `flutter build windows --release` → 打 zip。
-4. `create_release`：上传 APK + zip。
+4. `create_release`：算 `SHA256SUMS.txt` → 上传 APK + zip + 校验和。
 
-**版本号跟着 tag 走**：推 `v*` tag 时把 tag 名写进 `pubspec.yaml` 的 `version`
-（日期 tag `vYYYYMMDD.HHMMSS` 会转成三段式 `YYYYMMDD.0.HHMMSS`）；推 main 分支时
-回退用 pubspec 里的版本，避免写出非法版本号。
+**版本号要自己先 bump**：CI **不会**把 tag 名写进 `pubspec.yaml`（此前这段文档
+写「版本号跟着 tag 走」，与 `build.yml` 不符——`Get version` 步只是把
+`github.ref_name` 写进 `$GITHUB_OUTPUT` 给 Release 用，真正写 `version:` 的
+是 `build_android` 的 `sed`，而它写的是 `version: <pubspec 原值>+<RN>`）。
+所以发版顺序是：**先提交一次版本号 bump → 等 main CI 绿 → 再打 tag 指向
+那个 commit**。
+
+- `BUILD_NUM`（应用内「关于」页显示的版本）来自构建期 `-DBUILD_NUM`
+  （`lib/main.dart:34` 的 `String.fromEnvironment`），**与 pubspec 无关**——
+  所以纯 CI 改动也可以 bump 版本号，用户看到的版本不会变。
+- tag 必须打在 `origin/main` 的 HEAD 上，不是 PR 的 head（squash 后尤其如此）。
 
 发布：`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`
 

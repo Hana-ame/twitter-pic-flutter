@@ -1,6 +1,6 @@
 # 项目总检清单
 
-> 最后核对：v0.6.0（2026-09-17）。细节见 [README](README.md)、
+> 最后核对：v0.7.4（2026-10-05）。细节见 [README](README.md)、
 > [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
 ## 目标
@@ -237,7 +237,7 @@
       只在图片完成时移除，所以下载期间 listener 数永远不为 0，取消钩子不会触发。
       真要取消得按 URL 维护引用计数，而 provider 按 URL 共享并被缓存，自己不知道还剩几个使用者。
 
-## 测试（CI `flutter_test` job，17 个文件全跑，不过不发版）
+## 测试（CI `flutter_test` job，32 个文件整包全跑，不过不发版）
 - [x] `api_url_test.dart` — 逐接口断言绝对路径（防 baseUrl/path 拼接回归）
 - [x] `media_url_test.dart` — `MediaUrl.isImage` 预取判定（只认 pbs 图片，视频不预热）
 - [x] `progressive_image_test.dart` — 解码节流三规则 + provider 缓存标识
@@ -256,6 +256,63 @@
 - [x] `video_decoder_pool_test.dart` — 分槽/可见优先/urgent 抢占/pump 重入/抓帧不可用兜底
 - [x] `frame_luma_test.dart` — 全黑/全亮/亮像素占比/质数步长不共振
 - [x] `host_match_test.dart` — 通配覆盖判定（防 DoH 通配 CN 回归）
+- [x] `image_viewer_photo_view_test.dart` — 全屏相册（photo_view）行为约束，v0.6.4
+- [x] `progressive_disk_cache_test.dart` — 图片磁盘缓存回归，v0.6.1
+- [x] `proxy_avatar_retry_test.dart` — 「头像概率加载不出」的回归钉子（加载失败自动重试）
+- [x] `add_user_flow_test.dart` — 添加用户的**真实布局**回归（`tag_selector_modal_test.dart`
+      测的是 `Scaffold(body: …)` 的简化布局，两者不能互相替代）
+
+### 标签与搜索（v0.7.x 新增）
+
+- [x] `filter_by_tag_test.dart` — 按标签筛用户，**并集**语义（多选标签合并名册）
+- [x] `gallery_tag_paging_test.dart` — 标签分页走图站 `/api/tag/<tag>`，闭区间翻页不重不漏
+- [x] `tag_rule_consistency_test.dart` — 标签规则读写一致性 + 写盘测试的静态状态隔离范式
+- [x] `block_tag_filter_test.dart` — 屏蔽标签筛选
+- [x] `block_default_resurrect_test.dart` — 用户显式清空屏蔽后，默认标签**不许复活**
+- [x] `gay_tag_contract_test.dart` — 屏蔽词/屏蔽标签的契约
+- [x] `search_merge_test.dart` — 三路搜索合并（用户名 > 昵称 > 标签）
+- [x] `tag_selector_modal_test.dart` — 标签选择弹窗
+- [x] **`search_bar_tag_suggest_test.dart`** — 搜索框标签推荐：**不输入 `#` 也能搜**、
+      点标签**立即进入 tag 查找模式**、与搜索历史互斥
+      （⚠️ 用例里不许用 `receiveAction`，也不许在 tearDown 里
+      `await debugFlushPending()`——`StorageService` 的写盘挂在假异步时钟上，
+      会把整包拖到超时；见 facts-flutter-test-whole-suite-hangs-while-per-file-passes）
+- [x] **`tag_suggestions_test.dart`** — 推荐排序：前缀命中 > 子串命中 > 匹配位置 > 热度；
+      空输入返回热门榜（热度降序、标签名升序），排序走副本不就地改
+
+## CI 闸门（第 3 级判据，v0.7.4 补齐）
+
+`flutter_test` job 共 6 道，逐条列「拦什么」：
+
+- [x] `flutter analyze --no-fatal-infos --no-fatal-warnings`
+- [x] 写盘测试必须 `StorageService.resetForTests()`，且写方法名单**从源码反推**
+- [x] 每个测试文件有 `main()` 入口
+- [x] **整包** `flutter test --coverage` 是唯一判据（逐文件那轮只作定位）
+- [x] lcov **结构**校验：至少一条 `SF:`、至少一条 `DA:`、结尾 `end_of_record`
+- [x] 覆盖率退化门槛 **40%**（基线实测 46.46%：SF: 32 文件 / DA: 3915 行 / 命中 1819）
+
+### 两条反直觉的坑（不写下来就会被"顺手"改回去）
+
+- **写方法名单不能硬编码**：曾硬编码 9 个方法，漏了 7 个真实存在的
+  （`saveSearchHistory`/`setCustomTags`/`setBlockMap`/`setDecodeBudget`/
+  `addGayTag`/`removeGayTag`/`toggleGayMode`），对「只用漏掉方法写状态、
+  零 reset」的文件**完全静默放行**。现改为从 `storage_service.dart` 反推
+  （现提取到 17 个）。
+- **`run:` 默认走 sh（dash），其 ERE 不支持 `+` 与 `{n,}`**：用了会静默
+  退化成字面量，导致「一个方法都没提取出来」而闸门照样 exit 0。
+  **凡「靠正则提取再判断」的闸门，提取为空必须 `exit 1`**——
+  否则它坏掉时是静默的，而且「闸门坏了」与「闸门没拦住」在日志里长得一样。
+  验证这类闸门要用 `sh` 跑，**用 `bash` 跑绿不代表 CI 会绿**。
+
+### 怎么验证纯 shell 闸门（不必等 CI）
+
+```bash
+python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/build.yml'));
+...把目标 step 的 run: 导出成 .sh"   # 再在 lib/+test/ 的副本上用 sh 跑
+```
+
+反例要**喂进去**：只跑真实数据看绿不绿是「测没误报」，
+而闸门的价值全在「拦得住」——反向自检信息量高得多。
 
 ## 构建 / 发布
 - [x] `.github/workflows/build.yml`（不可删除）：`flutter_test` → `build_android` → `build_windows` → `create_release`
