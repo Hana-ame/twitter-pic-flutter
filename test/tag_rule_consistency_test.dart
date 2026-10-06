@@ -149,10 +149,11 @@ String tagUsersPage(List<String> usernames) =>
 // 一律改成 pump(const Duration(...))，自己控制推进多少帧。
 /// 推进若干有界帧。
 ///
-/// 标签结果要连过 4 段 future（标签云 → tap → `/api/tag/<tag>` →
-/// `/api/tags` 批量权重 → 逐个元数据），每段都要一帧才推进。只 pump 两下
-/// 时结果区还在骨架屏，`@u1` 根本没建出来（CI run 37397930408 实测 4 例红）。
-Future<void> settle(WidgetTester tester, [int times = 6]) async {
+/// 标签结果要连过 5 段 future（标签云 → tap → `/api/tag/<tag>` →
+/// `/api/tags` 批量权重 → 逐个元数据 → setState），每段都要一帧才推进。
+/// 只 pump 两下时结果区还在骨架屏，`@u1` 根本没建出来
+/// （CI run 37397930408 实测 4 例红）。默认 10 帧。
+Future<void> settle(WidgetTester tester, [int times = 10]) async {
   for (var i = 0; i < times; i++) {
     await tester.pump(const Duration(milliseconds: 100));
   }
@@ -243,7 +244,10 @@ void main() {
     // 6ea90cd），列表页必须一致，否则同一个标签两个屏幕两种含义。
     await tester.pumpWidget(host(tagUsersPage(['u1'])));
     await settle(tester);
-    await tester.tap(find.text('自拍'));
+    await tester.tap(find.descendant(
+      of: find.byType(ListView),
+      matching: find.text('自拍'),
+    ));
     await settle(tester);
 
     expect(find.text('@u1'), findsOneWidget,
