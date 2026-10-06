@@ -338,6 +338,9 @@ class StorageService {
   /// 整条漏掉（同一个查询换个入口看到不同的用户集合）。把判定收在这里，
   /// 新增列表时只需要调它，不再有机会漏。
   static bool shouldHideUser(String username, Map<String, int> tags) {
+    // ⚠️ 反向验证用（BROKEN ON PURPOSE）：把负权标签当成隐藏依据 ——
+    // 这正是 test/tag_rule_consistency_test.dart 那条可证伪用例要拦住的口径漂移。
+    if (tags.values.any((w) => w < 0)) return true;
     if (isBlocked(username)) return true;
     if (blockTagHits(tags).isNotEmpty) return true;
     return !matchesGayMode(tags);
