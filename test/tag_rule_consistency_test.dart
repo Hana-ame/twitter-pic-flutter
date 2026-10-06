@@ -217,6 +217,13 @@ void main() {
     'Gay 模式**开启**时，同一个账号应该出现（过滤方向要真的反过来）',
     (tester) async {
       StorageService.setGayMode(true);
+      // 前置取证：先把「规则层」这一环钉死。若这里为 false，说明 setGayMode
+      // 根本没生效，后面 @u1 找不到就与规则无关（是数据没到位），
+      // 不再需要去猜过滤器。
+      expect(StorageService.isGayMode(), isTrue,
+          reason: '前置：Gay 模式必须已开启');
+      expect(StorageService.matchesGayMode({'自拍': 2, '男同': 1}), isTrue,
+          reason: '前置：规则层应放行带 Gay 标签的账号');
       await tester.pumpWidget(host(tagUsersPage(['u1'])));
       await settle(tester);
       await tester.tap(find.descendant(
