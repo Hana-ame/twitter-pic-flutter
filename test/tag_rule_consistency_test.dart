@@ -32,7 +32,7 @@ class _FakePathProvider extends PathProviderPlatform {
 /// 一条用例的**全部回放数据**，不可变，由调用方自己构造。
 ///
 /// 为什么不放 static：原先 `_TagAdapter` 用 `static String tagPage/tagCloud/
-/// tagWeights` 让测试之间靠**赋值**共享状态，`host()` 再把测试设好的值覆盖掉 ——
+/// tagWeights` 让测试之间靠**赋值**共享状态，`_host()` 再把测试设好的值覆盖掉 ——
 /// 于是用例里的赋值**从未生效**，而用例却因为别的原因变红/变绿（为此浪费过
 /// 三轮 CI）。改成值对象后数据是**参数**，谁构造、构造出什么就一定回放什么。
 ///
@@ -164,8 +164,13 @@ String tagUsersPage(List<String> usernames) =>
 /// 三个响应体全部由**调用方**显式给（不给默认值的那个也不给），`host` 自己
 /// **不碰**任何数据 —— 原来它先无条件写死 `tagCloud` 再让用例事后改，于是
 /// 用例的赋值被这里的写死覆盖掉，「降序」用例喂的云根本没生效（CI 实测 4 例红）。
-/// 现在 host 是纯装配：用例构造什么，这里就回放什么。
-Widget host(_TagFixture fixture) {
+/// 现在 `_host` 是纯装配：用例构造什么，这里就回放什么。
+///
+/// 刻意保持**私有**（`_host`）：它的参数类型 `_TagFixture` 是私有的，
+/// 公开 `host` 会触发 `library_private_types_in_public_api`。
+/// 本文件的所有 helper（`_fixture` / `_host` / `_releaseAll` / `_settle`）
+/// 都统一私有，避免每个都单独判一次。
+Widget _host(_TagFixture fixture) {
   final api = TwitterApi(adapter: _TagAdapter(fixture));
   final proxy = ProxyManager();
   _openApis.add(api);
@@ -214,7 +219,7 @@ void _releaseAll() {
 /// `/api/tags` 批量权重 → 逐个元数据 → setState），每段都要一帧才推进。
 /// 只 pump 两下时结果区还在骨架屏，`@u1` 根本没建出来
 /// （CI run 37397930408 实测 4 例红）。默认 10 帧。
-Future<void> settle(WidgetTester tester, [int times = 10]) async {
+Future<void> _settle(WidgetTester tester, [int times = 10]) async {
   for (var i = 0; i < times; i++) {
     await tester.pump(const Duration(milliseconds: 100));
   }
@@ -261,13 +266,13 @@ void main() {
     (tester) async {
       // 前提：Gay 模式确实是关的（默认值）。
       expect(StorageService.isGayMode(), isFalse);
-      await tester.pumpWidget(host(_fixture(tagPage: tagUsersPage(['u1']))));
-      await settle(tester);
+      await tester.pumpWidget(_host(_fixture(tagPage: tagUsersPage(['u1']))));
+      await _settle(tester);
       await tester.tap(find.descendant(
         of: find.byType(ListView),
         matching: find.text('自拍'),
       ));
-      await settle(tester);
+      await _settle(tester);
 
       // 判据是「找不到」：Gay 模式存在的全部意义就是别让它漏出来。
       expect(find.text('@u1'), findsNothing,
@@ -286,13 +291,13 @@ void main() {
           reason: '前置：Gay 模式必须已开启');
       expect(StorageService.matchesGayMode({'自拍': 2, '男同': 1}), isTrue,
           reason: '前置：规则层应放行带 Gay 标签的账号');
-      await tester.pumpWidget(host(_fixture(tagPage: tagUsersPage(['u1']))));
-      await settle(tester);
+      await tester.pumpWidget(_host(_fixture(tagPage: tagUsersPage(['u1']))));
+      await _settle(tester);
       await tester.tap(find.descendant(
         of: find.byType(ListView),
         matching: find.text('自拍'),
       ));
-      await settle(tester);
+      await _settle(tester);
 
       expect(find.text('@u1'), findsOneWidget,
           reason: '开了 Gay 模式就该放行 —— 这条防止「过滤写死成永远隐藏」');
@@ -332,13 +337,13 @@ void main() {
     expect(parsed['u2']?['自拍'], 2,
         reason: '前置：u2 的「自拍」必须是正权，作为与负权对照的另一端');
 
-    await tester.pumpWidget(host(fx));
-    await settle(tester);
+    await tester.pumpWidget(_host(fx));
+    await _settle(tester);
     await tester.tap(find.descendant(
       of: find.byType(ListView),
       matching: find.text('自拍'),
     ));
-    await settle(tester);
+    await _settle(tester);
 
     // 同数据路径的正向断言：先把「确实渲染出了结果行」钉死，否则下面的
     // findsNothing 在整页没渲染时也会**假通过**。
@@ -357,10 +362,10 @@ void main() {
   testWidgets('筛选条按人数降序：人数最多的标签排在最前', (tester) async {
     // 顺序是**数据层不变量**（sortedByCountDesc 排降序），筛选条照抄
     // 即可。若这里退回升序，用户横向滑动时最先看到的反而是冷门标签。
-    await tester.pumpWidget(host(_fixture(
+    await tester.pumpWidget(_host(_fixture(
       tagCloud: '[{"Tag":"自拍","Count":1196},{"Tag":"女性","Count":7591}]',
     )));
-    await settle(tester);
+    await _settle(tester);
 
     // 真正判「序」而不是判「在不在」：比两个 chip 的 x 坐标。
     // 只断言「7591 存在」的话，退化成升序时它照样存在——那条断言恒真。
@@ -376,10 +381,10 @@ void main() {
   });
 
   testWidgets('筛选条上的人数标注取自该标签的计数', (tester) async {
-    await tester.pumpWidget(host(_fixture(
+    await tester.pumpWidget(_host(_fixture(
       tagCloud: '[{"Tag":"女性","Count":7591}]',
     )));
-    await settle(tester);
+    await _settle(tester);
 
     // 计数是**人数**（实测 tag-cloud Count 与 /api/tag/<tag> 的 total 相等），
     // 所以这里直接印数字；早前印的是「热度」，是错的。
