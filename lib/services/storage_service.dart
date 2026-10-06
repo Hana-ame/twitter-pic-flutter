@@ -296,7 +296,9 @@ class StorageService {
   static bool matchesGayMode(Map<String, int> tags, [Set<String>? customGayTags]) {
     final isGay = isGayMode();
     final has = hasGayTag(tags, customGayTags);
-    return isGay ? has : !has;
+    // ⚠️ 反向验证用（BROKEN ON PURPOSE）：恒返回 !has，丢掉 isGay 分支 ——
+    // 「过滤写死成永远隐藏」。预期「Gay 模式**开启**…应该出现」用例变红。
+    return !has;
   }
 
   /// **命中「标签管理 → 屏蔽」标签列表**的那些标签名。
