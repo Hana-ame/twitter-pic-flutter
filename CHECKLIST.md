@@ -280,6 +280,40 @@
 - [x] **`tag_suggestions_test.dart`** — 推荐排序：前缀命中 > 子串命中 > 匹配位置 > 热度；
       空输入返回热门榜（热度降序、标签名升序），排序走副本不就地改
 
+## CI 闸门（第 3 级判据，v0.7.4 补齐）
+
+`flutter_test` job 共 6 道，逐条列「拦什么」：
+
+- [x] `flutter analyze --no-fatal-infos --no-fatal-warnings`
+- [x] 写盘测试必须 `StorageService.resetForTests()`，且写方法名单**从源码反推**
+- [x] 每个测试文件有 `main()` 入口
+- [x] **整包** `flutter test --coverage` 是唯一判据（逐文件那轮只作定位）
+- [x] lcov **结构**校验：至少一条 `SF:`、至少一条 `DA:`、结尾 `end_of_record`
+- [x] 覆盖率退化门槛 **40%**（基线实测 46.46%：SF: 32 文件 / DA: 3915 行 / 命中 1819）
+
+### 两条反直觉的坑（不写下来就会被"顺手"改回去）
+
+- **写方法名单不能硬编码**：曾硬编码 9 个方法，漏了 7 个真实存在的
+  （`saveSearchHistory`/`setCustomTags`/`setBlockMap`/`setDecodeBudget`/
+  `addGayTag`/`removeGayTag`/`toggleGayMode`），对「只用漏掉方法写状态、
+  零 reset」的文件**完全静默放行**。现改为从 `storage_service.dart` 反推
+  （现提取到 17 个）。
+- **`run:` 默认走 sh（dash），其 ERE 不支持 `+` 与 `{n,}`**：用了会静默
+  退化成字面量，导致「一个方法都没提取出来」而闸门照样 exit 0。
+  **凡「靠正则提取再判断」的闸门，提取为空必须 `exit 1`**——
+  否则它坏掉时是静默的，而且「闸门坏了」与「闸门没拦住」在日志里长得一样。
+  验证这类闸门要用 `sh` 跑，**用 `bash` 跑绿不代表 CI 会绿**。
+
+### 怎么验证纯 shell 闸门（不必等 CI）
+
+```bash
+python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/build.yml'));
+...把目标 step 的 run: 导出成 .sh"   # 再在 lib/+test/ 的副本上用 sh 跑
+```
+
+反例要**喂进去**：只跑真实数据看绿不绿是「测没误报」，
+而闸门的价值全在「拦得住」——反向自检信息量高得多。
+
 ## 构建 / 发布
 - [x] `.github/workflows/build.yml`（不可删除）：`flutter_test` → `build_android` → `build_windows` → `create_release`
 - [x] Go 共享库由 `ech-proxy/cmd/ech-flutter-shared` 编译（不再依赖 wintools 的 ech-shared）
