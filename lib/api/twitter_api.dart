@@ -512,10 +512,15 @@ class TwitterApi {
 
   Future<UserMetaData> getMetaData(String username, {String? t, bool forceRefresh = false}) async {
     // 负缓存命中：直接抛，不再发那个注定 404 的请求。
-    // 抛的是 [HttpException] 404，与真实请求失败的形态**一致**——这样
-    // hydrate 的 `catch (_) {}` 照旧能吞掉它，行为差异只有「少一次往返」。
+    // 必须裹进 DioException —— 拦截器 mapErrors() 对所有 Dio 错误都是
+    // `DioException(error: HttpException(...))` 的形态，负缓存也得保持同样
+    // 契约，否则调用方 `on DioException catch (e)` 就漏接它。
     if (!forceRefresh && isKnownMissing(username)) {
-      throw HttpException(404, '账号 $username 不存在（已知 404 负缓存命中）');
+      throw DioException(
+        requestOptions: RequestOptions(path: '/$username.json.gz'),
+        type: DioExceptionType.badResponse,
+        error: HttpException(404, '账号 $username 不存在（已知 404 负缓存命中）'),
+      );
     }
     if (!forceRefresh) {
       final cached = _metaCache[username];

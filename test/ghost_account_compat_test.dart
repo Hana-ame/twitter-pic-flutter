@@ -31,10 +31,13 @@ import 'package:twitter_pic_flutter/services/storage_service.dart';
 /// （那是不带 base 的裸路径）。否则 `/api/twitter/...` 与 `/api/tags` 全都
 /// 匹配不到，所有请求都掉进 500 兜底。
 class _CountingAdapter implements HttpClientAdapter {
-  _CountingAdapter(this.ghost);
+  _CountingAdapter(this.ghost, {this.fail500 = const <String>{}});
 
   /// 判定为「幽灵」的账号集合：这些名字打元数据必然 404。
   final Set<String> ghost;
+
+  /// 强制返回 500 的账号（模拟临时故障，用来验证不进负缓存）。
+  final Set<String> fail500;
 
   /// 用户名 → 元数据被请求的次数。
   final Map<String, int> metaHits = <String, int>{};
@@ -77,6 +80,10 @@ class _CountingAdapter implements HttpClientAdapter {
       if (ghost.contains(name)) {
         // 与线上实测一致：200 之外是带 error 字段的 JSON 404。
         return json(404, jsonEncode({'error': '查询用户失败: 没有进入 rows.Next()'}));
+      }
+      if (fail500.contains(name)) {
+        // 模拟临时故障：500 + error。不进负缓存（只有 404 进）。
+        return json(500, jsonEncode({'error': '模拟服务器内部错误'}));
       }
       return json(200, jsonEncode({
         'total_urls': 3,
@@ -144,7 +151,7 @@ void main() {
   });
 
   test('①b 非 404 失败不进负缓存（保持可自愈）', () async {
-    final adapter = _CountingAdapter(<String>{});
+    final adapter = _CountingAdapter(<String>{}, fail500: <String>{'alice'});
     adapter.weights = _weightsFor(<String>['alice']);
     final api = TwitterApi(adapter: adapter);
     addTearDown(api.dispose);
