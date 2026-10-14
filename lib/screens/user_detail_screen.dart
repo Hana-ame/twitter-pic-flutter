@@ -554,8 +554,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final url = timeline[i].url;
       if (!MediaUrl.isImage(url)) continue;
       scheduled++;
+      // 必须与 _MediaCard (thumb: true) 使用相同的缩略图 URL，否则预取的是
+      // name=orig 原图而卡片查的是 name=small，缓存 key 完全错位。
+      final thumbUrl = MediaUrl.thumbOf(url);
       precacheImage(
-        ProgressiveImageProvider(EchUrl.rewrite(url, port)),
+        ProgressiveImageProvider(EchUrl.rewrite(thumbUrl, port)),
         context,
       ).catchError((_) {});
     }
@@ -605,7 +608,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             children: [
               ProxyAvatar(
                 url: info.avatar,
-                fallbackText: _username[0].toUpperCase(),
+                fallbackText: _username.isNotEmpty ? _username[0].toUpperCase() : '?',
                 proxy: widget.proxy,
                 radius: 32,
               ),

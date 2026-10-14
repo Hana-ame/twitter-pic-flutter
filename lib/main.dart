@@ -23,7 +23,9 @@ import 'services/log_service.dart';
 import 'services/poster_service.dart';
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
+import 'screens/ranking_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/user_detail_screen.dart';
 import 'screens/user_list_screen.dart';
 import 'utils/doh_resolver.dart';
 import 'widgets/fav_list.dart';
@@ -215,8 +217,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   /// 运行中重启 ECH 代理。
   /// 用于代理静默失效、ECH 配置过期、或用户怀疑卡死时手动恢复。
   Future<void> _restart() async {
+    final navCtx = _navKey.currentContext;
+    if (navCtx == null) return;
     final confirmed = await showDialog<bool>(
-      context: context,
+      context: navCtx,
       builder: (ctx) => AlertDialog(
         title: const Text('重启 ECH'),
         content: const Text(
@@ -243,7 +247,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     });
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    ScaffoldMessenger.maybeOf(_navKey.currentContext ?? context)?.showSnackBar(
       const SnackBar(
           content: Text('正在重启 ECH ...'), duration: Duration.zero),
     );
@@ -294,9 +298,34 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           title: const Text('Twitter Pic', style: TextStyle(fontWeight: FontWeight.w600)),
           actions: [
             IconButton(
+              icon: const Icon(Icons.emoji_events_outlined),
+              tooltip: '排行榜',
+              onPressed: () => _navKey.currentState?.push(
+                MaterialPageRoute(
+                  builder: (routeCtx) => Scaffold(
+                    appBar: AppBar(title: const Text('Emoji 排行榜')),
+                    body: RankingScreen(
+                      api: TwitterApi(),
+                      onSelectUser: (profile) {
+                        Navigator.of(routeCtx).push(
+                          MaterialPageRoute(
+                            builder: (_) => UserDetailScreen(
+                              profile: profile,
+                              proxy: _proxy,
+                              tagBrowse: null,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
               icon: const Icon(Icons.local_offer_outlined),
               tooltip: '标签管理',
-              onPressed: () => Navigator.of(context).push(
+              onPressed: () => _navKey.currentState?.push(
                 MaterialPageRoute(builder: (_) => const TagControllerScreen()),
               ),
             ),

@@ -87,11 +87,20 @@ class UserListScreenState extends State<UserListScreen> {
   /// 翻页用的单页条数。25 是 `?list=users` 的每页大小，对齐它。
   static const int _kTagPageSize = 25;
 
+  /// 默认列表是否还有下一页（服务端返回空页或无新增去重项时收口）。
+  bool _usersHasMore = true;
+
+  void _onStorageChanged() {
+    if (!mounted) return;
+    setState(() => _refreshVisible());
+  }
+
   @override
   void initState() {
     super.initState();
     _api = widget.api ?? TwitterApi();
     _ownsApi = widget.api == null;
+    StorageService.changes.addListener(_onStorageChanged);
     _load();
     _loadTagCloud();
   }
@@ -388,6 +397,7 @@ class UserListScreenState extends State<UserListScreen> {
 
   @override
   void dispose() {
+    StorageService.changes.removeListener(_onStorageChanged);
     _debounce?.cancel();
     if (_ownsApi) _api.dispose();
     super.dispose();
@@ -403,13 +413,14 @@ class UserListScreenState extends State<UserListScreen> {
       final fresh = dedupeByUsername(users);
       setState(() {
         _users = fresh;
+        _usersHasMore = fresh.isNotEmpty;
         _loading = false;
       });
       _refreshVisible();
       // 后台预热（fire-and-forget，不阻塞渲染）：裸列表立即显示，
       // 同时预热前几行的元数据——用户滚动到时缓存已命中，秒显头像昵称，
       // 不用等每行各自的 1~2s json.gz 下载（「显示更多太慢」的直接来源）。
-      _prewarmMeta(users);
+      unawaited(_prewarmMeta(users));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -444,10 +455,16 @@ class UserListScreenState extends State<UserListScreen> {
   ///
   /// `seen.add()` 返回"是否新增"，用它一行完成"保序 + 去重"。
   void _appendUsers(List<TwitterUser> newUsers) {
-    _users.addAll(dedupeByUsername(newUsers, existing: _users));
+    final added = dedupeByUsername(newUsers, existing: _users);
+    _users.addAll(added);
+    if (newUsers.isEmpty || added.isEmpty) {
+      _usersHasMore = false;
+    }
     _refreshVisible();
     // 翻页新增的行同样预热（fire-and-forget），滚动到时缓存已命中。
-    _prewarmMeta(newUsers);
+    if (added.isNotEmpty) {
+      unawaited(_prewarmMeta(added));
+    }
   }
 
   Future<void> _openDetail(UserMetaData profile) async {
@@ -719,6 +736,35 @@ class UserListScreenState extends State<UserListScreen> {
         ),
       );
     }
+    if (_visibleUsers.isEmpty) {
+      return RefreshIndicator(
+        color: const Color(0xFF4F6CFF),
+        backgroundColor: Colors.white,
+        onRefresh: _load,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            const SizedBox(height: 64),
+            const Icon(Icons.visibility_off_outlined, size: 48, color: Colors.grey),
+            const SizedBox(height: 12),
+            const Center(
+              child: Text('当前已加载用户均被屏蔽标签或 Gay 模式规则隐藏',
+                  style: TextStyle(fontSize: 14)),
+            ),
+            if (_usersHasMore) ...[
+              const SizedBox(height: 12),
+              Center(
+                child: _LoadMoreButton(
+                  after: _users.last.username,
+                  api: _api,
+                  onLoaded: (newUsers) => setState(() => _appendUsers(newUsers)),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
     return RefreshIndicator(
       color: const Color(0xFF4F6CFF),
       backgroundColor: Colors.white,
@@ -726,7 +772,7 @@ class UserListScreenState extends State<UserListScreen> {
         await _load();
       },
       child: ListView.builder(
-        itemCount: _visibleUsers.length + 1,
+        itemCount: _visibleUsers.length + (_usersHasMore ? 1 : 0),
         itemBuilder: (_, i) {
           if (i == _visibleUsers.length) {
             return _LoadMoreButton(
@@ -908,16 +954,17 @@ class UserListScreenState extends State<UserListScreen> {
   static const int _kPrewarmCount = 12;
   static const int _kPrewarmConcurrency = 6;
 
-  void _prewarmMeta(List<TwitterUser> users) {
+  Future<void> _prewarmMeta(List<TwitterUser> users) async {
     final names =
         users.take(_kPrewarmCount).map((u) => u.username).toList(growable: false);
     if (names.isEmpty) return;
     for (var i = 0; i < names.length; i += _kPrewarmConcurrency) {
+      if (!mounted) return;
       final chunk = names.skip(i).take(_kPrewarmConcurrency);
-      for (final n in chunk) {
-        // fire-and-forget：错误吞掉（行内懒加载兜底显示用户名）。
-        _api.getMetaData(n).then((_) {}, onError: (_) {});
-      }
+      // 逐批 await，真正把并发度限制在 _kPrewarmConcurrency（6）以内。
+      await Future.wait(
+        chunk.map((n) => _api.getMetaData(n).then((_) {}, onError: (_) {})),
+      );
     }
   }
 
@@ -976,8 +1023,8 @@ class SearchMergeResult {
 List<TwitterUser> mergeSearchResults(List<List<TwitterUser>> lists) {
   final seen = <String>{};
   return [for (final l in lists) ...l]
-      // seen.add 返回是否新增，一行完成"保序 + 按 username 去重"。
-      .where((u) => seen.add(u.username))
+      // 过滤空 username 并按 username 保序去重，避免空串触发 ValueKey 冲突或首字母 RangeError。
+      .where((u) => u.username.isNotEmpty && seen.add(u.username))
       .toList();
 }
 
@@ -1394,7 +1441,7 @@ class _UserTile extends StatefulWidget {
   final String username;
   final TwitterApi api;
   final ProxyManager proxy;
-  final void Function(UserMetaData) onTap;
+  final FutureOr<void> Function(UserMetaData) onTap;
 
   /// 上游（hydrateUsernames）已经取好的这个账号。给了它本行就**零请求**渲染。
   ///
@@ -1577,7 +1624,9 @@ class _UserTileState extends State<_UserTile> {
       dense: true,
       leading: ProxyAvatar(
         url: avatar,
-        fallbackText: widget.username[0].toUpperCase(),
+        fallbackText: widget.username.isNotEmpty
+            ? widget.username[0].toUpperCase()
+            : '?',
         proxy: widget.proxy,
         radius: 16,
       ),
@@ -1589,14 +1638,17 @@ class _UserTileState extends State<_UserTile> {
       trailing: isFav
           ? const Icon(Icons.favorite, color: Colors.red, size: 18)
           : null,
-      onTap: () {
+      onTap: () async {
         // _meta 可能加载失败（null）：仍用占位数据进详情页，详情页会自行刷新。
-        widget.onTap(_meta ??
+        await widget.onTap(_meta ??
             UserMetaData(
               accountInfo: TwitterUser(username: widget.username),
               timeline: const [],
               totalUrls: 0,
             ));
+        // 从详情页返回后同步最新缓存（若详情页点击了「更新」或改了标签，
+        // TwitterApi._metaCache 已更新，_load() 直接命中内存缓存刷新 _meta）。
+        if (mounted) unawaited(_load());
       },
       onLongPress: () {
         showModalBottomSheet(

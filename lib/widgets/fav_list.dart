@@ -24,12 +24,31 @@ class _FavListState extends State<FavList> {
   String _importText = '';
   bool _showImport = false;
 
+  void _onStorageChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    StorageService.changes.addListener(_onStorageChanged);
+  }
+
+  @override
+  void dispose() {
+    StorageService.changes.removeListener(_onStorageChanged);
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final allUsernames = StorageService.getFavMap().keys.toList().reversed.toList();
+    final rawUsernames = StorageService.getFavMap().keys.toList().reversed.toList();
+    final allUsernames = rawUsernames
+        .where((u) => u.isNotEmpty && !StorageService.isBlocked(u))
+        .toList();
     final visible = allUsernames.take(_limit).toList();
 
-    if (allUsernames.isEmpty && !_showImport) {
+    if (rawUsernames.isEmpty && !_showImport) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -178,10 +197,37 @@ class _FavTile extends StatefulWidget {
 class _FavTileState extends State<_FavTile> {
   Future<UserMetaData>? _meta;
 
+  /// 并发拉取元数据与标签权重：`<user>.json.gz` 的 `account_info` 不含 `tags`
+  /// 字段，若直接拿 `accountInfo.tags`（恒为空 Map）送进 `shouldHideUser`，
+  /// 会导致收藏夹里「屏蔽标签」完全失效、且开启 Gay 模式时所有收藏项被误判隐藏。
+  Future<UserMetaData> _loadMetaWithTags(String username) async {
+    final metaFuture = widget.api.getMetaData(username);
+    final tagsFuture = widget.api
+        .getTagWeights(username)
+        .catchError((_) => const <String, int>{});
+    final meta = await metaFuture;
+    final fetchedTags = await tagsFuture;
+    final mergedTags =
+        fetchedTags.isNotEmpty ? fetchedTags : meta.accountInfo.tags;
+    if (mergedTags.isEmpty) return meta;
+    final info = meta.accountInfo;
+    return UserMetaData(
+      accountInfo: TwitterUser(
+        username: info.username.isNotEmpty ? info.username : username,
+        nick: info.nick,
+        avatar: info.avatar,
+        totalUrls: info.totalUrls,
+        tags: mergedTags,
+      ),
+      timeline: meta.timeline,
+      totalUrls: meta.totalUrls,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
-    _meta = widget.api.getMetaData(widget.username);
+    _meta = _loadMetaWithTags(widget.username);
   }
 
   @override
@@ -190,7 +236,7 @@ class _FavTileState extends State<_FavTile> {
     // 原实现在 build 里直接 new FutureBuilder future，父组件任意 setState
     // （导入/导出/加载更多）都会让所有可见 tile 重发请求。
     if (old.username != widget.username) {
-      _meta = widget.api.getMetaData(widget.username);
+      _meta = _loadMetaWithTags(widget.username);
     }
   }
 
@@ -217,25 +263,26 @@ class _FavTileState extends State<_FavTile> {
                 ),
                 title: Text(widget.username, style: const TextStyle(fontSize: 14)),
                 subtitle: const Text('加载失败，点击重试', style: TextStyle(color: Colors.red, fontSize: 11)),
-                onTap: () => setState(() => _meta = widget.api.getMetaData(widget.username)),
+                onTap: () => setState(() => _meta = _loadMetaWithTags(widget.username)),
               ),
             ),
           );
         }
         final info = snapshot.data?.accountInfo;
+        final tags = info?.tags ?? const <String, int>{};
         // 收藏夹此前**完全不过滤**（连用户名屏蔽都没应用）——用户屏蔽了某个
         // 账号，它照样出现在收藏里。统一走 shouldHideUser，与其它列表同口径。
-        //
-        // 这里只能拿到 _meta.accountInfo.tags：收藏项是先拉元数据再决定显不
-        // 显示的，所以标签级规则（屏蔽标签 / Gay 模式）在这一步才有数据可用。
-        if (StorageService.shouldHideUser(
-            widget.username, snapshot.data?.accountInfo.tags ?? const {})) {
+        if (StorageService.isBlocked(widget.username) ||
+            (tags.isNotEmpty &&
+                StorageService.shouldHideUser(widget.username, tags))) {
           return const SizedBox.shrink();
         }
         return ListTile(
           leading: ProxyAvatar(
             url: info?.avatar,
-            fallbackText: widget.username[0].toUpperCase(),
+            fallbackText: widget.username.isNotEmpty
+                ? widget.username[0].toUpperCase()
+                : '?',
             proxy: widget.proxy,
             radius: 16,
           ),

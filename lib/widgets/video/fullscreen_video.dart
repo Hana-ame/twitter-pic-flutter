@@ -42,6 +42,7 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
   bool _showControls = true;
   Timer? _hideTimer;
   bool _downloading = false;
+  double? _dragPositionMs;
   double _playbackSpeed = 1.0;
   static const List<double> _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
   int _speedIndex = 2;
@@ -113,6 +114,9 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
   @override
   void initState() {
     super.initState();
+    _playbackSpeed = widget.controller.value.playbackSpeed;
+    final idx = _speeds.indexOf(_playbackSpeed);
+    _speedIndex = idx >= 0 ? idx : 2;
     widget.controller.addListener(_onVideoUpdate);
     widget.controller.play();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -159,7 +163,12 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
     setState(() => _showControls = true);
   }
 
+  void _onSeekChanged(double valueMs) {
+    setState(() => _dragPositionMs = valueMs);
+  }
+
   void _onSeekEnd(Duration value) {
+    _dragPositionMs = null;
     unawaited(_seek(value));
     _scheduleHideControls();
   }
@@ -294,6 +303,7 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
                           _videoValue?.duration.inMilliseconds.toDouble() ?? 1,
                       buffered: _bufferedFraction,
                       onStart: _onSeekStart,
+                      onChanged: _onSeekChanged,
                       onEnd: (v) =>
                           _onSeekEnd(Duration(milliseconds: v.toInt())),
                     ),
@@ -310,7 +320,11 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
                           iconSize: 32,
                         ),
                         Text(
-                          _formatDuration(widget.controller.value.position),
+                          _dragPositionMs != null
+                              ? _formatDuration(Duration(
+                                  milliseconds: _dragPositionMs!.toInt()))
+                              : _formatDuration(
+                                  widget.controller.value.position),
                           style: const TextStyle(
                               color: Colors.white, fontSize: 12),
                         ),

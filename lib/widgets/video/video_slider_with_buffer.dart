@@ -8,13 +8,14 @@
 
 import 'package:flutter/material.dart';
 
-class VideoSliderWithBuffer extends StatelessWidget {
+class VideoSliderWithBuffer extends StatefulWidget {
   final double value;
   final double max;
 
   /// 已缓冲比例；null = 信息不足/已缓冲完（不画这条线）。
   final double? buffered;
   final VoidCallback onStart;
+  final ValueChanged<double>? onChanged;
   final ValueChanged<double> onEnd;
 
   const VideoSliderWithBuffer({
@@ -23,12 +24,22 @@ class VideoSliderWithBuffer extends StatelessWidget {
     required this.max,
     required this.buffered,
     required this.onStart,
+    this.onChanged,
     required this.onEnd,
   });
 
   @override
+  State<VideoSliderWithBuffer> createState() => _VideoSliderWithBufferState();
+}
+
+class _VideoSliderWithBufferState extends State<VideoSliderWithBuffer> {
+  double? _dragValue;
+
+  @override
   Widget build(BuildContext context) {
-    final fraction = (buffered ?? 0).clamp(0.0, 1.0);
+    final effectiveMax = widget.max <= 0 ? 1.0 : widget.max;
+    final current = (_dragValue ?? widget.value).clamp(0.0, effectiveMax);
+    final fraction = (widget.buffered ?? 0).clamp(0.0, 1.0);
     return Stack(
       alignment: Alignment.center,
       children: [
@@ -60,10 +71,22 @@ class VideoSliderWithBuffer extends StatelessWidget {
             overlayColor: Colors.white24,
           ),
           child: Slider(
-            value: value.clamp(0, max <= 0 ? 1 : max),
-            max: max <= 0 ? 1 : max,
-            onChanged: (_) => onStart(),
-            onChangeEnd: onEnd,
+            value: current,
+            max: effectiveMax,
+            onChangeStart: (v) {
+              setState(() => _dragValue = v);
+              widget.onStart();
+              widget.onChanged?.call(v);
+            },
+            onChanged: (v) {
+              if (_dragValue == null) widget.onStart();
+              setState(() => _dragValue = v);
+              widget.onChanged?.call(v);
+            },
+            onChangeEnd: (v) {
+              setState(() => _dragValue = null);
+              widget.onEnd(v);
+            },
           ),
         ),
       ],

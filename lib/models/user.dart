@@ -262,12 +262,14 @@ class UserMetaData {
         .where((e) => e is Map)
         .map((e) => TimelineItem.fromJson(_map(e)))
         .toList();
+    final parsedTags = parseTagWeights(json['tags'] ?? info['tags']);
     return UserMetaData(
       accountInfo: TwitterUser(
-        username: _str(info['name']),
+        username: _str(info['name'] ?? info['username']),
         nick: _strOrNone(info['nick']),
-        avatar: _strOrNone(info['profile_image']),
+        avatar: _strOrNone(info['profile_image'] ?? info['avatar']),
         totalUrls: _int(json['total_urls']),
+        tags: parsedTags,
       ),
       timeline: timeline,
       totalUrls: _int(json['total_urls']) ?? timeline.length,

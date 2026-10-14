@@ -119,6 +119,14 @@ void main() {
       expect(mergeSearchResults([]), isEmpty);
       expect(mergeSearchResults([<TwitterUser>[], <TwitterUser>[]]), isEmpty);
     });
+
+    test('脏数据防崩：空 username 条目在合并时被剔除', () {
+      final merged = mergeSearchResults([
+        [u(''), u('alice')],
+        [u(''), u('bob')],
+      ]);
+      expect(merged.map((e) => e.username).toList(), <String>['alice', 'bob']);
+    });
   });
 
   group('runMergedSearch（并发 + 逐项吞错 + 失败计数）', () {

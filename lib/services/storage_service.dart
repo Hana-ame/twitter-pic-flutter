@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 class StorageService {
@@ -40,6 +41,11 @@ class StorageService {
   static Map<String, String> _memory = {};
   static File? _file;
 
+  /// 存储变更通知：跨 Tab / 跨路由（如设置页或标签管理页修改 Gay 模式、
+  /// 屏蔽标签、收藏或屏蔽列表后返回）时，保活页面（如 UserListScreen、
+  /// FavoritesTab、SettingsScreen）据此同步重算可见列表与开关状态。
+  static final ValueNotifier<int> changes = ValueNotifier<int>(0);
+
   static Future<void> ensureInitialized() async {
     if (_loaded) return;
     final dir = await getApplicationSupportDirectory();
@@ -59,7 +65,8 @@ class StorageService {
   /// 清空所有存储数据。
   static Future<void> clearAll() async {
     _memory = {};
-    // 必须 await：设置页「清除数据」await 完就去改 UI 了，不等的化磁盘还没
+    changes.value++;
+    // 必须 await：设置页「清除数据」await 完就去改 UI 了，不等的话磁盘还没
     // 写完就返回，中途被系统杀进程时旧数据会残留（等于没清）。
     await _flush();
   }
@@ -118,6 +125,7 @@ class StorageService {
   static String _read(String key) => _memory[key] ?? '';
   static void _write(String key, String value) {
     _memory[key] = value;
+    changes.value++;
     unawaited(_flush());
   }
 

@@ -183,40 +183,64 @@ class ProgressiveDiskCache {
     }
   }
 
-  /// 写一条缓存。空字节/超限/未就绪/写失败都安静跳过——永不抛。
+  /// 写一条缓存（.tmp 原子替换）。空字节/超限/未就绪/写失败都安静跳过——永不抛。
   static Future<void> put(String url, Uint8List bytes) async {
     if (!_ready) await ensureInitialized();
     if (bytes.isEmpty || bytes.length > maxEntryBytes) return;
     final f = _file(url);
     if (f == null) return;
+    final tmp = File('${f.path}.tmp');
     try {
-      await f.writeAsBytes(bytes, flush: false);
-      _entryCount++;
-      _evictIfNeeded();
+      final existed = await f.exists();
+      await tmp.writeAsBytes(bytes, flush: false);
+      await tmp.rename(f.path);
+      if (!existed) _entryCount++;
+      await _evictIfNeeded();
     } catch (e) {
       debugPrint('ProgressiveDiskCache.put failed: $e');
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
     }
   }
 
-  /// 淘汰：超过 [maxEntries] 就删最老的。
-  ///
-  /// 用文件的最后修改时间当 LRU 时钟（读缓存时 [load] 已经 touch 过）。
-  static void _evictIfNeeded() {
+  /// 删掉已确认损坏的磁盘缓存条目，允许上层自愈回退到网络重下。
+  static Future<void> _deleteCorrupt(String url) async {
+    final f = _file(url);
+    if (f == null) return;
+    try {
+      if (await f.exists()) {
+        await f.delete();
+        if (_entryCount > 0) _entryCount--;
+      }
+    } catch (_) {}
+  }
+
+  /// 淘汰：超过 [maxEntries] 就删最老的一批（异步枚举 + 预取 mtime 一次排序，
+  /// 避免在 UI 线程同步比较器内发起 O(N log N) 次 lastModifiedSync 系统调用）。
+  static Future<void> _evictIfNeeded() async {
     if (_entryCount <= maxEntries) return;
     final dir = _rootDir;
     if (dir == null) return;
     try {
-      final files = dir.listSync().whereType<File>().toList()
-        ..sort((a, b) {
-          final am = a.lastModifiedSync();
-          final bm = b.lastModifiedSync();
-          return am.compareTo(bm);
-        });
-      var over = _entryCount - maxEntries;
-      for (final f in files) {
+      final entries = <(File, DateTime)>[];
+      await for (final entity in dir.list()) {
+        if (entity is File && !entity.path.endsWith('.tmp')) {
+          final stat = await entity.stat();
+          entries.add((entity, stat.modified));
+        }
+      }
+      _entryCount = entries.length;
+      if (_entryCount <= maxEntries) return;
+      entries.sort((a, b) => a.$2.compareTo(b.$2));
+      final target = maxEntries - (maxEntries ~/ 10);
+      var over = _entryCount - target;
+      for (final (f, _) in entries) {
         if (over-- <= 0) break;
-        f.deleteSync();
-        _entryCount--;
+        try {
+          await f.delete();
+          _entryCount--;
+        } catch (_) {}
       }
     } catch (e) {
       debugPrint('ProgressiveDiskCache evict failed: $e');
@@ -362,12 +386,12 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
     // 的分界，所以放在最前面。
     final cached = await ProgressiveDiskCache.load(url);
     if (cached != null) {
-      // 直接用 cached 本身解码，**不塞进 _buf**：_view 是按
-      // `_buf.buffer, 0` 取视图的，而磁盘读回的字节不保证 offsetInBytes 为0
-      // （File.readAsBytes 一般是 0，但不能赌），偏移非0 时 _view 会取错段。
-      // 磁盘命中直接解，不进 _buf，也就不涉及逐块追加的那套逻辑。
-      await _decodeAndEmit(cached, isFinal: true);
-      return;
+      // 直接用 cached 本身解码，**不塞进 _buf**。
+      // 若磁盘缓存文件损坏导致解码失败，删掉坏缓存并继续走下方网络下载自愈，
+      // 避免命中损坏缓存后永远报错且重试无效。
+      final ok = await _decodeAndEmit(cached, isFinal: false);
+      if (ok) return;
+      await ProgressiveDiskCache._deleteCorrupt(url);
     }
 
     final client = HttpClient()..connectionTimeout = timeout;
