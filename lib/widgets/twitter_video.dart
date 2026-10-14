@@ -84,6 +84,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   bool _showControls = true;
   Timer? _hideTimer;
   bool _isDragging = false;
+  double? _dragPositionMs;
   bool _downloading = false;
   /// 全屏播放中：卡片侧不再渲染 VideoPlayer（同一 controller 只能渲染一次）。
   bool _fullscreenOpen = false;
@@ -698,8 +699,13 @@ class _TwitterVideoState extends State<TwitterVideo>
     setState(() => _showControls = true);
   }
 
+  void _onSeekChanged(double valueMs) {
+    setState(() => _dragPositionMs = valueMs);
+  }
+
   void _onSeekEnd(Duration value) {
     _isDragging = false;
+    _dragPositionMs = null;
     // _seekTo 内部自己 catch，不会变成未处理的异步错误。
     unawaited(_seekTo(value));
     _scheduleHideControls();
@@ -725,7 +731,13 @@ class _TwitterVideoState extends State<TwitterVideo>
       ),
     );
     if (!mounted) return;
-    setState(() => _fullscreenOpen = false);
+    final currentSpeed = _controller?.value.playbackSpeed ?? _playbackSpeed;
+    final speedIdx = _speeds.indexOf(currentSpeed);
+    setState(() {
+      _fullscreenOpen = false;
+      _playbackSpeed = currentSpeed;
+      if (speedIdx >= 0) _speedIndex = speedIdx;
+    });
     _showControlsTemporarily();
   }
 
@@ -952,6 +964,7 @@ class _TwitterVideoState extends State<TwitterVideo>
             max: _videoValue?.duration.inMilliseconds.toDouble() ?? 1,
             buffered: _bufferedFraction,
             onStart: _onSeekStart,
+            onChanged: _onSeekChanged,
             onEnd: (v) => _onSeekEnd(Duration(milliseconds: v.toInt())),
           ),
 
@@ -967,11 +980,9 @@ class _TwitterVideoState extends State<TwitterVideo>
                 iconSize: 32,
               ),
               Text(
-                _isDragging
-                    ? _formatDuration(Duration(
-                        milliseconds: (_controller!.value.position.inMilliseconds +
-                                (_videoValue?.duration.inMilliseconds ?? 1) ~/
-                                    2)))
+                _isDragging && _dragPositionMs != null
+                    ? _formatDuration(
+                        Duration(milliseconds: _dragPositionMs!.toInt()))
                     : _formatDuration(_controller!.value.position),
                 style: const TextStyle(color: Colors.white, fontSize: 12),
               ),

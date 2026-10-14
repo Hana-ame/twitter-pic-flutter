@@ -130,7 +130,7 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
   /// 直连（墙内必死，实测 000），也不依赖第三方镜像 pbs.moonchan.xyz。
   List<String> _candidates() {
     final url = widget.url;
-    if (url == null) return const [];
+    if (url == null || url.isEmpty) return const [];
     final port = widget.proxy.port;
     if (port != null) return [EchUrl.rewrite(url, port)];
     return const [];
@@ -188,11 +188,14 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
     );
   }
 
+  String get _safeFallbackText =>
+      widget.fallbackText.isEmpty ? '?' : widget.fallbackText;
+
   Widget _buildFallback() {
     return CircleAvatar(
       radius: widget.radius,
       child: Text(
-        widget.fallbackText,
+        _safeFallbackText,
         style: TextStyle(fontSize: widget.radius * 0.8),
       ),
     );
@@ -205,7 +208,7 @@ class _ProxyAvatarState extends State<ProxyAvatar> {
       color: Colors.grey[300],
       child: Center(
         child: Text(
-          widget.fallbackText,
+          _safeFallbackText,
           style: TextStyle(fontSize: widget.radius * 0.8, color: Colors.white),
         ),
       ),

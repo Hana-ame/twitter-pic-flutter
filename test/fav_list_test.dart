@@ -125,4 +125,18 @@ void main() {
     expect(find.text('收藏夹为空'), findsOneWidget);
     api.dispose();
   });
+
+  testWidgets('被屏蔽的用户不出现在收藏列表中', (tester) async {
+    StorageService.toggleFav('alice');
+    StorageService.toggleFav('blocked_user');
+    StorageService.toggleBlock('blocked_user');
+
+    final api = TwitterApi(adapter: _StubAdapter());
+    await tester.pumpWidget(_host(api, ProxyManager()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('@alice'), findsOneWidget);
+    expect(find.text('@blocked_user'), findsNothing);
+    api.dispose();
+  });
 }

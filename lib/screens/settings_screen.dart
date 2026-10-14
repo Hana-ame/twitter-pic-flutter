@@ -48,6 +48,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _gayMode = StorageService.isGayMode();
+    StorageService.changes.addListener(_syncGayMode);
+  }
+
+  @override
+  void dispose() {
+    StorageService.changes.removeListener(_syncGayMode);
+    super.dispose();
   }
 
   /// 从别的页面改同一个开关后回到本页时，把 UI 拉回真实值。
@@ -97,7 +104,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       {int timeoutSec = 20, int maxReadBytes = 64 * 1024}) async {
     final client = HttpClient()
       ..connectionTimeout = Duration(seconds: timeoutSec);
-    client.badCertificateCallback = (cert, host, port) => true;
     final sw = Stopwatch()..start();
     try {
       final req = await client
@@ -126,7 +132,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// 上游必须回 206 + Content-Range，否则拿不到文件尾部的 moov，视频永不开播。
   Future<String> _rangeProbe(String url, {int timeoutSec = 20}) async {
     final client = HttpClient()..connectionTimeout = Duration(seconds: timeoutSec);
-    client.badCertificateCallback = (cert, host, port) => true;
     final sw = Stopwatch()..start();
     try {
       final req = await client
@@ -193,7 +198,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// 大账号的 json.gz 若无超时会把整个诊断永久卡在步骤 2。
   Future<_RawJsonResult> _fetchRawJson(String username) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
-    client.badCertificateCallback = (cert, host, port) => true;
     try {
       final date = DateTime.now().toIso8601String().split('T')[0];
       final url = '$kApiBase/$username.json.gz?t=$date';
@@ -298,7 +302,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// 之前只看是否以“失败”开头，导致 HTTP 404/502 也标成绿色✓——恰恰是
   /// 最需要被看见的错误。现在按 HTTP 状态码与字段检查符号判定。
   static bool _passed(String result) {
-    if (result.startsWith('失败')) return false;
+    if (result.startsWith('失败') || result.contains('（跳过）')) return false;
     final m = RegExp(r'HTTP (\d{3})').firstMatch(result);
     if (m != null) {
       final code = int.parse(m.group(1)!);
@@ -456,7 +460,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // 7. 真实头像 → NetworkImage 解码（ProxyAvatar 用的就是这套栈）。
     // 与测试 6 的区别：这里过 Flutter 的图片缓存与解码。若 6 通过而 7 失败，
     // 说明问题在 widget 层（解码/尺寸/缓存），而不是网络。
-    await step('7. 真实头像 widget 栈解码 (NetworkImage)', () async {
+    await step('7. 真实头像 widget 栈解码 (ProgressiveImageProvider)', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
       await ensureSample();

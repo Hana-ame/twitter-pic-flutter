@@ -71,8 +71,8 @@
 
 ## 3. 视频与图片播放/渲染规范
 
-1. **图片一律使用原图 origin**：
-   - 线上已废弃 `name=` 尺寸档位划分（会打乱缓存 key），图片 URL 必须统一保持 origin 原图请求。
+1. **图片双档位分工（列表缩略图 `name=small` + 预览/下载原图 `orig`）**：
+   - 列表卡片（`TwitterImage(thumb: true)`）与详情页预取（`_precacheAhead`）统一通过 `MediaUrl.thumbOf(url)` 请求 `name=small` 缩略图档位（体积约原图 1/10），全屏预览与下载分享保持 `orig` 原图。
    - 图片使用 `ProgressiveImageProvider`（逐块流式解码），`AspectRatio` 必须在首帧前预设占位（默认 3:4），**严禁在 `ListView` 中对图片使用 `Stack(fit: StackFit.expand)`**（无界高度传入紧约束会导致整屏空白崩溃）。
 2. **视频播放与解码器槽位控制**：
    - ExoPlayer 必须要求本地代理支持 `Range` 请求并返回 `206 Partial Content`，代理必须强制 `Accept-Encoding: identity`（禁止 Go transport 自动 gzip 删除 Content-Length）。

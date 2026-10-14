@@ -141,10 +141,8 @@ Flutter 的 `NetworkImage` 会先 `consolidateHttpClientResponseBytes`（读完�
 线上数据形态（抽查 6 用户 / 2209 条）：图片 `pbs.twimg.com/media/<id>?format=jpg&name=orig`，
 视频 `video.twimg.com/.../<id>.mp4?tag=29`（238 条连 query 都没有）。
 
-- **不改写任何 URL**：一律 origin。`name=` 档位会让同一张图有 4 个 URL（缓存 key 被打散），
-  并且把"该选哪一档"变成一条必须三端对齐的规则——所以整条规则是**被删掉**，不是搬到别处。
-- 只保留 `isImage(url)`：判定只看域名（`pbs.twimg.com` 且非 `video.twimg.com`），
-  用于预取时跳过视频（动辄几 MB）。
+- **双档位分工（v0.6.1+）**：列表卡片（`thumb: true`）与详情页预取通过 `MediaUrl.thumbOf(url)` 使用 `name=small` 缩略图；全屏画廊预览与下载分享保持 `orig` 原图。
+- `isImage(url)`：判定按 host 精确匹配 `pbs.twimg.com`，用于预取时跳过视频（动辄几 MB）。
 - `TwitterImage` 的失败重试不再有"回退到原图"这一步：加载的就是原图，重试一次即可。
 
 ### 图片/视频渲染的红线
