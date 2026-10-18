@@ -415,6 +415,20 @@ jobs:
           if ! grep -q 'android.permission.INTERNET' "$MANIFEST"; then
             sed -i '/<manifest/s|.*|&\n    <uses-permission android:name="android.permission.INTERNET"/>|' "$MANIFEST"
           fi
+          # 批量下载保存到 /storage/emulated/0/Download/（浏览器保存位置），
+          # 需要以下两项权限：
+          #   - WRITE_EXTERNAL_STORAGE：targetSdk ≤ 28 的老系统（运行时权限）
+          #   - MANAGE_EXTERNAL_STORAGE：targetSdk 29+ 分区存储（用户在系统
+          #     设置里手动授权"全部文件访问"）
+          # 缺这两个权限时 Directory.create() 抛 FileSystemException，Dart 侧
+          # 已识别并弹提示框引导用户去系统设置（见 user_detail_screen.dart
+          # 的 _showPermissionDenied），但**没声明则连弹框的机会都没有**——
+          # 系统直接静默拒绝，用户只会看到"下载失败"。
+          for PERM in WRITE_EXTERNAL_STORAGE MANAGE_EXTERNAL_STORAGE; do
+            if ! grep -q "android.permission.$PERM" "$MANIFEST"; then
+              sed -i "/<manifest/s|.*|&\n    <uses-permission android:name=\"android.permission.$PERM\"/>|" "$MANIFEST"
+            fi
+          done
           sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
           # API/图片/视频全部经 http://127.0.0.1:<port> 本机代理。Android 9+
           # （targetSdk 28+）默认禁明文，不注入该属性时所有代理请求会被系统
@@ -423,8 +437,10 @@ jobs:
             sed -i 's|<application|<application android:usesCleartextTraffic="true"|' "$MANIFEST"
           fi
           grep -q 'android:usesCleartextTraffic="true"' "$MANIFEST" || { echo "::error::usesCleartextTraffic injection failed"; exit 1; }
-          # 后置校验：缺 INTERNET 权限的 APK 静默无法联网，CI 却全绿。
+          # 后置校验：缺任何一个权限的 APK 静默失败，CI 却全绿。
           grep -q 'android.permission.INTERNET' "$MANIFEST" || { echo "::error::INTERNET permission injection failed"; exit 1; }
+          grep -q 'android.permission.WRITE_EXTERNAL_STORAGE' "$MANIFEST" || { echo "::error::WRITE_EXTERNAL_STORAGE injection failed"; exit 1; }
+          grep -q 'android.permission.MANAGE_EXTERNAL_STORAGE' "$MANIFEST" || { echo "::error::MANAGE_EXTERNAL_STORAGE injection failed"; exit 1; }
 
       - name: Place ECH shared library
         run: |

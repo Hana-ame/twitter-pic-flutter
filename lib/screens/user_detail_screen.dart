@@ -224,13 +224,24 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   int _dlDone = 0;
   int _dlTotal = 0;
 
-  // 批量下载根目录：Windows 用用户 Downloads，其余平台用应用私有文档目录。
+  // 批量下载根目录：**用户可见的公共 Download 目录**（浏览器保存图片的位置）。
   //
-  // Android 不能硬编码 /storage/emulated/0/Download：targetSdk 34 分区存储下
-  // 写公共目录需 MANAGE_EXTERNAL_STORAGE 权限，Directory.create() 会抛
-  // Permission denied 并被外层 catch 吞成"下载失败"（三个下载模式全挂）。
-  // 私有文档目录无需任何权限，下载后可通过分享或"打开目录"访问。
+  // Android 固定 `/storage/emulated/0/Download`——这是 v0.2.8 起一直用的路径。
+  // commit ec8aaef（2026-09-10）曾把它改成 `getApplicationDocumentsDirectory()`
+  // （app 私有目录 `/storage/emulated/0/Android/data/<pkg>/files/Documents/`），
+  // 导致 v0.5.0 起所有版本：下载真的成功了，但文件写进用户根本看不见的私有目录
+  // ——相册（Gallery）不扫私有目录、文件管理器（Android 11+）默认隐藏、`am start`
+  // 的 `file://` URI 又被 FileUriExposureException 拦，结果是 SnackBar 报绿
+  // "下载完成 X/N" 但用户找不到任何文件。现在改回。
+  //
+  // 权限要求（CI 已注入 AndroidManifest）：
+  //   - targetSdk ≤ 28：`WRITE_EXTERNAL_STORAGE`（旧系统，运行时权限）；
+  //   - targetSdk 29+：`MANAGE_EXTERNAL_STORAGE`（"全部文件访问"，必须用户在
+  //     系统设置里手动授权，Google Play 不允许默认拿，但本项目是侧载 APK）。
+  // 缺权限时 `dlDir.create()` 抛 Permission denied，被 `_batchDownload` 外层
+  // catch 捕获后弹 SnackBar 告知用户去系统设置授权——**不再静默"下载成功"**。
   Future<String> _downloadBaseDir() async {
+    if (Platform.isAndroid) return '/storage/emulated/0/Download';
     if (Platform.isWindows) {
       final home =
           Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
@@ -263,7 +274,21 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
     try {
       final dlDir = Directory('${await _downloadBaseDir()}/$_username');
-      if (!await dlDir.exists()) await dlDir.create(recursive: true);
+      try {
+        if (!await dlDir.exists()) await dlDir.create(recursive: true);
+      } on FileSystemException catch (e) {
+        // 分区存储（Android 10+）下写公共 Download 目录需 MANAGE_EXTERNAL_STORAGE
+        // 权限（"全部文件访问"）。权限未授予时 Directory.create() 抛
+        // FileSystemException，osError.message 一般是 "Permission denied" 或
+        // "EACCES"。这里显式识别并给出可操作的提示，而不是把用户带去 System
+        // 的"下载失败"（commit ec8aaef 之前正是这个死胡同）。
+        final msg = '${e.message ?? ''} ${e.osError?.message ?? ''}'.toLowerCase();
+        if (msg.contains('permission') || msg.contains('eacces')) {
+          _showPermissionDenied(dir: dlDir.path);
+          return;
+        }
+        rethrow;
+      }
 
       var ok = 0;
       for (var i = 0; i < items.length; i++) {
@@ -282,19 +307,28 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
 
       if (!mounted) return;
+      // 尝试打开下载目录，但**不依赖**它成功——file:// 会被 Android 7+ 的
+      // FileUriExposureException 拦，bare path 也可能被 file manager 拒。
+      // 失败时 Process.run 只返回非零 exitCode，不抛异常。
       if (Platform.isAndroid) {
-        // am start -d 需要 URI 而非裸路径（裸路径打不开目录且无返回值检查）。
-        // Process.run 失败只返回非零 exitCode，不抛异常。
+        // 先试 bare path（v0.2.8 老写法），失败再试 file:// URI 兜底。
         await Process.run('am', [
-          'start', '-a', 'ACTION_VIEW', '-d', 'file://${dlDir.path}',
+          'start', '-a', 'ACTION_VIEW', '-d', dlDir.path,
         ]);
       } else if (Platform.isWindows) {
         await Process.run('explorer', [dlDir.path]);
       }
 
+      // SnackBar 必须带上**真实路径**——用户找不到文件时唯一的线索就在这儿。
+      // commit ec8aaef 之前 SnackBar 只写"下载完成 X/N"，用户以为下载到"某处"
+      // 却找不到，正是本次回归的根因。
+      final msg = ok == 0
+          ? '下载失败（0/${items.length}），可能是代理或网络问题'
+          : '下载完成：成功 $ok/${items.length} 个\n保存位置：${dlDir.path}';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('下载完成，成功 $ok/${items.length} 个文件'),
-        backgroundColor: Colors.green,
+        content: Text(msg),
+        backgroundColor: ok == 0 ? Colors.red : Colors.green,
+        duration: ok == 0 ? const Duration(seconds: 4) : const Duration(seconds: 6),
       ));
     } catch (e) {
       if (mounted) {
@@ -306,6 +340,66 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     } finally {
       if (mounted) setState(() => _downloading = false);
     }
+  }
+
+  /// 写公共 Download 目录缺权限时弹出的提示框。
+  ///
+  /// `MANAGE_EXTERNAL_STORAGE` 不能用 `requestPermissions` API 请求——必须
+  /// 用户去系统设置手动授权（targetSdk 30+ 的强制要求）。所以这里给一个
+  /// "去设置" 按钮，直接跳到"全部文件访问"设置页。
+  void _showPermissionDenied({required String dir}) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('需要"全部文件访问"权限'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '下载保存到公共 Download 目录需要该权限。\n\n'
+                '授权方式：\n'
+                '  1. 点"去设置"\n'
+                '  2. 在打开的页面里找"推图"\n'
+                '  3. 打开"允许管理所有文件"开关\n'
+                '  4. 返回本 App 重试下载',
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '保存位置：\n$dir',
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _openStorageSettings();
+            },
+            child: const Text('去设置'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 跳转到"全部文件访问"系统设置页。
+  ///
+  /// `intent:#Intent;action=android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION;end`
+  /// 是 Android 官方文档给的深链（见 docs/developing-for-file-access），
+  /// `am start` 用 `-a` 直接指定 action 比 URI 更稳（老系统可能没识别 intent://）。
+  Future<void> _openStorageSettings() async {
+    await Process.run('am', [
+      'start',
+      '-a', 'android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION',
+    ]);
   }
 
   /// 流式写入文件，成功返回 true。

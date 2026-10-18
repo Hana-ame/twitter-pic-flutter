@@ -35,7 +35,7 @@
 | **3** | API/存储/模型 | `lib/api/twitter_api.dart`、`lib/models/user.dart`、`lib/services/storage_service.dart`、`lib/utils/stable_hash.dart`、`lib/screens/ranking_screen.dart`、`test/user_model_test.dart`、`test/storage_service_test.dart`、`test/stable_hash_test.dart` | 832 | `fromJson` 容错（禁裸 `as`）、`resp.data` 类型判定、缓存并发去重与 TTL、写后清缓存、加载失败不得静默吞、错误态与空数据态可区分 |
 | **4** | 入口/导航/主题 | `lib/main.dart` | 413 | Tab 重建策略（`IndexedStack` + `ValueKey` 权衡）、`runZonedGuarded`/`FlutterError.onError`、初始化失败白屏、`ThemeData` 是否每次 build 重建、双层 Scaffold/AppBar |
 | **5** | 列表/收藏/搜索 | `lib/screens/user_list_screen.dart`、`lib/widgets/fav_list.dart`、`lib/widgets/search_bar.dart` | 1004 | `ValueKey` 与数据去重一致性、失败态是否有重试入口、in-flight 守卫、`onRefresh` 语义、handle 正则校验、`catchError((_) => [])` 吞错误 |
-| **6** | 详情/标签/下载 | `lib/screens/user_detail_screen.dart`、`lib/widgets/tag_controller.dart`、`lib/widgets/tag_display_area.dart`、`lib/widgets/tag_selector_modal.dart`、`lib/widgets/horizontal_button_row.dart`、`test/tag_display_area_test.dart` | 1018 | Android 下载目录（禁硬编码公共路径）、`RandomAccessFile` finally、`HttpClient` 超时、`didUpdateWidget` 全量同步、乐观更新回滚、默认值不得每次启动覆盖用户值、`(e.value as num)` 强转 |
+| **6** | 详情/标签/下载 | `lib/screens/user_detail_screen.dart`、`lib/widgets/tag_controller.dart`、`lib/widgets/tag_display_area.dart`、`lib/widgets/tag_selector_modal.dart`、`lib/widgets/horizontal_button_row.dart`、`test/tag_display_area_test.dart` | 1018 | Android 下载目录（必须用 `/storage/emulated/0/Download`，不得用私有目录）、`RandomAccessFile` finally、`HttpClient` 超时、`didUpdateWidget` 全量同步、乐观更新回滚、默认值不得每次启动覆盖用户值、`(e.value as num)` 强转 |
 | **7** | 图片组件 | `lib/widgets/twitter_image.dart` | 485 | Hero tag 唯一性、`errorBuilder` 内 `setState`（build 期间）、下载超时、`cacheWidth/cacheHeight`、回退模式与下载同源 |
 | **8** | 视频组件 | `lib/widgets/twitter_video.dart` | 797 | **必须独占一段**：两个 State 类（`_TwitterVideoState` / `_FullscreenVideoState`）的方法可见性最易出错。重点：`await` 后判 `mounted`、`didUpdateWidget` 需 `_initSeq` 序号、controller 泄漏、下载防重入、全屏锁横屏与速度同步 |
 | **9** | 设置页 | `lib/screens/settings_screen.dart` | 236 | `embedded` 参数与外层工具栏、清除数据作用域、日志弹窗空安全、状态卡刷新时机、二次确认与重入保护 |
@@ -139,9 +139,18 @@
   用 `CurvedAnimation(parent: a, curve: ...)` 取 `.value`，不要 `Curves.x.transform(a)`。
 - `await` 之后必须判 `mounted` 再 `setState` / `addListener`。
 - `await for (var x in stream)` 要求 stream 非空：nullable 变量要用非空局部变量承接。
-- Android 下载目录**不得硬编码** `/storage/emulated/0/Download`
-  （targetSdk 34 分区存储下 `Directory.create()` 抛 Permission denied）。
-- `am start -d` 需要 `file://` URI，裸路径打不开目录。
+- Android 下载目录**必须**用 `/storage/emulated/0/Download`（用户可见的公共
+  Download 目录，浏览器保存图片的位置）。**不得**改成 `getApplicationDocumentsDirectory()`
+  —— 那是 app 私有目录，相册不扫、文件管理器默认隐藏，用户根本看不见（这是
+  commit ec8aaef 引入的回归，v0.5.0 起所有版本受影响）。
+- 分区存储（targetSdk 29+）下写公共 Download 目录需 `MANAGE_EXTERNAL_STORAGE`
+  权限（"全部文件访问"，用户必须去系统设置手动授权）；旧系统需
+  `WRITE_EXTERNAL_STORAGE`。两项权限 CI 已注入 AndroidManifest；缺权限时
+  `Directory.create()` 抛 FileSystemException（osError.message 含 "Permission
+  denied" 或 "EACCES"），Dart 侧要捕获并弹提示框引导用户去系统设置授权，
+  **不得**静默失败。
+- `am start -d` 用裸路径（v0.2.8 写法）。`file://` URI 在 Android 7+ 被
+  FileUriExposureException 拦；`am start` 用 `-a` 直接指定 action 比 URI 更稳。
 - 批量下载前给 `HttpClient` 设 `connectionTimeout`，否则代理挂死时 UI 永久卡"下载中"。
 - 写文件用 `RandomAccessFile` 必须 `finally` 关闭，失败时删除半写文件。
 - 列表 `ValueKey(u.username)` 必须与数据去重配套，否则 `Duplicate keys` 断言崩溃。
