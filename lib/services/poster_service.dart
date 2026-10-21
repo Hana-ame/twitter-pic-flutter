@@ -1,5 +1,5 @@
 // poster_service.dart
-// 视频封面（静帧）缓存：内存 + 磁盘二级。
+// 视频封面（静帧）缓存：内存 + 磁盘二级（含磁盘上限 LRU 淘汰）。
 //
 // 为什么需要它：Android 的**硬件**解码器实例只有 2~4 个（720p60 High profile 往往
 // 只吃得下 2 个），而时间线上每一张视频卡片都想显示一张静帧。靠"每张卡片都开一个
@@ -33,6 +33,13 @@ class PosterService {
   /// 60 条也就是几 MB —— 比让用户重新抽帧划算。
   static const int maxMemoryEntries = 60;
 
+  /// 磁盘缓存条数上限（默认 1000 张，约 50~80MB），超过后按修改时间（mtime）
+  /// 异步淘汰最旧的一批，防止跨会话无限累积撑满磁盘。
+  static const int defaultMaxDiskEntries = 1000;
+
+  /// 当前生效的磁盘缓存上限（测试可覆写以验证小容量下的淘汰行为）。
+  static int maxDiskEntries = defaultMaxDiskEntries;
+
   /// 磁盘目录名（在应用支持目录下）。
   static const String dirName = 'posters';
 
@@ -44,6 +51,7 @@ class PosterService {
   static Directory? _rootDir;
   static Directory? _dirOverride;
   static bool _ready = false;
+  static int _diskEntryCount = 0;
 
   static bool get isReady => _ready;
 
@@ -56,6 +64,15 @@ class PosterService {
       _rootDir = Directory('${base.path}/$dirName');
       if (!await _rootDir!.exists()) {
         await _rootDir!.create(recursive: true);
+      }
+      try {
+        _diskEntryCount = _rootDir!
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.$fileExtension'))
+            .length;
+      } catch (_) {
+        _diskEntryCount = 0;
       }
       _ready = true;
     } catch (e) {
@@ -80,7 +97,7 @@ class PosterService {
   /// 只查内存（不碰磁盘）。
   static Uint8List? memory(String videoUrl) => _memory[videoUrl];
 
-  /// 先内存、后磁盘。命中磁盘会回填内存。
+  /// 先内存、后磁盘。命中磁盘会回填内存并更新文件 mtime。
   static Future<Uint8List?> load(String videoUrl) async {
     final hit = _memory[videoUrl];
     if (hit != null) {
@@ -93,6 +110,7 @@ class PosterService {
       if (!await f.exists()) return null;
       final bytes = await f.readAsBytes();
       if (bytes.isEmpty) return null;
+      _touchDiskFile(f);
       _putMemory(videoUrl, bytes);
       return bytes;
     } catch (e) {
@@ -101,7 +119,7 @@ class PosterService {
     }
   }
 
-  /// 写入内存 + 磁盘。
+  /// 写入内存 + 磁盘（原子写 + 超限自动 LRU 淘汰）。
   ///
   /// 磁盘失败不影响内存命中（本次会话里照样有封面可用）。
   static Future<void> put(String videoUrl, Uint8List bytes) async {
@@ -109,10 +127,55 @@ class PosterService {
     _putMemory(videoUrl, bytes);
     final f = _file(videoUrl);
     if (f == null) return;
+    final tmp = File('${f.path}.tmp');
     try {
-      await f.writeAsBytes(bytes, flush: true);
+      final existed = await f.exists();
+      await tmp.writeAsBytes(bytes, flush: true);
+      await tmp.rename(f.path);
+      if (!existed) _diskEntryCount++;
+      await _evictDiskIfNeeded();
     } catch (e) {
       debugPrint('PosterService.put failed: $e');
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
+    }
+  }
+
+  static void _touchDiskFile(File f) {
+    try {
+      f.setLastModifiedSync(DateTime.now());
+    } catch (_) {}
+  }
+
+  /// 磁盘缓存超限时按 mtime 从旧到新淘汰（每次淘汰约 10% 余量，避免每次写入都扫目录）。
+  static Future<void> _evictDiskIfNeeded() async {
+    if (_diskEntryCount <= maxDiskEntries) return;
+    final dir = _rootDir;
+    if (dir == null) return;
+    try {
+      final entries = <(File, DateTime)>[];
+      await for (final entity in dir.list()) {
+        if (entity is File && entity.path.endsWith('.$fileExtension')) {
+          final stat = await entity.stat();
+          entries.add((entity, stat.modified));
+        }
+      }
+      _diskEntryCount = entries.length;
+      if (_diskEntryCount <= maxDiskEntries) return;
+      entries.sort((a, b) => a.$2.compareTo(b.$2));
+      final reserve = (maxDiskEntries ~/ 10).clamp(1, maxDiskEntries);
+      final target = (maxDiskEntries - reserve).clamp(1, maxDiskEntries);
+      var over = _diskEntryCount - target;
+      for (final (f, _) in entries) {
+        if (over-- <= 0) break;
+        try {
+          await f.delete();
+          _diskEntryCount--;
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('PosterService disk evict failed: $e');
     }
   }
 
@@ -134,6 +197,7 @@ class PosterService {
   static Future<void> clearAll() async {
     _memory.clear();
     _memoryOrder.clear();
+    _diskEntryCount = 0;
     final dir = _rootDir;
     if (dir == null) return;
     try {
@@ -151,6 +215,8 @@ class PosterService {
     _ready = false;
     _rootDir = null;
     _dirOverride = null;
+    _diskEntryCount = 0;
+    maxDiskEntries = defaultMaxDiskEntries;
     _memory.clear();
     _memoryOrder.clear();
   }

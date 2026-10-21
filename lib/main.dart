@@ -1,14 +1,5 @@
 // main.dart
-// 应用入口：初始化 ECH 代理（进程内反向代理），展示用户列表。
-//
-// 与旧版 (v0.2.8) 的主要差异：
-//   1. 删除了所有 per-request FFI 调用（fetchAsync / fetchToFileAsync）
-//   2. 启动时调用 proxy.start() 启动本机 HTTP 代理
-//   3. 网络分流：JSON/API 直连 x.moonchan.xyz；仅 twimg 媒体（图片/视频/
-//      头像）经 EchUrl.rewrite() 改写走 127.0.0.1:port 的 ECH 代理
-//   4. 新增「重启 ECH」按钮（AppBar），用于代理异常时手动恢复
-//   5. 新增 _startInFlight 守卫，防止并发启动
-//   6. 重启后端口可能变化，通过 _port 字段统一管理
+// 应用入口：初始化 ECH 代理（进程内反向代理），展示用户列表，支持外观主题切换与浏览历史。
 
 import 'dart:async';
 // 前缀导入：dart:ui 与 material 有同名导出（TextStyle / Image 等），
@@ -23,6 +14,7 @@ import 'services/log_service.dart';
 import 'services/poster_service.dart';
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
+import 'screens/browse_history_screen.dart';
 import 'screens/ranking_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/user_detail_screen.dart';
@@ -38,9 +30,6 @@ const _kBuildNum = String.fromEnvironment('BUILD_NUM', defaultValue: 'dev');
 // ─── 入口 ────────────────────────────────────────────────────────────────────
 
 void main() {
-  // 全局错误捕获：以前一处都没有 —— Dart 侧出错只在控制台一闪而过，用户报
-  // 「闪退」时手里没有任何线索。现在所有未捕获错误都会落到 logs/app.log，
-  // 并且能在设置页打包反馈（见 lib/services/log_service.dart）。
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
 
@@ -48,35 +37,24 @@ void main() {
       LogService.recordError('FlutterError', details.exception, details.stack);
       FlutterError.presentError(details);
     };
-    // 平台通道 / isolates 里抛出的错误（不经过 FlutterError）走这里。
     ui.PlatformDispatcher.instance.onError = (error, stack) {
       LogService.recordError('PlatformDispatcher', error, stack);
-      // 返回 true：已记录，不再走默认处理（默认也只是打印一行）。
       return true;
     };
 
-    // 图片缓存放宽：默认是 100MB / 1000 张。列表里滚过去的图一旦被挤出去，
-    // 滚回来就得重新下载解码，中间那段就是空白。这里放宽到 160MB / 1500 张，
-    // 已经看过的图基本留在内存里。（解码后是位图，按屏幕宽度算一张几 MB。）
     PaintingBinding.instance.imageCache.maximumSizeBytes = 160 << 20;
     PaintingBinding.instance.imageCache.maximumSize = 1500;
 
     await StorageService.ensureInitialized();
     await LogService.ensureInitialized(buildNum: _kBuildNum);
-    // 视频封面缓存目录：卡片抓到的静帧存这儿，之后不占解码器也能显示。
     await PosterService.ensureInitialized();
-    // 图片磁盘缓存（v0.6.1）：滚回来的图直接从磁盘读，不再经 ECH 重下。
-    // 失败也无所谓——未就绪时自动降级为纯内存，不是功能依赖。
     unawaited(ProgressiveDiskCache.ensureInitialized());
 
-    // 顺序要紧：先读上一次的会话文件判断是否正常结束，再写本次会话 ——
-    // 反过来的话 startSession() 会先把旧记录覆盖掉，永远检测不到异常退出。
     final pendingExit = await LogService.takeUncleanExit();
     LogService.startSession();
 
     runApp(MyApp(pendingExit: pendingExit));
   }, (error, stack) {
-    // 兜底：上面两个钩子之外的错误（未捕获的 Future、Timer 回调）落到这里。
     LogService.recordError('zone', error, stack);
   });
 }
@@ -98,14 +76,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   List<String> _logs = [];
   bool _showLog = false;
   bool _startInFlight = false;
+  String _themeMode = 'light';
 
   /// 用于在 MaterialApp 之上拿一个可用的 context 弹「上次异常结束」提示。
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
 
   /// Go 日志轮询：把代理的日志环形缓冲持续搬到磁盘。
-  ///
-  /// 只在需要时才读（内存里的缓冲随进程消失，这正是闪退查不出来的原因）。
-  /// 2 秒是「丢的日志足够少」与「不会反复写盘」之间的取舍。
   Timer? _logTimer;
 
   // ─── 启动 / 重启 ─────────────────────────────────────────────────────────
@@ -113,11 +89,31 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _themeMode = StorageService.getThemeMode();
+    StorageService.changes.addListener(_onStorageChanged);
     WidgetsBinding.instance.addObserver(this);
     _start();
     _startLogPolling();
-    // 首帧之后再弹，此时 Navigator 已就绪。
     WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowExitReport());
+  }
+
+  void _onStorageChanged() {
+    if (!mounted) return;
+    final nextTheme = StorageService.getThemeMode();
+    if (nextTheme != _themeMode) {
+      setState(() => _themeMode = nextTheme);
+    }
+  }
+
+  ThemeMode get _resolvedThemeMode {
+    switch (_themeMode) {
+      case 'dark':
+        return ThemeMode.dark;
+      case 'system':
+        return ThemeMode.system;
+      default:
+        return ThemeMode.light;
+    }
   }
 
   /// 上次没有正常结束时，主动提示用户加群反馈。
@@ -141,8 +137,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     _logTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (!LogService.isReady) return;
       unawaited(LogService.pollGoLogs(_proxy.getLogs()));
-      // 调试面板开着时同步刷新：_logs 过去只在 _start 里赋过一次，面板里
-      // 看到的是启动那一刻的快照 —— 代理跑起来之后的日志永远看不到。
       if (_showLog && mounted) {
         final latest = _proxy.getLogs();
         if (latest.length != _logs.length) {
@@ -157,20 +151,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      // 正常收尾：打上标记，下次启动就不会误报「上次没有正常结束」。
-      //
-      // 必须放在 **paused**，不能只放 detached：Android 从不触发 detached
-      // （只有 paused/resumed/inactive），只有切后台才会 paused。只挂 detached
-      // 的话，每次系统回收后台进程都会留下 cleanExit=false，下次启动 100%
-      // 误报「上次没有正常结束」；用户烦了点「不再提示」之后，真闪退也不再
-      // 提示 —— 崩溃检测等于被误报自己废掉了。
-      // detached 保留给桌面端（Windows 关掉窗口走这条）。
       LogService.markCleanExit();
       unawaited(LogService.pollGoLogs(_proxy.getLogs()));
       unawaited(LogService.flush());
     } else if (state == AppLifecycleState.resumed) {
-      // 回到前台：把标记翻回「进行中」。paused 不一定真的结束进程，
-      // 留着 cleanExit=true 会让之后的闪退检测不到。
       LogService.markSessionActive();
     }
   }
@@ -195,8 +179,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       final port = await _proxy.start(bootstrapIp: ip!);
       print('ECH proxy started on port $port');
 
-      // 立即补一次 Go 日志，不等 2 秒的定时轮询：启动后 2 秒内的诊断行
-      // 是「代理连不上」时唯一有用的线索。
       unawaited(LogService.pollGoLogs(_proxy.getLogs()));
 
       _logs = _proxy.getLogs();
@@ -204,8 +186,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       setState(() => _proxyReady = true);
     } catch (e, st) {
       _logs = _proxy.getLogs();
-      // 不落盘的话反馈包里完全没有痕迹：app 重启后 _proxyError 也空了，
-      // 排查者根本不知道这次启动失败过。
       LogService.recordError('ProxyStart', e, st);
       if (!mounted) return;
       setState(() => _proxyError = e.toString());
@@ -215,7 +195,6 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   }
 
   /// 运行中重启 ECH 代理。
-  /// 用于代理静默失效、ECH 配置过期、或用户怀疑卡死时手动恢复。
   Future<void> _restart() async {
     final navCtx = _navKey.currentContext;
     if (navCtx == null) return;
@@ -257,46 +236,88 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   // ─── UI ──────────────────────────────────────────────────────────────────
 
+  static final ThemeData _lightTheme = ThemeData(
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: const Color(0xFF4F6CFF),
+      brightness: Brightness.light,
+    ),
+    useMaterial3: true,
+    appBarTheme: const AppBarTheme(
+      centerTitle: true,
+      elevation: 0,
+      scrolledUnderElevation: 2,
+      backgroundColor: Colors.transparent,
+      foregroundColor: Color(0xFF4F6CFF),
+    ),
+    cardTheme: CardThemeData(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade200),
+      ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: Colors.white,
+      indicatorColor: const Color(0xFF4F6CFF).withValues(alpha: 0.12),
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      backgroundColor: const Color(0xFF333333),
+    ),
+  );
+
+  static final ThemeData _darkTheme = ThemeData(
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: const Color(0xFF4F6CFF),
+      brightness: Brightness.dark,
+    ),
+    useMaterial3: true,
+    appBarTheme: const AppBarTheme(
+      centerTitle: true,
+      elevation: 0,
+      scrolledUnderElevation: 2,
+      backgroundColor: Colors.transparent,
+    ),
+    cardTheme: CardThemeData(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade800),
+      ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      indicatorColor: const Color(0xFF4F6CFF).withValues(alpha: 0.24),
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Twitter Pic v$_kBuildNum',
       navigatorKey: _navKey,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF4F6CFF),
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          centerTitle: true,
-          elevation: 0,
-          scrolledUnderElevation: 2,
-          backgroundColor: Colors.transparent,
-          foregroundColor: Color(0xFF4F6CFF),
-        ),
-        cardTheme: CardThemeData(
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: Colors.grey.shade200),
-          ),
-        ),
-        navigationBarTheme: NavigationBarThemeData(
-          backgroundColor: Colors.white,
-          indicatorColor: const Color(0xFF4F6CFF).withValues(alpha: 0.12),
-          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        ),
-        snackBarTheme: SnackBarThemeData(
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          backgroundColor: const Color(0xFF333333),
-        ),
-      ),
+      theme: _lightTheme,
+      darkTheme: _darkTheme,
+      themeMode: _resolvedThemeMode,
       home: Scaffold(
         appBar: AppBar(
           title: const Text('Twitter Pic', style: TextStyle(fontWeight: FontWeight.w600)),
           actions: [
+            IconButton(
+              icon: const Icon(Icons.history),
+              tooltip: '浏览历史',
+              onPressed: () => _navKey.currentState?.push(
+                MaterialPageRoute(
+                  builder: (_) => BrowseHistoryScreen(proxy: _proxy),
+                ),
+              ),
+            ),
             IconButton(
               icon: const Icon(Icons.emoji_events_outlined),
               tooltip: '排行榜',
@@ -313,6 +334,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                               profile: profile,
                               proxy: _proxy,
                               tagBrowse: null,
+                              recordHistory: true,
                             ),
                           ),
                         );
@@ -433,13 +455,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       );
     }
     if (!_proxyReady) {
-      return Center(
+      return const Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            const Text('正在初始化 ECH ...', style: TextStyle(color: Colors.grey, fontSize: 14)),
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('正在初始化 ECH ...', style: TextStyle(color: Colors.grey, fontSize: 14)),
           ],
         ),
       );
@@ -449,6 +471,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    StorageService.changes.removeListener(_onStorageChanged);
     _logTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _proxy.dispose();
@@ -488,7 +511,7 @@ class _HomeScreenState extends State<_HomeScreen> {
           _tabIndex = i;
           if (i == 1) _favTick++;
         }),
-        destinations: [
+        destinations: const [
           NavigationDestination(
             icon: Icon(Icons.people_outlined),
             selectedIcon: Icon(Icons.people),
@@ -522,8 +545,6 @@ class FavoritesTab extends StatefulWidget {
 
 class _FavoritesTabState extends State<FavoritesTab> {
   final TwitterApi _api = TwitterApi();
-  // 下拉刷新时 +1：换 key 重建 FavList（重读收藏并收起"显示更多"），
-  // 比导出 State 更省事，也避免把内部 State 变成公开 API。
   int _listTick = 0;
 
   @override
@@ -535,37 +556,32 @@ class _FavoritesTabState extends State<FavoritesTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // RefreshIndicator 由外层这个唯一的滚动视图承载（FavList 内部是 Column，
-      // 不能再自己套一层可滚动组件，见 fav_list.dart 注释）。
       body: RefreshIndicator(
         color: const Color(0xFF4F6CFF),
-        backgroundColor: Colors.white,
         onRefresh: () async {
-          // 收藏数据在 StorageService 内存里，重建即重读。
           setState(() => _listTick++);
         },
         child: ListView(
-          // 内容不满一屏时也要能下拉
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(8),
           children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Text(
-              '收藏夹',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w600,
-                color: Theme.of(context).colorScheme.primary,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text(
+                '收藏夹',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-          FavList(
-            key: ValueKey('favlist$_listTick'),
-            api: _api,
-            proxy: widget.proxy,
-          ),
+            const SizedBox(height: 8),
+            FavList(
+              key: ValueKey('favlist$_listTick'),
+              api: _api,
+              proxy: widget.proxy,
+            ),
           ],
         ),
       ),

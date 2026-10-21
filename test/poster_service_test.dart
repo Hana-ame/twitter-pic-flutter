@@ -1,9 +1,5 @@
 // poster_service_test.dart
-// 视频封面缓存的回归测试。
-//
-// 纯 Dart + 临时目录（PathProviderPlatform 都不用 mock，走 debugUseDirectory），
-// 所以能在 CI 的 flutter test 里真跑。抓帧本身（RepaintBoundary.toImage）需要
-// 真机/渲染，不在单测范围。
+// 视频封面缓存的回归测试（内存 + 磁盘二级缓存及磁盘上限 LRU 淘汰）。
 
 import 'dart:io';
 import 'dart:typed_data';
@@ -78,7 +74,6 @@ void main() {
   });
 
   test('内存缓存超上限时淘汰最早的，但磁盘仍在', () async {
-    // 用一个很小的上限来验证淘汰，而不是真的塞满 60 条
     final urls = <String>[
       for (var i = 0; i < PosterService.maxMemoryEntries + 3; i++)
         'https://video.twimg.com/v$i.mp4',
@@ -94,6 +89,32 @@ void main() {
     expect(await PosterService.load(urls[0]), isNotNull);
     // 最近的一条在内存里
     expect(PosterService.memory(urls.last), isNotNull);
+  });
+
+  test('磁盘缓存超 maxDiskEntries 时自动按 mtime 淘汰旧文件', () async {
+    PosterService.maxDiskEntries = 4;
+    final urls = <String>[
+      for (var i = 0; i < 6; i++) 'https://video.twimg.com/disk_$i.mp4',
+    ];
+    for (var i = 0; i < urls.length; i++) {
+      await PosterService.put(urls[i], bytesOf([i + 1, 2, 3]));
+      final f = File(
+        '${PosterService.directoryPath}/${PosterService.keyFor(urls[i])}'
+        '.${PosterService.fileExtension}',
+      );
+      if (await f.exists()) {
+        f.setLastModifiedSync(DateTime(2026, 1, 1, 0, 0, i));
+      }
+    }
+
+    final dir = Directory(PosterService.directoryPath!);
+    final pngFiles = dir
+        .listSync()
+        .whereType<File>()
+        .where((f) => f.path.endsWith('.${PosterService.fileExtension}'))
+        .toList();
+    expect(pngFiles.length, lessThanOrEqualTo(4),
+        reason: '超过磁盘上限后必须自动淘汰旧封面文件');
   });
 
   test('clearAll 清掉磁盘与内存', () async {

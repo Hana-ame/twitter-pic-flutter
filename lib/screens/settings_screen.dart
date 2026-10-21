@@ -1,5 +1,5 @@
 // settings_screen.dart
-// 设置页面：查看代理状态、网络诊断、清除缓存、关于信息
+// 设置页面：查看代理状态、外观主题切换、已屏蔽账号与浏览历史管理、网络诊断、清除缓存、关于信息
 
 import 'dart:async';
 import 'dart:convert';
@@ -18,6 +18,7 @@ import '../utils/doh_resolver.dart';
 import '../utils/ech_url.dart';
 import '../widgets/progressive_image.dart';
 import '../widgets/report_help.dart';
+import 'browse_history_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
@@ -41,6 +42,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _restarting = false;
   bool _gayMode = false;
+  String _themeMode = 'light';
   /// 上一次 didChangeDependencies 看到的 ModalRoute，用于判断路由是否换了。
   ModalRoute<dynamic>? _lastRoute;
 
@@ -48,58 +50,151 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _gayMode = StorageService.isGayMode();
-    StorageService.changes.addListener(_syncGayMode);
+    _themeMode = StorageService.getThemeMode();
+    StorageService.changes.addListener(_syncFromStorage);
   }
 
   @override
   void dispose() {
-    StorageService.changes.removeListener(_syncGayMode);
+    StorageService.changes.removeListener(_syncFromStorage);
     super.dispose();
   }
 
-  /// 从别的页面改同一个开关后回到本页时，把 UI 拉回真实值。
-  ///
-  /// 「Gay 模式」有两处开关写**同一个** storage key：这里的 SwitchListTile，
-  /// 以及标签管理页（tag_controller.dart）的那个。本页在 main.dart 里是
-  /// IndexedStack 的一个分支——**保活、不会重新 initState**，所以从标签管理页
-  /// 改完返回时，这里的开关还停在旧值：文案写着「已关闭」，可过滤其实已经
-  /// 生效；用户再点一下反而是把它关掉。
-  ///
-  /// 这与 user_list_screen.dart 里已有的同一类处理（注释写的是
-  /// 「IndexedStack 保活使本页不会自动重建，返回后必须刷新」）是同一个坑，
-  /// 区别只是本页被路由遮住时拿不到通知。用 RouteAware 在**恢复可见**时读一次
-  /// 存储，而不是在 didChangeDependencies 里读 —— 后者在路由 push 期间就会
-  /// 触发，那时用户可能还没改完。
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // 只在「依附的 ModalRoute 变了」时重新同步，而不是每次 build 都同步。
-    // ModalRoute.of(context) 在 didChangeDependencies 里拿到的就是当前 route，
-    // 拿它当 key 与上一次比较即可（这是 Flutter 里判断「路由是否换了」的标准写法）。
     final route = ModalRoute.of(context);
     if (route == _lastRoute) return;
     _lastRoute = route;
-    // 在下一帧同步，而不是立刻：本页被 push 回来时路由的动画还没结束，
-    // 立刻读存储虽然也对，但会在同一帧内连续 setState 两次，白白多一次重建。
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncGayMode());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncFromStorage());
   }
 
-  void _syncGayMode() {
+  void _syncFromStorage() {
     if (!mounted) return;
-    final actual = StorageService.isGayMode();
-    if (actual != _gayMode) setState(() => _gayMode = actual);
+    final actualGay = StorageService.isGayMode();
+    final actualTheme = StorageService.getThemeMode();
+    if (actualGay != _gayMode || actualTheme != _themeMode) {
+      setState(() {
+        _gayMode = actualGay;
+        _themeMode = actualTheme;
+      });
+    } else {
+      // 屏蔽列表或浏览历史数量变化也同步刷新副标题
+      setState(() {});
+    }
+  }
+
+  String _themeModeLabel(String mode) {
+    switch (mode) {
+      case 'dark':
+        return '深色模式';
+      case 'system':
+        return '跟随系统';
+      default:
+        return '浅色模式';
+    }
+  }
+
+  void _showThemePicker() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('外观主题'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            RadioListTile<String>(
+              title: const Text('浅色模式'),
+              value: 'light',
+              groupValue: _themeMode,
+              onChanged: (v) {
+                if (v != null) StorageService.setThemeMode(v);
+                Navigator.pop(ctx);
+              },
+            ),
+            RadioListTile<String>(
+              title: const Text('深色模式'),
+              value: 'dark',
+              groupValue: _themeMode,
+              onChanged: (v) {
+                if (v != null) StorageService.setThemeMode(v);
+                Navigator.pop(ctx);
+              },
+            ),
+            RadioListTile<String>(
+              title: const Text('跟随系统'),
+              value: 'system',
+              groupValue: _themeMode,
+              onChanged: (v) {
+                if (v != null) StorageService.setThemeMode(v);
+                Navigator.pop(ctx);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showBlockedUsersDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final blocked = StorageService.getBlockedUsers();
+          return AlertDialog(
+            title: Text('已屏蔽账号 (${blocked.length})'),
+            content: SizedBox(
+              width: 320,
+              height: 300,
+              child: blocked.isEmpty
+                  ? const Center(
+                      child: Text('暂无已屏蔽账号',
+                          style: TextStyle(color: Colors.grey)),
+                    )
+                  : ListView.builder(
+                      itemCount: blocked.length,
+                      itemBuilder: (_, i) {
+                        final u = blocked[i];
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text('@$u', style: const TextStyle(fontSize: 13)),
+                          trailing: TextButton(
+                            onPressed: () {
+                              StorageService.removeBlockedUser(u);
+                              setDialogState(() {});
+                            },
+                            child: const Text('取消屏蔽', style: TextStyle(fontSize: 12)),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              if (blocked.isNotEmpty)
+                TextButton(
+                  onPressed: () {
+                    StorageService.clearBlockedUsers();
+                    setDialogState(() {});
+                  },
+                  child: const Text('全部解除', style: TextStyle(color: Colors.red)),
+                ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   // ─── 网络诊断 ─────────────────────────────────────────────────────────────
   bool _diagRunning = false;
   final List<_DiagItem> _diag = [];
 
-  /// 发起一次 HTTP 探测，返回简短结果文本。
-  ///
-  /// body 只读前 [maxReadBytes]（足够判断通道通不通）：原先用 `drain()`
-  /// 会把整张图下完，媒体经 ECH 拉全图轻松超过默认超时，于是“探测超时”
-  /// 其实是探针自己造成的。读够即 break，剩余字节由 `close(force: true)`
-  /// 丢弃。超时同时计入首包与后续静默（Stream.timeout）。
   Future<String> _httpProbe(String url,
       {int timeoutSec = 20, int maxReadBytes = 64 * 1024}) async {
     final client = HttpClient()
@@ -121,15 +216,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       return 'HTTP ${res.statusCode} · ${sw.elapsedMilliseconds}ms · ${len >= 0 ? len : '?'}B (读 ${got}B)';
     } catch (e) {
-      // 带上耗时：区分“秒断（连不上）”与“撑到超时（链路慢/上游挂）”
       return '失败: ${sw.elapsedMilliseconds}ms · $e';
     } finally {
       client.close(force: true);
     }
   }
 
-  /// Range 分段探测。ExoPlayer（video_player 底层）播 MP4 一定要分段拉取：
-  /// 上游必须回 206 + Content-Range，否则拿不到文件尾部的 moov，视频永不开播。
   Future<String> _rangeProbe(String url, {int timeoutSec = 20}) async {
     final client = HttpClient()..connectionTimeout = Duration(seconds: timeoutSec);
     final sw = Stopwatch()..start();
@@ -149,7 +241,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       final detail =
           'HTTP ${res.statusCode} · Content-Range: $cr · Accept-Ranges: $ar · Content-Length: $cl · 收到 ${got}B · ${sw.elapsedMilliseconds}ms';
-      // 只认 206：回 200 说明 Range 被吞了，播放器拿不到尾部元数据。
       return res.statusCode == 206 ? detail : '失败: Range 未被支持 → $detail';
     } catch (e) {
       return '失败: ${sw.elapsedMilliseconds}ms · $e';
@@ -158,15 +249,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// 用 widget 真正使用的那套栈（ProgressiveImageProvider → ECH 代理 →
-  /// 逐块解码 → 图片缓存/磁盘缓存）验证一张图，而不是 raw HttpClient。
-  /// 两者失败原因可能完全不同（例如解码失败、缺 Content-Length 导致 codec
-  /// 报错等）。
-  ///
-  /// v0.6.4：这里从 NetworkImage 改成 ProgressiveImageProvider，否则诊断页说的
-  /// 「widget 用的就是这套栈」与实际不符——ProxyAvatar 已改用后者（v0.6.4 起
-  /// 所有 media 统一走 ProgressiveImageProvider，见 proxy_avatar.dart）。
-  /// 诊断页与被诊断对象必须同栈，否则它报「widget 层正常」而实际是坏的。
   Future<String> _imageDecodeProbe(String url, {int timeoutSec = 30}) async {
     final sw = Stopwatch()..start();
     final completer = Completer<String>();
@@ -191,11 +273,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  /// 抓取 `<username>.json.gz`，返回响应头、编码方式与原始 JSON。
-  /// 不解析成模型，供诊断编码与字段结构。
-  ///
-  /// 这里必须整包下载（要解析 JSON 校验字段），因此逐级显式设超时：
-  /// 大账号的 json.gz 若无超时会把整个诊断永久卡在步骤 2。
   Future<_RawJsonResult> _fetchRawJson(String username) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
     try {
@@ -227,7 +304,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             <int>[],
             (acc, chunk) => acc..addAll(chunk),
           );
-      // 编码检测：先按 utf8 解，失败则按 gzip+utf8 解，记录实际编码。
       var text = '';
       var method = 'utf8';
       try {
@@ -251,7 +327,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// 检查 JSON 字段是否匹配模型（TimelineItem/TwitterUser 的期望 key）。
   String _checkJsonFields(_RawJsonResult res) {
     final buf = StringBuffer();
     buf.writeln('HTTP ${res.statusCode}');
@@ -297,10 +372,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return buf.toString();
   }
 
-  /// 判定一次诊断结果是否“通过”。
-  ///
-  /// 之前只看是否以“失败”开头，导致 HTTP 404/502 也标成绿色✓——恰恰是
-  /// 最需要被看见的错误。现在按 HTTP 状态码与字段检查符号判定。
   static bool _passed(String result) {
     if (result.startsWith('失败') || result.contains('（跳过）')) return false;
     final m = RegExp(r'HTTP (\d{3})').firstMatch(result);
@@ -308,7 +379,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final code = int.parse(m.group(1)!);
       return code >= 200 && code < 400;
     }
-    // 无状态码的纯文本结果（字段/编码检查）：出现 ✗ 判为不通过。
     return !result.contains('✗');
   }
 
@@ -343,8 +413,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       });
     }
 
-    // 取样一次供 2/6/7/8/9 复用：原先每个测试各自下一遍 100KB+ 的 json.gz，
-    // 一整轮诊断光下载就要十几秒。
     _RawJsonResult? sample;
     String? avatarUrl, photoUrl, videoUrl;
     Future<void> ensureSample() async {
@@ -378,7 +446,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     }
 
-    // 1. API 直连（TwitterApi 实际使用的通道：JSON/API 不经代理）
     await step('1. API 直连 (TwitterApi 实际通道)', () async {
       final api = TwitterApi();
       try {
@@ -389,7 +456,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
 
-    // 2. 原始 JSON：编码检测 + 字段与模型匹配检查
     await step('2. 用户 JSON 编码与字段检查', () async {
       await ensureSample();
       final s = sample;
@@ -397,9 +463,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return _checkJsonFields(s);
     });
 
-    // 2b. getMetaData 经 Dio + fromJson 解析 —— App 显示头像/媒体走的就是这条
-    // 路。测试 2 是 raw 抓取，绕过了 Dio 与模型层，两者结论可能完全不同：
-    // raw 有 644 条而这里为 0，就说明问题在解析层而不是网络。
     await step('2b. getMetaData 经 Dio+模型解析', () async {
       final api = TwitterApi();
       try {
@@ -416,8 +479,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         if (av == null || av.isEmpty) problems.add('头像为空');
         return problems.isEmpty ? line : '失败: ${problems.join('、')} → $line';
       } on DioException catch (e) {
-        // 把 Dio 真正请求的 URL 打出来：历史上 403 的根因就是 baseUrl 与 path
-        // 拼接少了斜杠（.../api/twitterx.json.gz），只看 "HTTP 403" 根本看不出来。
         return '失败: ${e.error ?? e.message}\n'
             '实际请求: ${e.requestOptions.uri}\n'
             'API base: $kApiBase';
@@ -428,24 +489,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
 
-    // 3. API 原始探测（不经 Dio，用 dart:io 直接 GET，区分 Dio/网络层问题）
     await step('3. API 原始探测 (不经 Dio)', () {
       return _httpProbe('$kApiBase/?list=users');
     });
 
-    // 4. video-cf 经本机 ECH 代理
     await step('4. video-cf 经 ECH 代理', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
       return _httpProbe('http://127.0.0.1:$port/favicon.ico');
     });
 
-    // 5. video-cf 直连（预期失败：被墙，需 ECH）
     await step('5. video-cf 直连 (预期失败)', () {
       return _httpProbe('https://video-cf.twimg.com/favicon.ico', timeoutSec: 10);
     }, expectFail: true);
 
-    // 6. 真实头像 URL → 代理 → raw HttpClient（证明“链路通不通”）
     await step('6. 真实头像经代理 (raw HttpClient)', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
@@ -457,9 +514,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return '原始: $avatar\n代理: $replaced\n→ $probe';
     });
 
-    // 7. 真实头像 → NetworkImage 解码（ProxyAvatar 用的就是这套栈）。
-    // 与测试 6 的区别：这里过 Flutter 的图片缓存与解码。若 6 通过而 7 失败，
-    // 说明问题在 widget 层（解码/尺寸/缓存），而不是网络。
     await step('7. 真实头像 widget 栈解码 (ProgressiveImageProvider)', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
@@ -470,7 +524,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return '${EchUrl.rewrite(avatar, port)}\n→ $r';
     });
 
-    // 8. 真实图片（pbs.twimg.com/media，带 format/name）→ widget 栈解码
     await step('8. 真实图片 widget 栈解码', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
@@ -482,7 +535,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return '原始: $photo\n代理: $rewritten\n→ $r';
     });
 
-    // 9. 真实视频 → Range 分段探测（ExoPlayer 必需，只认 206）
     await step('9. 真实视频 Range 分段探测', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
@@ -494,9 +546,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return '原始: $video\n代理: $rewritten\n→ $r';
     });
 
-    // 10. 代理转发记录：上面 4/6/7/8/9 都往代理日志里写了记录，这里直接读
-    // 出来，确认媒体请求确实经本机 ECH 代理转发到 video-cf.twimg.com
-    // （而不是直连某个域名或在本地就被拒了）。
     await step('10. ECH 代理转发记录 (video-cf)', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
@@ -520,7 +569,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() => _diagRunning = false);
   }
 
-  /// 复制诊断报告（含版本与代理上下文），便于直接粘贴反馈。
   Future<void> _copyDiag() async {
     if (_diag.isEmpty) return;
     final buf = StringBuffer();
@@ -552,8 +600,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('清除数据'),
-        content: const Text('将清除所有收藏、屏蔽列表、标签规则、搜索历史，'
-            '以及视频封面缓存。\n\n此操作不可撤销。'),
+        content: const Text('将清除所有收藏、屏蔽列表、标签规则、搜索历史、浏览历史，'
+            '以及图片与视频封面缓存。\n\n此操作不可撤销。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('清除')),
@@ -562,20 +610,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (confirmed != true || !mounted) return;
     await StorageService.clearAll();
-    // 封面缓存也一起清：它在磁盘上（应用支持目录的 posters/），不清会越攒越多。
     await PosterService.clearAll();
-    // 图片磁盘缓存（v0.6.1 新增，image-cache/）：同一个理由，而且它更大。
     await ProgressiveDiskCache.clearAll();
     if (mounted) {
       setState(() {
         _gayMode = StorageService.isGayMode();
+        _themeMode = StorageService.getThemeMode();
       });
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('数据已清除')));
     }
   }
 
-  /// 清除日志：磁盘 app.log + 内存日志。范围与边界见 LogService.clearLogs
-  /// —— 异常结束记录与崩溃检测标记有意保留。
   Future<void> _clearLogs() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -626,6 +671,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final proxy = widget.proxy;
+    final blockedCount = StorageService.getBlockedUsers().length;
+    final historyCount = StorageService.getBrowseHistory().length;
     return Scaffold(
       appBar: widget.embedded ? null : AppBar(title: const Text('设置')),
       body: ListView(
@@ -633,7 +680,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 8),
 
           // ─── 代理状态 ───────────────────────────────────────────────────────
-          _SectionTitle(title: '代理状态', icon: Icons.router, color: Colors.blue),
+          const _SectionTitle(title: '代理状态', icon: Icons.router, color: Colors.blue),
           _StatusCard(
             icon: Icons.circle,
             label: '状态',
@@ -653,8 +700,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 8),
 
-          // ─── 操作 ───────────────────────────────────────────────────────────
-          _SectionTitle(title: '操作', icon: Icons.settings, color: Colors.orange),
+          // ─── 操作与偏好 ─────────────────────────────────────────────────────
+          const _SectionTitle(title: '操作与偏好', icon: Icons.settings, color: Colors.orange),
+          ListTile(
+            leading: const Icon(Icons.dark_mode_outlined, color: Colors.indigo),
+            title: const Text('外观主题'),
+            subtitle: Text(_themeModeLabel(_themeMode)),
+            onTap: _showThemePicker,
+          ),
           SwitchListTile(
             secondary: const Icon(Icons.palette_outlined, color: Colors.purple),
             title: const Text('Gay 模式'),
@@ -667,6 +720,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 StorageService.setGayMode(val);
               });
             },
+          ),
+          ListTile(
+            leading: const Icon(Icons.history, color: Colors.teal),
+            title: const Text('浏览历史'),
+            subtitle: Text('最近浏览过的账号（共 $historyCount 条）'),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => BrowseHistoryScreen(proxy: widget.proxy),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.person_off_outlined, color: Colors.deepOrange),
+            title: const Text('已屏蔽账号'),
+            subtitle: Text(blockedCount == 0
+                ? '当前没有已屏蔽的账号'
+                : '已屏蔽 $blockedCount 个账号，点击查看或解除'),
+            onTap: _showBlockedUsersDialog,
           ),
           ListTile(
             leading: const Icon(Icons.restart_alt, color: Colors.blue),
@@ -689,7 +760,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.delete_sweep, color: Colors.red),
             title: const Text('清除数据'),
-            subtitle: const Text('清除收藏、屏蔽、标签、搜索历史'),
+            subtitle: const Text('清除收藏、屏蔽、标签、搜索与浏览历史'),
             onTap: _clearData,
           ),
           ListTile(
@@ -701,7 +772,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(),
 
           // ─── 网络诊断 ───────────────────────────────────────────────────────
-          _SectionTitle(title: '网络诊断', icon: Icons.science, color: Colors.teal),
+          const _SectionTitle(title: '网络诊断', icon: Icons.science, color: Colors.teal),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Row(
@@ -735,7 +806,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(),
 
           // ─── 日志与反馈 ─────────────────────────────────────────────────────
-          _SectionTitle(title: '日志与反馈', icon: Icons.bug_report, color: Colors.purple),
+          const _SectionTitle(title: '日志与反馈', icon: Icons.bug_report, color: Colors.purple),
           ListTile(
             leading: const Icon(Icons.copy_all, color: Colors.purple),
             title: const Text('复制日志反馈包'),
@@ -763,7 +834,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(),
 
           // ─── 关于 ───────────────────────────────────────────────────────────
-          _SectionTitle(title: '关于', icon: Icons.info_outline, color: Colors.blueGrey),
+          const _SectionTitle(title: '关于', icon: Icons.info_outline, color: Colors.blueGrey),
           _StatusCard(icon: Icons.info_outline, label: '版本', value: widget.buildNum),
           const SizedBox(height: 8),
 
@@ -782,7 +853,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  /// 复制反馈包：先补一次 Go 日志（最后两秒的行可能还没进磁盘），再组装。
   Future<void> _copyLogDump() async {
     await LogService.pollGoLogs(widget.proxy.getLogs());
     if (!mounted) return;
@@ -794,8 +864,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
-  /// 异常结束记录（最多 10 条）。判定依据见 LogService.takeUncleanExit——
-  /// 强杀与系统回收也会落到这里，所以文案只说「没有正常结束」。
   void _showIncidents() {
     final items = LogService.incidents;
     showDialog(
@@ -803,7 +871,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('异常结束记录'),
         content: SizedBox(
-          // 不用 double.maxFinite：Windows 端会撑成整屏宽（已知问题）。
           width: 320,
           height: 300,
           child: items.isEmpty
@@ -838,10 +905,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _showLogs(BuildContext context) {
-    // 读磁盘 app.log（不是 Go ring）：反馈包里放的就是这份，看到什么就
-    // 能复制什么。Go ring 只有 500 行内存态，ring 里早就被挤掉的历史和
-    // 所有 Dart 侧错误（recordError 只落盘不进 ring）在这里是看不到的 ——
-    // 那等于让用户在屏幕上看到的和反馈包里对不上。
     unawaited(LogService.logTail(maxLines: 400).then((logs) {
       if (!mounted) return;
       _showLogsDialog(context, logs);
@@ -939,7 +1002,6 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
-/// 单条诊断结果。
 class _DiagItem {
   final String label;
   final String result;
@@ -954,11 +1016,10 @@ class _DiagItem {
   });
 }
 
-/// 原始 JSON 抓取结果：响应头 + 解码方式 + 解析后的 JSON。
 class _RawJsonResult {
   final int statusCode;
   final Map<String, String> headers;
-  final String? decodeMethod; // 'utf8' 或 'gzip+utf8'
+  final String? decodeMethod;
   final int bytes;
   final Map<String, dynamic>? json;
   final String? error;

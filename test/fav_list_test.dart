@@ -1,9 +1,4 @@
-// 收藏夹回归测试。
-//
-// 真实故障：FavList 内部是纵向 ListView，而它的父级（FavoritesTab）也是纵向
-// ListView —— 纵向嵌套纵向，内层拿到无界高度后渲染失败，表现为"收藏夹标题在、
-// 收藏的条目全空"。这个测试按真实结构（父级可滚动列表 + FavList）搭，旧代码会
-// 在 pump 时直接抛 "Vertical viewport was given unbounded height"。
+// 收藏夹回归测试（含本地搜索过滤与多格式导入解析）。
 
 import 'dart:async';
 import 'dart:io';
@@ -75,6 +70,16 @@ void main() {
     if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
+  test('parseImportedUsername 支持完整 URL、带参链接、@句柄与裸用户名', () {
+    expect(parseImportedUsername('https://x.moonchan.xyz/alice'), 'alice');
+    expect(parseImportedUsername('https://x.com/bob/?s=20'), 'bob');
+    expect(parseImportedUsername('https://twitter.com/carol#top'), 'carol');
+    expect(parseImportedUsername('  @dave_123  '), 'dave_123');
+    expect(parseImportedUsername('erin'), 'erin');
+    expect(parseImportedUsername('   '), isNull);
+    expect(parseImportedUsername('https://'), isNull);
+  });
+
   testWidgets('收藏的用户真的渲染出来（父级已是可滚动列表）', (tester) async {
     StorageService.toggleFav('alice');
 
@@ -116,7 +121,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('@carol'), findsOneWidget);
 
-    // 模拟在别处取消收藏后重建（FavoritesTab 用 key 重建）
     StorageService.toggleFav('carol');
     await tester.pumpWidget(_host(api, ProxyManager()));
     await tester.pumpAndSettle();
@@ -137,6 +141,26 @@ void main() {
 
     expect(find.text('@alice'), findsOneWidget);
     expect(find.text('@blocked_user'), findsNothing);
+    api.dispose();
+  });
+
+  testWidgets('多个收藏时显示收藏内搜索框并支持按用户名筛选与排序切换', (tester) async {
+    StorageService.toggleFav('charlie');
+    StorageService.toggleFav('alice');
+
+    final api = TwitterApi(adapter: _StubAdapter());
+    await tester.pumpWidget(_host(api, ProxyManager()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('@alice'), findsOneWidget);
+    expect(find.text('@charlie'), findsOneWidget);
+
+    // 输入筛选词后只显示匹配的收藏
+    await tester.enterText(find.byType(TextField).first, 'char');
+    await tester.pump();
+
+    expect(find.text('@charlie'), findsOneWidget);
+    expect(find.text('@alice'), findsNothing);
     api.dispose();
   });
 }

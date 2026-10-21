@@ -25,9 +25,6 @@ void main() {
 
   tearDown(() async {
     StorageService.resetForTests();
-    // 不先 exists() 再 delete()：那是 TOCTOU——两步之间目录可能已被别处
-    // 删掉，delete 就抛 PathNotFoundException。目录本来就是本用例独占建的，
-    // 直接删；已经被删掉也无所谓。
     try {
       await tmp.delete(recursive: true);
     } on FileSystemException {
@@ -57,7 +54,6 @@ void main() {
     });
 
     test('快速连续写不损坏文件（串行化 flush 链）', () async {
-      // 原实现 unawaited(writeAsString) 并发交错，可能写坏 storage.json。
       for (var i = 0; i < 50; i++) {
         StorageService.toggleFav('user_$i');
       }
@@ -74,9 +70,6 @@ void main() {
       StorageService.setCustomTags(['t1']);
       await StorageService.debugFlushPending();
 
-      // clearAll 必须 await 自己的写盘：返回时磁盘应该是空的。否则设置页
-      // 「清除数据」await 完就去改 UI，中途被系统杀进程时旧数据会残留
-      // —— 等于没清。
       await StorageService.clearAll();
 
       expect(StorageService.isFav('keep_me'), isFalse);
@@ -128,7 +121,6 @@ void main() {
 
       await StorageService.debugFlushPending();
 
-      // 模拟进程重启
       StorageService.resetForTests();
       await StorageService.ensureInitialized();
       expect(StorageService.isGayMode(), isTrue);
@@ -161,8 +153,6 @@ void main() {
       expect(StorageService.hasGayTag({'二次元': 2, '自拍': 1}), isFalse);
       expect(StorageService.hasGayTag({}), isFalse);
 
-      // 非 Gay 模式下（默认关闭）：
-      // 包含 Gay 标签的用户被过滤（false）；不包含的保留（true）
       StorageService.setGayMode(false);
       expect(StorageService.matchesGayMode({'男同': 1}), isFalse);
       expect(StorageService.matchesGayMode({'男性': 1, '自拍': 2}), isFalse);
@@ -170,8 +160,6 @@ void main() {
       expect(StorageService.matchesGayMode({'二次元': 1}), isTrue);
       expect(StorageService.matchesGayMode({}), isTrue);
 
-      // Gay 模式下（开启）：
-      // 包含 Gay 标签的用户保留（true）；不包含的被过滤（false，正好取反）
       StorageService.setGayMode(true);
       expect(StorageService.matchesGayMode({'男同': 1}), isTrue);
       expect(StorageService.matchesGayMode({'男性': 1, '自拍': 2}), isTrue);
@@ -191,19 +179,110 @@ void main() {
 
       await StorageService.debugFlushPending();
 
-      // 模拟进程重启
       StorageService.resetForTests();
       await StorageService.ensureInitialized();
       expect(StorageService.getGayTags(), ['男娘', '人妖', '露屌', '阳痿', '男同', '伪娘']);
 
-      // 动态过滤也随之生效
       StorageService.setGayMode(true);
       expect(StorageService.matchesGayMode({'伪娘': 1}), isTrue);
       expect(StorageService.matchesGayMode({'男性': 1}), isFalse);
 
-      // 重置回默认
       StorageService.resetGayTags();
       expect(StorageService.getGayTags(), ['男性', '男娘', '人妖', '露屌', '阳痿', '男同']);
+    });
+
+    test('已屏蔽账号管理：添加（剥除前导 @）、排序、移除与清空', () async {
+      expect(StorageService.getBlockedUsers(), isEmpty);
+
+      StorageService.addBlockedUser(' @charlie ');
+      StorageService.addBlockedUser('alice');
+      StorageService.addBlockedUser('@@bob');
+
+      expect(StorageService.getBlockedUsers(), ['alice', 'bob', 'charlie']);
+      expect(StorageService.isBlocked('charlie'), isTrue);
+
+      StorageService.removeBlockedUser('@bob');
+      expect(StorageService.getBlockedUsers(), ['alice', 'charlie']);
+      expect(StorageService.isBlocked('bob'), isFalse);
+
+      await StorageService.debugFlushPending();
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+      expect(StorageService.getBlockedUsers(), ['alice', 'charlie']);
+
+      StorageService.clearBlockedUsers();
+      expect(StorageService.getBlockedUsers(), isEmpty);
+    });
+
+    test('浏览历史：记录、去重提升、保留旧昵称头像、上限截断与持久化', () async {
+      expect(StorageService.getBrowseHistory(), isEmpty);
+
+      StorageService.addBrowseHistory(
+        '@alice',
+        nick: 'Alice',
+        avatar: 'https://pbs.twimg.com/a.jpg',
+        visitedAtMs: 1000,
+      );
+      StorageService.addBrowseHistory(
+        'bob',
+        nick: 'Bob',
+        visitedAtMs: 2000,
+      );
+      // 再次访问 alice（未传 nick/avatar 时应保留之前已知的 nick/avatar 并置顶）
+      StorageService.addBrowseHistory(
+        'alice',
+        visitedAtMs: 3000,
+      );
+
+      final list = StorageService.getBrowseHistory();
+      expect(list.length, 2);
+      expect(list[0].username, 'alice');
+      expect(list[0].nick, 'Alice');
+      expect(list[0].avatar, 'https://pbs.twimg.com/a.jpg');
+      expect(list[0].visitedAtMs, 3000);
+      expect(list[1].username, 'bob');
+
+      await StorageService.debugFlushPending();
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+
+      final reloaded = StorageService.getBrowseHistory();
+      expect(reloaded.map((e) => e.username).toList(), ['alice', 'bob']);
+
+      StorageService.removeBrowseHistory('alice');
+      expect(
+        StorageService.getBrowseHistory().map((e) => e.username).toList(),
+        ['bob'],
+      );
+
+      // 验证上限 50 条截断
+      for (var i = 0; i < 60; i++) {
+        StorageService.addBrowseHistory('u_$i', visitedAtMs: 4000 + i);
+      }
+      final capped = StorageService.getBrowseHistory();
+      expect(capped.length, StorageService.maxBrowseHistory);
+      expect(capped.first.username, 'u_59');
+
+      StorageService.clearBrowseHistory();
+      expect(StorageService.getBrowseHistory(), isEmpty);
+    });
+
+    test('外观主题模式：默认 light、切换 dark/system 及非法值兜底', () async {
+      expect(StorageService.getThemeMode(), 'light');
+
+      StorageService.setThemeMode('dark');
+      expect(StorageService.getThemeMode(), 'dark');
+
+      await StorageService.debugFlushPending();
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+      expect(StorageService.getThemeMode(), 'dark');
+
+      StorageService.setThemeMode('system');
+      expect(StorageService.getThemeMode(), 'system');
+
+      StorageService.setThemeMode('invalid_mode');
+      expect(StorageService.getThemeMode(), 'light');
     });
   });
 }

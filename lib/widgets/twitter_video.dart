@@ -1,5 +1,5 @@
 // twitter_video.dart
-// 视频卡片：通过本机 ECH 代理加载，支持流式播放、下载、分享。
+// 视频卡片：通过本机 ECH 代理加载，支持流式播放、保存到本地、下载分享。
 //
 // 分层（v0.5.13 拆封装后）：
 //   * 并发/分槽策略 → lib/video/video_decoder_pool.dart（本文件只实现它的
@@ -29,6 +29,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
 import '../services/log_service.dart';
+import '../services/media_saver.dart';
 import '../services/poster_service.dart';
 import '../services/proxy_manager.dart';
 import '../services/video_downloader.dart';
@@ -741,6 +742,45 @@ class _TwitterVideoState extends State<TwitterVideo>
     _showControlsTemporarily();
   }
 
+  Future<void> _saveVideoToLocal() async {
+    if (_downloading) return;
+    final proxyPort = widget.proxy.port;
+    if (proxyPort == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未就绪，暂时无法保存')),
+      );
+      return;
+    }
+
+    setState(() => _downloading = true);
+    final uri = EchUrl.rewriteToUri(widget.url, proxyPort);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在保存视频到本地...')));
+
+    try {
+      final file = await MediaSaver.saveToDownloads(
+        proxiedUri: uri,
+        originalUrl: widget.url,
+        isVideo: true,
+      );
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('已保存到本地：${file.path}'),
+          backgroundColor: Colors.green,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('保存失败: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _downloading = false);
+    }
+  }
+
   Future<void> _downloadVideo() async {
     // 防重入：控制栏按钮 + 长按菜单可并发触发，同名临时文件被两个
     // RandomAccessFile 同时写会损坏。
@@ -918,7 +958,17 @@ class _TwitterVideoState extends State<TwitterVideo>
               },
             ),
             ListTile(
-              leading: const Icon(Icons.download),
+              leading: const Icon(Icons.save_alt),
+              title: const Text('保存到本地'),
+              subtitle: const Text('直接保存到公共 Download 目录',
+                  style: TextStyle(fontSize: 11)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _saveVideoToLocal();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share),
               title: const Text('下载并分享'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -994,10 +1044,18 @@ class _TwitterVideoState extends State<TwitterVideo>
               const SizedBox(width: 8),
               _buildSpeedButton(),
               IconButton(
-                icon: const Icon(Icons.download,
-                    color: Colors.white, size: 24),
+                icon: const Icon(Icons.save_alt,
+                    color: Colors.white, size: 22),
+                onPressed: _saveVideoToLocal,
+                iconSize: 22,
+                tooltip: '保存到本地',
+              ),
+              IconButton(
+                icon: const Icon(Icons.share,
+                    color: Colors.white, size: 22),
                 onPressed: _downloadVideo,
-                iconSize: 24,
+                iconSize: 22,
+                tooltip: '下载并分享',
               ),
               IconButton(
                 icon: const Icon(Icons.fullscreen,
@@ -1024,6 +1082,7 @@ class _TwitterVideoState extends State<TwitterVideo>
       aspectRatio: 16 / 9,
       child: GestureDetector(
         onTap: queued ? () => _retryInit(autoPlay: true) : null,
+        onLongPress: () => _showContextMenu(context),
         child: Container(
           width: widget.width,
           height: widget.height,
@@ -1073,6 +1132,7 @@ class _TwitterVideoState extends State<TwitterVideo>
       child: GestureDetector(
         // 点封面 = 我要看这个视频：加载 + 自动播放。
         onTap: () => _retryInit(autoPlay: true),
+        onLongPress: () => _showContextMenu(context),
         child: Stack(
           fit: StackFit.expand,
           children: [

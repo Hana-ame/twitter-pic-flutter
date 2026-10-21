@@ -1,4 +1,4 @@
-// 收藏列表组件，展示已收藏的用户并提供导入导出功能
+// 收藏列表组件，展示已收藏的用户并提供搜索筛选、排序切换及导入导出功能
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -8,6 +8,29 @@ import '../models/user.dart';
 import '../screens/user_detail_screen.dart';
 import '../services/proxy_manager.dart';
 import 'proxy_avatar.dart';
+
+/// 解析一行导入文本，提取合法用户名。
+///
+/// 兼容格式：
+///   - `https://x.moonchan.xyz/alice`
+///   - `https://x.com/alice?s=20` / `https://twitter.com/alice`
+///   - `@alice`
+///   - `alice`
+String? parseImportedUsername(String rawLine) {
+  var s = rawLine.trim();
+  if (s.isEmpty) return null;
+  // 去掉 query / fragment
+  final qIdx = s.indexOf('?');
+  if (qIdx >= 0) s = s.substring(0, qIdx);
+  final hIdx = s.indexOf('#');
+  if (hIdx >= 0) s = s.substring(0, hIdx);
+  s = s.replaceAll(RegExp(r'/+$'), '').trim();
+  if (s.isEmpty) return null;
+  final parts = s.split('/');
+  final last = parts.last.trim().replaceFirst(RegExp(r'^@+'), '').trim();
+  if (last.isEmpty || last == 'http:' || last == 'https:') return null;
+  return last;
+}
 
 class FavList extends StatefulWidget {
   final TwitterApi api;
@@ -23,6 +46,9 @@ class _FavListState extends State<FavList> {
   int _limit = 10;
   String _importText = '';
   bool _showImport = false;
+  String _filterQuery = '';
+  bool _sortAlpha = false;
+  final TextEditingController _filterCtrl = TextEditingController();
 
   void _onStorageChanged() {
     if (mounted) setState(() {});
@@ -37,6 +63,7 @@ class _FavListState extends State<FavList> {
   @override
   void dispose() {
     StorageService.changes.removeListener(_onStorageChanged);
+    _filterCtrl.dispose();
     super.dispose();
   }
 
@@ -46,7 +73,14 @@ class _FavListState extends State<FavList> {
     final allUsernames = rawUsernames
         .where((u) => u.isNotEmpty && !StorageService.isBlocked(u))
         .toList();
-    final visible = allUsernames.take(_limit).toList();
+    if (_sortAlpha) {
+      allUsernames.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
+    final q = _filterQuery.trim().replaceFirst(RegExp(r'^@+'), '').toLowerCase();
+    final filteredUsernames = q.isEmpty
+        ? allUsernames
+        : allUsernames.where((u) => u.toLowerCase().contains(q)).toList();
+    final visible = filteredUsernames.take(_limit).toList();
 
     if (rawUsernames.isEmpty && !_showImport) {
       return Center(
@@ -70,10 +104,61 @@ class _FavListState extends State<FavList> {
     return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (allUsernames.length >= 2)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _filterCtrl,
+                      onChanged: (v) => setState(() => _filterQuery = v),
+                      decoration: InputDecoration(
+                        hintText: '搜索已收藏的用户名 (${allUsernames.length})…',
+                        prefixIcon: const Icon(Icons.search, size: 18),
+                        suffixIcon: _filterQuery.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.close, size: 16),
+                                onPressed: () {
+                                  _filterCtrl.clear();
+                                  setState(() => _filterQuery = '');
+                                },
+                              )
+                            : null,
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ActionChip(
+                    avatar: Icon(
+                      _sortAlpha ? Icons.sort_by_alpha : Icons.schedule,
+                      size: 15,
+                    ),
+                    label: Text(
+                      _sortAlpha ? 'A-Z' : '最新',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    onPressed: () => setState(() => _sortAlpha = !_sortAlpha),
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ],
+              ),
+            ),
           if (visible.isEmpty && !_showImport)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
-              child: Text('没有收藏的用户', style: TextStyle(color: Colors.grey, fontSize: 13)),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Text(
+                q.isNotEmpty ? '没有匹配的收藏用户' : '没有收藏的用户',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey, fontSize: 13),
+              ),
             ),
           // 带 key：取消收藏后剩下的 tile 不会按位置错配、也不会重发元数据请求。
           ...visible.map((u) => _FavTile(
@@ -81,13 +166,13 @@ class _FavListState extends State<FavList> {
             username: u, api: widget.api, proxy: widget.proxy,
             onUnfav: () => setState(() {}),
           )),
-          if (_limit < allUsernames.length)
+          if (_limit < filteredUsernames.length)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: OutlinedButton.icon(
                 onPressed: () => setState(() => _limit += 20),
                 icon: const Icon(Icons.expand_more, size: 16),
-                label: Text('显示更多 (${allUsernames.length - _limit} 个)'),
+                label: Text('显示更多 (${filteredUsernames.length - _limit} 个)'),
               ),
             ),
           const Divider(height: 1),
@@ -117,7 +202,7 @@ class _FavListState extends State<FavList> {
                   TextField(
                     maxLines: 3,
                     decoration: const InputDecoration(
-                      hintText: '每行一个URL',
+                      hintText: '每行一个URL或@用户名',
                       border: OutlineInputBorder(),
                       contentPadding: EdgeInsets.all(12),
                     ),
@@ -155,9 +240,8 @@ class _FavListState extends State<FavList> {
     if (_importText.trim().isEmpty) return;
     final map = StorageService.getFavMap();
     for (final line in _importText.split('\n')) {
-      final parts = line.trim().replaceAll(RegExp(r'/+$'), '').split('/');
-      final key = parts.last;
-      if (key.isNotEmpty && key != 'http:' && key != 'https:') {
+      final key = parseImportedUsername(line);
+      if (key != null && key.isNotEmpty) {
         map[key] = true;
       }
     }
@@ -233,8 +317,6 @@ class _FavTileState extends State<_FavTile> {
   @override
   void didUpdateWidget(_FavTile old) {
     super.didUpdateWidget(old);
-    // 原实现在 build 里直接 new FutureBuilder future，父组件任意 setState
-    // （导入/导出/加载更多）都会让所有可见 tile 重发请求。
     if (old.username != widget.username) {
       _meta = _loadMetaWithTags(widget.username);
     }
@@ -270,8 +352,7 @@ class _FavTileState extends State<_FavTile> {
         }
         final info = snapshot.data?.accountInfo;
         final tags = info?.tags ?? const <String, int>{};
-        // 收藏夹此前**完全不过滤**（连用户名屏蔽都没应用）——用户屏蔽了某个
-        // 账号，它照样出现在收藏里。统一走 shouldHideUser，与其它列表同口径。
+        // 统一走 shouldHideUser，与其它列表同口径。
         if (StorageService.isBlocked(widget.username) ||
             (tags.isNotEmpty &&
                 StorageService.shouldHideUser(widget.username, tags))) {
@@ -293,31 +374,11 @@ class _FavTileState extends State<_FavTile> {
             await Navigator.push(context, PageRouteBuilder(
               transitionDuration: const Duration(milliseconds: 300),
               reverseTransitionDuration: const Duration(milliseconds: 300),
-              // ⚠️ `tagBrowse: null` 是**显式决定**，不是漏传（UserDetailScreen.tagBrowse
-              // 是 required，漏传编译不过，代码里不存在「忘了传」这种可能）。
-              //
-              // 详情页点标签时会把请求**递回**背后那个用户列表页、就地切换、然后
-              // pop 自己（widgets/tag_browse.dart 的说明）。收藏页背后**没有**
-              // 列表页——`FavoritesTab` 与 `UserListScreen` 是 IndexedStack 里两个
-              // 平级的 Tab、彼此不可见。所以「不能就地切」在这里是**合法且正确**
-              // 的状态：能递回的只有 UserListScreen，而让它从另一个 Tab 的
-              // Scaffold 里起作用等于跨 Tab 操纵，会造出「用户在收藏 Tab、标签结果
-              // 却出现在用户 Tab」这种比一句提示更糟的状态。另一条路是在收藏页把
-              // 标签查找**再做一份**，那是 tag_browse.dart 开头已否掉的方案
-              // （同一件事两份实现，必然各自漂移）。
-              //
-              // 那为什么保留这个入口？因为它承载用户可见的必要反馈：详情页必须
-              // 明确说「此页不支持标签就地查看，请从用户列表进入」，点了不能静默
-              // 无反应。test/fav_tag_browse_contract_test.dart 走真实点击路径钉住
-              // 三条：提示出现 / 没被 pop / 没多发一个标签反查请求。
+              // ⚠️ `tagBrowse: null` 是**显式决定**，不是漏传（由 test/fav_tag_browse_contract_test.dart 钉住）。
               pageBuilder: (_, a, __) => UserDetailScreen(
                 profile: snapshot.data!,
                 proxy: widget.proxy,
                 tagBrowse: null,
-                // 透传 api：详情页默认**自建**一个 TwitterApi 打真实网络，于是
-                // 它的标签区与外面这个实例无关——注入假适配器的测试永远构造不出
-                // 可点的标签区（tag_same_page_test 靠显式注入才跑得起来）。
-                // 复用同一个实例，也让这一页的请求走同一条连接与同一份缓存。
                 api: widget.api,
               ),
               transitionsBuilder: (_, a, __, child) {
@@ -331,8 +392,6 @@ class _FavTileState extends State<_FavTile> {
                 );
               },
             ));
-            // 详情页里可能取消收藏：返回后让父列表重新读取收藏表，
-            // 否则该项会一直留在收藏夹里。
             widget.onUnfav?.call();
           },
           onLongPress: () {
@@ -342,9 +401,10 @@ class _FavTileState extends State<_FavTile> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12),
-                      child: Text('用户操作', style: TextStyle(fontWeight: FontWeight.bold)),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Text('@${widget.username}',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
                     ),
                     ListTile(
                       leading: const Icon(Icons.favorite, color: Colors.red),
@@ -353,6 +413,37 @@ class _FavTileState extends State<_FavTile> {
                         Navigator.pop(ctx);
                         StorageService.toggleFav(widget.username);
                         widget.onUnfav?.call();
+                      },
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.copy),
+                      title: const Text('复制用户名'),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        Clipboard.setData(
+                            ClipboardData(text: '@${widget.username}'));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('已复制 @${widget.username}')),
+                        );
+                      },
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.block, color: Colors.deepOrange),
+                      title: const Text('屏蔽该用户'),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        StorageService.addBlockedUser(widget.username);
+                        widget.onUnfav?.call();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('已屏蔽 @${widget.username}'),
+                            action: SnackBarAction(
+                              label: '撤销',
+                              onPressed: () => StorageService
+                                  .removeBlockedUser(widget.username),
+                            ),
+                          ),
+                        );
                       },
                     ),
                     const SizedBox(height: 8),

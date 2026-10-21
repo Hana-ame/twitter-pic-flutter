@@ -1,5 +1,6 @@
-// Emoji 排行页面：展示各时间段的投票榜单
+// Emoji 排行页面：展示各时间段的投票榜单，支持周期筛选、收藏状态显示与长按快捷操作
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/twitter_api.dart';
 import '../models/user.dart';
@@ -18,14 +19,26 @@ class RankingScreen extends StatefulWidget {
 class _RankingScreenState extends State<RankingScreen> {
   Map<String, EmojiPeriodData>? _data;
   String? _activeEmoji;
+  String _periodFilter = 'all'; // 'all' | 'day' | 'week' | 'month'
   bool _loading = true;
   String? _error;
   String? _loadingUser;
 
+  void _onStorageChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
+    StorageService.changes.addListener(_onStorageChanged);
     _load();
+  }
+
+  @override
+  void dispose() {
+    StorageService.changes.removeListener(_onStorageChanged);
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -86,6 +99,8 @@ class _RankingScreenState extends State<RankingScreen> {
       return const Center(child: Text('暂无排行数据'));
     }
 
+    final currentPeriod = _activeEmoji != null ? _data![_activeEmoji] : null;
+
     return RefreshIndicator(
       onRefresh: _load,
       child: SingleChildScrollView(
@@ -94,12 +109,14 @@ class _RankingScreenState extends State<RankingScreen> {
           children: [
             const SizedBox(height: 8),
             Wrap(
-              spacing: 8, runSpacing: 8,
+              spacing: 8,
+              runSpacing: 8,
               alignment: WrapAlignment.center,
               children: _data!.keys.map((emoji) => GestureDetector(
                 onTap: () => setState(() => _activeEmoji = emoji),
                 child: Container(
-                  width: 44, height: 44,
+                  width: 44,
+                  height: 44,
                   decoration: BoxDecoration(
                     color: _activeEmoji == emoji ? Colors.blue.shade50 : Colors.grey.shade100,
                     borderRadius: BorderRadius.circular(8),
@@ -109,18 +126,44 @@ class _RankingScreenState extends State<RankingScreen> {
                 ),
               )).toList(),
             ),
-            const SizedBox(height: 16),
-            if (_activeEmoji != null && _data![_activeEmoji] != null)
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              alignment: WrapAlignment.center,
+              children: [
+                _buildPeriodChip('all', '全部榜单'),
+                _buildPeriodChip('day', '日榜'),
+                _buildPeriodChip('week', '周榜'),
+                _buildPeriodChip('month', '月榜'),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (currentPeriod != null)
               Column(
                 children: [
-                  _buildList('日榜', _data![_activeEmoji]!.day),
-                  _buildList('周榜', _data![_activeEmoji]!.week),
-                  _buildList('月榜', _data![_activeEmoji]!.month),
+                  if (_periodFilter == 'all' || _periodFilter == 'day')
+                    _buildList('日榜', currentPeriod.day),
+                  if (_periodFilter == 'all' || _periodFilter == 'week')
+                    _buildList('周榜', currentPeriod.week),
+                  if (_periodFilter == 'all' || _periodFilter == 'month')
+                    _buildList('月榜', currentPeriod.month),
                 ],
               ),
+            const SizedBox(height: 16),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildPeriodChip(String key, String label) {
+    final selected = _periodFilter == key;
+    return ChoiceChip(
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      selected: selected,
+      onSelected: (_) => setState(() => _periodFilter = key),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 
@@ -139,8 +182,15 @@ class _RankingScreenState extends State<RankingScreen> {
             padding: const EdgeInsets.all(12),
             child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
           ),
+          if (visibleEntries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text('暂无上榜数据', style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ),
           ...visibleEntries.asMap().entries.map((e) {
-            final isRowLoading = _loadingUser == e.value.username;
+            final username = e.value.username;
+            final isRowLoading = _loadingUser == username;
+            final isFav = StorageService.isFav(username);
             return ListTile(
               dense: true,
               leading: CircleAvatar(
@@ -155,8 +205,21 @@ class _RankingScreenState extends State<RankingScreen> {
                 child: Text('${e.key + 1}',
                     style: const TextStyle(fontSize: 10, color: Colors.white)),
               ),
-              title: Text('@${e.value.username}',
-                  style: const TextStyle(fontSize: 14)),
+              title: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      '@$username',
+                      style: const TextStyle(fontSize: 14),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (isFav) ...[
+                    const SizedBox(width: 6),
+                    const Icon(Icons.favorite, color: Colors.red, size: 14),
+                  ],
+                ],
+              ),
               trailing: isRowLoading
                   ? const SizedBox(
                       width: 16,
@@ -167,7 +230,6 @@ class _RankingScreenState extends State<RankingScreen> {
                       style: const TextStyle(fontSize: 12, color: Colors.blue)),
               onTap: () async {
                 if (_loadingUser != null) return;
-                final username = e.value.username;
                 setState(() => _loadingUser = username);
                 try {
                   final profile = await widget.api.getMetaData(username);
@@ -183,6 +245,48 @@ class _RankingScreenState extends State<RankingScreen> {
                 } finally {
                   if (mounted) setState(() => _loadingUser = null);
                 }
+              },
+              onLongPress: () {
+                showModalBottomSheet(
+                  context: context,
+                  builder: (ctx) => SafeArea(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Text('@$username',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                        ListTile(
+                          leading: Icon(
+                            isFav ? Icons.favorite : Icons.favorite_border,
+                            color: isFav ? Colors.red : Colors.grey,
+                          ),
+                          title: Text(isFav ? '取消收藏' : '加入收藏'),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            StorageService.toggleFav(username);
+                          },
+                        ),
+                        ListTile(
+                          leading: const Icon(Icons.copy),
+                          title: const Text('复制用户名'),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            Clipboard.setData(
+                                ClipboardData(text: '@$username'));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('已复制 @$username')),
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                    ),
+                  ),
+                );
               },
             );
           }),

@@ -1,4 +1,4 @@
-// 标签控制页面：管理高亮和屏蔽标签
+// 标签控制页面：管理高亮标签、屏蔽标签、Gay 专属标签以及已屏蔽账号（block-map）
 import 'package:flutter/material.dart';
 
 import '../services/storage_service.dart';
@@ -16,15 +16,18 @@ class TagControllerScreen extends StatefulWidget {
 
 class _TagControllerScreenState extends State<TagControllerScreen> {
   final _inputCtrl = TextEditingController();
+  final _blockUserCtrl = TextEditingController();
   List<String> _highlight = [];
   List<String> _block = [];
   List<String> _gayTags = [];
+  List<String> _blockedUsers = [];
   bool _gayMode = false;
 
   @override
   void initState() {
     super.initState();
     _inputCtrl.addListener(_onInputChanged);
+    _blockUserCtrl.addListener(_onInputChanged);
     _load();
   }
 
@@ -37,6 +40,7 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   void _load() {
     _gayMode = StorageService.isGayMode();
     _gayTags = StorageService.getGayTags();
+    _blockedUsers = StorageService.getBlockedUsers();
     final rules = StorageService.getTagRules();
     _highlight = (rules['highlight'] as List?)?.cast<String>() ?? [];
     final storedBlock = (rules['block'] as List?)?.cast<String>() ?? [];
@@ -45,20 +49,10 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
     // 两者在「用户主动清空了屏蔽列表」时都成立，但含义完全相反：
     //   - 键不存在 = 从来没配过 → 给一份默认（首次体验）
     //   - 键存在但为空 = 用户明确表示「一个都不要」→ 必须尊重
-    //
-    // 用 isEmpty 判据的后果是：用户把唯一的「无关内容」删掉后重启，
-    // 它又回来了，而且**再也删不掉**（每次开页面都从默认值重新长出来）。
-    // 更别扭的是这个复活只发生在 UI 上——_save() 只在增删时调用，所以
-    // storage 里可能还是空列表，界面上却一直显示着「已屏蔽 (1)」。
-    //
-    // 出厂值**必须落盘**：只把它显示出来而不写进 storage，界面上写着
-    // 「已屏蔽 (1)」而规则其实并不存在，用户会以为功能坏了。
     if (rules.containsKey('block')) {
       _block = storedBlock;
     } else {
-      // 首次进入：给一份出厂值并**立即落盘**。只显示不落盘的话，界面上写着
-      // 「已屏蔽 (1)」而 storage 里根本没有这条规则，用户看不到任何效果，
-      // 会以为功能坏了；而且下次进来又会重新「复活」一遍。
+      // 首次进入：给一份出厂值并**立即落盘**。
       _block = _kDefaultBlockTags.toList();
       _save();
     }
@@ -113,16 +107,56 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
     });
   }
 
+  void _addBlockedUser() {
+    final clean =
+        _blockUserCtrl.text.trim().replaceFirst(RegExp(r'^@+'), '').trim();
+    if (clean.isEmpty) return;
+    setState(() {
+      StorageService.addBlockedUser(clean);
+      _blockedUsers = StorageService.getBlockedUsers();
+      _blockUserCtrl.clear();
+    });
+  }
+
+  void _removeBlockedUser(String username) {
+    setState(() {
+      StorageService.removeBlockedUser(username);
+      _blockedUsers = StorageService.getBlockedUsers();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已取消屏蔽 @$username'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _clearBlockedUsers() {
+    setState(() {
+      StorageService.clearBlockedUsers();
+      _blockedUsers = StorageService.getBlockedUsers();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('已清空全部屏蔽账号'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _inputCtrl.removeListener(_onInputChanged);
+    _blockUserCtrl.removeListener(_onInputChanged);
     _inputCtrl.dispose();
+    _blockUserCtrl.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext  context) {
+  Widget build(BuildContext context) {
     final hasInput = _inputCtrl.text.trim().isNotEmpty;
+    final hasBlockUserInput = _blockUserCtrl.text.trim().isNotEmpty;
     return Scaffold(
       appBar: AppBar(title: const Text('标签管理')),
       body: SafeArea(
@@ -274,6 +308,97 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
               Icons.visibility_off, Colors.red, '已屏蔽', _block.length),
             const SizedBox(height: 8),
             _buildTagList(_block, Colors.red, 'block'),
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                _buildSectionHeader(
+                  Icons.person_off_outlined,
+                  Colors.deepOrange,
+                  '已屏蔽账号',
+                  _blockedUsers.length,
+                ),
+                if (_blockedUsers.isNotEmpty)
+                  TextButton(
+                    onPressed: _clearBlockedUsers,
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: Colors.red,
+                    ),
+                    child: const Text('全部解除', style: TextStyle(fontSize: 12)),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _blockUserCtrl,
+                    decoration: InputDecoration(
+                      hintText: '输入要屏蔽的 @用户名...',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      prefixIcon: const Icon(Icons.alternate_email, size: 18),
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 12,
+                      ),
+                    ),
+                    onSubmitted: (_) => _addBlockedUser(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: hasBlockUserInput ? _addBlockedUser : null,
+                  icon: const Icon(Icons.block, size: 16),
+                  label: const Text('屏蔽账号'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.deepOrange.shade50,
+                    foregroundColor: Colors.deepOrange.shade800,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (_blockedUsers.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  '无已屏蔽账号',
+                  style: TextStyle(color: Colors.grey, fontSize: 13),
+                ),
+              )
+            else
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: _blockedUsers
+                    .map(
+                      (u) => ActionChip(
+                        key: ValueKey('blocked_user_$u'),
+                        label: Text('@$u', style: const TextStyle(fontSize: 12)),
+                        avatar: const Icon(
+                          Icons.close,
+                          size: 14,
+                          color: Colors.deepOrange,
+                        ),
+                        onPressed: () => _removeBlockedUser(u),
+                        backgroundColor:
+                            Colors.deepOrange.withValues(alpha: 0.08),
+                        side: BorderSide(
+                          color: Colors.deepOrange.withValues(alpha: 0.3),
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    )
+                    .toList(),
+              ),
             const SizedBox(height: 32),
           ],
         ),
@@ -282,7 +407,7 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
   }
 
   Widget _buildSectionHeader(
-      IconData  icon, Color  color, String  title, int  count) {
+      IconData icon, Color color, String title, int count) {
     return Row(
       children: [
         Icon(icon, size: 18, color: color),
@@ -301,7 +426,7 @@ class _TagControllerScreenState extends State<TagControllerScreen> {
     );
   }
 
-  Widget _buildTagList(List<String>  tags, Color  color, String  type) {
+  Widget _buildTagList(List<String> tags, Color color, String type) {
     if (tags.isEmpty) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
