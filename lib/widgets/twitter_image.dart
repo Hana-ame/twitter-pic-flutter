@@ -1,5 +1,5 @@
 // twitter_image.dart
-// 图片组件：通过本机 ECH 代理加载，支持点击预览、下载、分享。
+// 图片组件：通过本机 ECH 代理加载，支持点击预览、保存到本地、下载分享。
 //
 // 布局要点（重要）：本组件挂在 ListView.builder 的 item 里，父级高度是
 // **无界**的。因此绝不能把内容交给 `Stack(fit: StackFit.expand)` 去自适应
@@ -22,6 +22,7 @@ import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../services/media_saver.dart';
 import '../services/proxy_manager.dart';
 import '../utils/ech_url.dart';
 import '../utils/media_url.dart';
@@ -344,7 +345,17 @@ class _TwitterImageState extends State<TwitterImage> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.download),
+              leading: const Icon(Icons.save_alt),
+              title: const Text('保存到本地'),
+              subtitle: const Text('直接保存到公共 Download 目录',
+                  style: TextStyle(fontSize: 11)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _saveToLocal();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share),
               title: const Text('下载并分享'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -356,6 +367,39 @@ class _TwitterImageState extends State<TwitterImage> {
         ),
       ),
     );
+  }
+
+  Future<void> _saveToLocal() async {
+    final port = widget.proxy.port;
+    if (port == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未启动，无法保存')),
+      );
+      return;
+    }
+    final proxied = EchUrl.rewriteToUri(widget.url, port);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在保存原图到本地...')));
+    try {
+      final file = await MediaSaver.saveToDownloads(
+        proxiedUri: proxied,
+        originalUrl: widget.url,
+        isVideo: false,
+      );
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('已保存到本地：${file.path}'),
+          backgroundColor: Colors.green,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('保存失败: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    }
   }
 
   Future<void> _downloadAndShare() async {
@@ -544,7 +588,7 @@ class _StatusBox extends StatelessWidget {
 /// extended_image 自带 `extended_image_library → http_client_helper` 网络栈，
 /// 那是本项目不选它的理由（见 pubspec 注释里的完整核对）。
 ///
-/// 保留的既有能力：Hero 过渡、逐块解码、失败重试、下载分享、邻张预取。
+/// 保留的既有能力：Hero 过渡、逐块解码、失败重试、保存到本地、下载分享、邻张预取。
 class _ImageViewer extends StatefulWidget {
   final List<String> gallery;
   final int initialIndex;
@@ -608,6 +652,34 @@ class _ImageViewerState extends State<_ImageViewer> {
     ).catchError((_) {});
   }
 
+  Future<void> _saveToLocal() async {
+    final port = widget.proxy.port;
+    if (port == null) return;
+    final raw = widget.gallery[_index];
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在保存原图到本地...')));
+    try {
+      final file = await MediaSaver.saveToDownloads(
+        proxiedUri: EchUrl.rewriteToUri(raw, port),
+        originalUrl: raw,
+        isVideo: false,
+      );
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('已保存到本地：${file.path}'),
+          backgroundColor: Colors.green,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('保存失败: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    }
+  }
+
   Future<void> _downloadAndShare() async {
     final port = widget.proxy.port;
     if (port == null) return;
@@ -650,7 +722,12 @@ class _ImageViewerState extends State<_ImageViewer> {
         title: Text('${_index + 1} / ${widget.gallery.length}'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.download),
+            icon: const Icon(Icons.save_alt),
+            onPressed: _saveToLocal,
+            tooltip: '保存到本地',
+          ),
+          IconButton(
+            icon: const Icon(Icons.share),
             onPressed: _downloadAndShare,
             tooltip: '下载并分享',
           ),

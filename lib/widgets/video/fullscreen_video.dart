@@ -14,6 +14,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../services/log_service.dart';
+import '../../services/media_saver.dart';
 import '../../services/proxy_manager.dart';
 import '../../services/video_downloader.dart';
 import '../../utils/ech_url.dart';
@@ -77,6 +78,45 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
         '${v.isInitialized ? "init" : "uninit"}'
         '${v.isPlaying ? " play" : " pause"}'
         '${v.isBuffering ? " buf" : ""}';
+  }
+
+  Future<void> _saveVideoToLocal() async {
+    if (_downloading) return;
+    final port = widget.proxy.port;
+    if (port == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未就绪，暂时无法保存')),
+      );
+      return;
+    }
+    final uri = EchUrl.rewriteToUri(widget.url, port);
+
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _downloading = true);
+    messenger.showSnackBar(const SnackBar(content: Text('正在保存视频到本地...')));
+
+    try {
+      final file = await MediaSaver.saveToDownloads(
+        proxiedUri: uri,
+        originalUrl: widget.url,
+        isVideo: true,
+      );
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('已保存到本地：${file.path}'),
+          backgroundColor: Colors.green,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('保存失败: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _downloading = false);
+    }
   }
 
   Future<void> _downloadVideo() async {
@@ -268,7 +308,12 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
                               child: CircularProgressIndicator(
                                   strokeWidth: 2, color: Colors.white),
                             )
-                          : const Icon(Icons.download, color: Colors.white),
+                          : const Icon(Icons.save_alt, color: Colors.white),
+                      onPressed: _downloading ? null : _saveVideoToLocal,
+                      tooltip: '保存到本地',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.share, color: Colors.white),
                       onPressed: _downloading ? null : _downloadVideo,
                       tooltip: '下载并分享',
                     ),

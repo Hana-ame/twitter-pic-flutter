@@ -1,8 +1,9 @@
-// 用户详情页面：展示头像、标签、投票及媒体内容
+// 用户详情页面：展示头像、标签、投票、媒体筛选/排序及批量下载（含中途取消）
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../api/twitter_api.dart';
@@ -20,6 +21,42 @@ import '../widgets/tag_selector_modal.dart';
 import '../widgets/horizontal_button_row.dart';
 import '../widgets/tag_browse.dart';
 
+/// 详情页媒体类型筛选枚举。
+enum MediaFilter {
+  all,
+  photo,
+  video,
+}
+
+/// 判断单条时间线项是否为视频/动图。
+bool isVideoTimelineItem(TimelineItem item) =>
+    item.type == 'video' || item.type == 'animated_gif';
+
+/// 纯函数：按媒体类型筛选并根据 [oldestFirst] 决定正序/倒序。
+///
+/// 独立为顶层纯函数以便单元测试直接验证筛选与排序契约。
+List<TimelineItem> filterAndSortTimeline(
+  List<TimelineItem> timeline, {
+  MediaFilter filter = MediaFilter.all,
+  bool oldestFirst = false,
+}) {
+  Iterable<TimelineItem> filtered;
+  switch (filter) {
+    case MediaFilter.all:
+      filtered = timeline;
+      break;
+    case MediaFilter.photo:
+      filtered = timeline.where((it) => !isVideoTimelineItem(it));
+      break;
+    case MediaFilter.video:
+      filtered = timeline.where(isVideoTimelineItem);
+      break;
+  }
+  final list = filtered.toList(growable: false);
+  if (!oldestFirst || list.length <= 1) return list;
+  return list.reversed.toList(growable: false);
+}
+
 class UserDetailScreen extends StatefulWidget {
   final UserMetaData profile;
   final ProxyManager proxy;
@@ -31,21 +68,17 @@ class UserDetailScreen extends StatefulWidget {
   ///   - 传了句柄（正常路径，从用户列表页点进来）→ 点标签**留在来源页**，
   ///     不再 push 独立的标签页。
   ///   - 显式传 `null` → 背后没有能递回的列表页，如实说明「此页不支持就地切换」。
-  ///
-  /// 为什么不写成可选参数：PR #13 把它做成可选，于是「忘了传」和「决定不传」
-  /// 在代码里长得一模一样——仓库里有三处能 push 详情页，只有用户列表页那一处
-  /// 传了句柄，另两处因为漏传而静默落到「不支持」提示（notes/
-  /// discipline-dont-hide-product-decisions：能力依赖「人记得传参」）。
-  /// 改成 `required` 之后，**漏传是编译错误**，只有 `tagBrowse: null` 这一种
-  /// 写法能让「背后没有列表页」进入代码；null 仍然是「没有」的唯一表示。
-  ///
-  /// 唯一显式传 null 的生产调用点是 `lib/widgets/fav_list.dart`（收藏页背后
-  /// 只有 `FavoritesTab`，没有列表页可递回，那里不传是**正确决定**而非缺陷），
-  /// 由 `test/fav_tag_browse_contract_test.dart` 钉住它仍给出明确提示。
   final TagBrowseRequest? tagBrowse;
 
   /// 仅供测试注入（配假 `HttpClientAdapter`）；生产调用点不传。
   final TwitterApi? api;
+
+  /// 是否在打开/刷新该详情页时写入最近浏览历史。
+  ///
+  /// 默认 `false` 以保证既有组件测试（如 `fav_tag_browse_contract_test`、
+  /// `tag_same_page_test`）在假异步时钟下不会触发额外的磁盘写链；
+  /// 生产主列表与排行榜入口显式传 `true`。
+  final bool recordHistory;
 
   const UserDetailScreen({
     super.key,
@@ -53,6 +86,7 @@ class UserDetailScreen extends StatefulWidget {
     required this.proxy,
     required this.tagBrowse,
     this.api,
+    this.recordHistory = false,
   });
 
   @override
@@ -73,11 +107,16 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   late UserMetaData _profile;
   bool _showAll = false;
   int _mediaLimit = 10;
+  MediaFilter _mediaFilter = MediaFilter.all;
+  bool _oldestFirst = false;
   Map<String, dynamic> _userTags = {};
   Map<String, int> _emojiCounts = {};
   String? _votingEmoji;
   bool _showTagModal = false;
   late String _username;
+
+  final ScrollController _scrollCtrl = ScrollController();
+  bool _showBackToTop = false;
 
   @override
   void initState() {
@@ -86,6 +125,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     _ownsApi = widget.api == null;
     _profile = widget.profile;
     _username = _profile.accountInfo.username;
+    _scrollCtrl.addListener(_onScroll);
+    if (widget.recordHistory && _username.isNotEmpty) {
+      StorageService.addBrowseHistory(
+        _username,
+        nick: _profile.accountInfo.nick,
+        avatar: _profile.accountInfo.avatar,
+      );
+    }
     _loadTags();
     _loadEmojis();
     // 占位数据（元数据加载失败时点进来的）：自动拉取完整数据。
@@ -96,12 +143,36 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _precacheAhead(0, 6));
   }
 
+  void _onScroll() {
+    if (!_scrollCtrl.hasClients) return;
+    final shouldShow = _scrollCtrl.offset > 480;
+    if (shouldShow != _showBackToTop && mounted) {
+      setState(() => _showBackToTop = shouldShow);
+    }
+  }
+
+  void _scrollToTop() {
+    if (!_scrollCtrl.hasClients) return;
+    _scrollCtrl.animateTo(
+      0,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   /// 拉取最新元数据。返回 null 表示成功，否则为错误信息（供下拉刷新提示）。
   Future<String?> _refreshProfile() async {
     try {
       final refreshed = await _api.getMetaData(_username, forceRefresh: true);
       if (!mounted) return null;
       setState(() => _profile = refreshed);
+      if (widget.recordHistory && _username.isNotEmpty) {
+        StorageService.addBrowseHistory(
+          _username,
+          nick: refreshed.accountInfo.nick,
+          avatar: refreshed.accountInfo.avatar,
+        );
+      }
       return null;
     } catch (e) {
       return '$e';
@@ -123,6 +194,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         _votingEmoji = null;
         _showAll = false;
         _mediaLimit = 10;
+        _mediaFilter = MediaFilter.all;
+        _oldestFirst = false;
         _loadTags();
         _loadEmojis();
       }
@@ -175,12 +248,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   Future<void> _handleConfirmTags(Map<String, int> tags) async {
     if (_savingTags) return;
     // **记住旧值以便回滚。**
-    //
-    // 原来是乐观写：setState 里就把 _userTags 换成新值，await 之后失败
-    // 只弹一句「保存失败」而**不回滚**。于是页面在整个会话里都显示着一组
-    // 从未保存的标签 —— 刷新一下又变回旧的，用户会以为标签「自己丢了」。
-    // 更糟的是「屏蔽标签」提示横幅按 _userTags 计算，会拿不存在的标签去
-    // 触发封禁提示。
     final prevTags = _userTags;
     setState(() {
       _showTagModal = false;
@@ -219,27 +286,24 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
   }
 
+  Future<void> _copyUserInfo() async {
+    await Clipboard.setData(ClipboardData(text: '@$_username'));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已复制 @$_username'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   bool _downloading = false;
+  bool _cancelDownloadRequested = false;
   // 批量下载进度（header 转圈按钮处显示 x/y），三个下载入口共用。
   int _dlDone = 0;
   int _dlTotal = 0;
 
   // 批量下载根目录：**用户可见的公共 Download 目录**（浏览器保存图片的位置）。
-  //
-  // Android 固定 `/storage/emulated/0/Download`——这是 v0.2.8 起一直用的路径。
-  // commit ec8aaef（2026-09-10）曾把它改成 `getApplicationDocumentsDirectory()`
-  // （app 私有目录 `/storage/emulated/0/Android/data/<pkg>/files/Documents/`），
-  // 导致 v0.5.0 起所有版本：下载真的成功了，但文件写进用户根本看不见的私有目录
-  // ——相册（Gallery）不扫私有目录、文件管理器（Android 11+）默认隐藏、`am start`
-  // 的 `file://` URI 又被 FileUriExposureException 拦，结果是 SnackBar 报绿
-  // "下载完成 X/N" 但用户找不到任何文件。现在改回。
-  //
-  // 权限要求（CI 已注入 AndroidManifest）：
-  //   - targetSdk ≤ 28：`WRITE_EXTERNAL_STORAGE`（旧系统，运行时权限）；
-  //   - targetSdk 29+：`MANAGE_EXTERNAL_STORAGE`（"全部文件访问"，必须用户在
-  //     系统设置里手动授权，Google Play 不允许默认拿，但本项目是侧载 APK）。
-  // 缺权限时 `dlDir.create()` 抛 Permission denied，被 `_batchDownload` 外层
-  // catch 捕获后弹 SnackBar 告知用户去系统设置授权——**不再静默"下载成功"**。
   Future<String> _downloadBaseDir() async {
     if (Platform.isAndroid) return '/storage/emulated/0/Download';
     if (Platform.isWindows) {
@@ -251,13 +315,20 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     return dir.path;
   }
 
+  /// 当前筛选与排序后的时间线。
+  List<TimelineItem> get _filteredTimeline => filterAndSortTimeline(
+        _profile.timeline,
+        filter: _mediaFilter,
+        oldestFirst: _oldestFirst,
+      );
+
   /// 三种批量下载的公共骨架：进度统计、目录准备、逐项执行（单项失败
-  /// 不中断其余项）、完成后打开目录并提示结果。差异只在 [fetchOne]。
+  /// 不中断其余项）、支持中途取消、完成后打开目录并提示结果。差异只在 [fetchOne]。
   Future<void> _batchDownload(
     Future<bool> Function(TimelineItem item, File file) fetchOne,
   ) async {
     if (_downloading) return;
-    final items = _profile.timeline;
+    final items = _filteredTimeline;
     if (items.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('没有可下载的内容'),
@@ -268,6 +339,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
     setState(() {
       _downloading = true;
+      _cancelDownloadRequested = false;
       _dlDone = 0;
       _dlTotal = items.length;
     });
@@ -277,12 +349,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       try {
         if (!await dlDir.exists()) await dlDir.create(recursive: true);
       } on FileSystemException catch (e) {
-        // 分区存储（Android 10+）下写公共 Download 目录需 MANAGE_EXTERNAL_STORAGE
-        // 权限（"全部文件访问"）。权限未授予时 Directory.create() 抛
-        // FileSystemException，osError.message 一般是 "Permission denied" 或
-        // "EACCES"。这里显式识别并给出可操作的提示，而不是把用户带去 System
-        // 的"下载失败"（commit ec8aaef 之前正是这个死胡同）。
-        final msg = '${e.message ?? ''} ${e.osError?.message ?? ''}'.toLowerCase();
+        final msg = '${e.message} ${e.osError?.message ?? ''}'.toLowerCase();
         if (msg.contains('permission') || msg.contains('eacces')) {
           _showPermissionDenied(dir: dlDir.path);
           return;
@@ -291,12 +358,16 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
 
       var ok = 0;
+      var cancelled = false;
       for (var i = 0; i < items.length; i++) {
         if (!mounted) return;
+        if (_cancelDownloadRequested) {
+          cancelled = true;
+          break;
+        }
         final item = items[i];
         try {
-          final ext =
-              item.type == 'video' || item.type == 'animated_gif' ? '.mp4' : '.jpg';
+          final ext = isVideoTimelineItem(item) ? '.mp4' : '.jpg';
           final base = item.url.split('/').last.split('?').first.split('.').first;
           final file = File('${dlDir.path}/${_username}_$base$ext');
           if (await fetchOne(item, file)) ok++;
@@ -307,27 +378,31 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       }
 
       if (!mounted) return;
-      // 尝试打开下载目录，但**不依赖**它成功——file:// 会被 Android 7+ 的
-      // FileUriExposureException 拦，bare path 也可能被 file manager 拒。
-      // 失败时 Process.run 只返回非零 exitCode，不抛异常。
-      if (Platform.isAndroid) {
-        // 先试 bare path（v0.2.8 老写法），失败再试 file:// URI 兜底。
-        await Process.run('am', [
-          'start', '-a', 'ACTION_VIEW', '-d', dlDir.path,
-        ]);
-      } else if (Platform.isWindows) {
-        await Process.run('explorer', [dlDir.path]);
+      if (ok > 0) {
+        if (Platform.isAndroid) {
+          await Process.run('am', [
+            'start', '-a', 'ACTION_VIEW', '-d', dlDir.path,
+          ]);
+        } else if (Platform.isWindows) {
+          await Process.run('explorer', [dlDir.path]);
+        }
       }
 
-      // SnackBar 必须带上**真实路径**——用户找不到文件时唯一的线索就在这儿。
-      // commit ec8aaef 之前 SnackBar 只写"下载完成 X/N"，用户以为下载到"某处"
-      // 却找不到，正是本次回归的根因。
-      final msg = ok == 0
-          ? '下载失败（0/${items.length}），可能是代理或网络问题'
-          : '下载完成：成功 $ok/${items.length} 个\n保存位置：${dlDir.path}';
+      final String msg;
+      final Color bg;
+      if (cancelled) {
+        msg = '已取消下载：已完成 $ok/${items.length} 个\n保存位置：${dlDir.path}';
+        bg = Colors.orange.shade800;
+      } else if (ok == 0) {
+        msg = '下载失败（0/${items.length}），可能是代理或网络问题';
+        bg = Colors.red;
+      } else {
+        msg = '下载完成：成功 $ok/${items.length} 个\n保存位置：${dlDir.path}';
+        bg = Colors.green;
+      }
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(msg),
-        backgroundColor: ok == 0 ? Colors.red : Colors.green,
+        backgroundColor: bg,
         duration: ok == 0 ? const Duration(seconds: 4) : const Duration(seconds: 6),
       ));
     } catch (e) {
@@ -338,15 +413,16 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         ));
       }
     } finally {
-      if (mounted) setState(() => _downloading = false);
+      if (mounted) {
+        setState(() {
+          _downloading = false;
+          _cancelDownloadRequested = false;
+        });
+      }
     }
   }
 
   /// 写公共 Download 目录缺权限时弹出的提示框。
-  ///
-  /// `MANAGE_EXTERNAL_STORAGE` 不能用 `requestPermissions` API 请求——必须
-  /// 用户去系统设置手动授权（targetSdk 30+ 的强制要求）。所以这里给一个
-  /// "去设置" 按钮，直接跳到"全部文件访问"设置页。
   void _showPermissionDenied({required String dir}) {
     showDialog<void>(
       context: context,
@@ -390,11 +466,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     );
   }
 
-  /// 跳转到"全部文件访问"系统设置页。
-  ///
-  /// `intent:#Intent;action=android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION;end`
-  /// 是 Android 官方文档给的深链（见 docs/developing-for-file-access），
-  /// `am start` 用 `-a` 直接指定 action 比 URI 更稳（老系统可能没识别 intent://）。
   Future<void> _openStorageSettings() async {
     await Process.run('am', [
       'start',
@@ -403,9 +474,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   }
 
   /// 流式写入文件，成功返回 true。
-  ///
-  /// 连接或写入任一步失败时关闭句柄并删除半写文件——原实现 writeFrom 抛错
-  /// （磁盘满/连接中断）时 RAF 不关闭，残留部分写入文件。
   Future<bool> _streamToFile(HttpClient client, Uri uri, File file) async {
     RandomAccessFile? raf;
     var ok = false;
@@ -416,6 +484,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final rafHandle = await file.open(mode: FileMode.write);
       raf = rafHandle;
       await for (final chunk in resp) {
+        if (_cancelDownloadRequested) return false;
         await rafHandle.writeFrom(chunk);
       }
       await rafHandle.close();
@@ -430,8 +499,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           await raf.close();
         } catch (_) {}
       }
-      // 响应流无需单独关闭：外层 client.close() 会释放所有连接，且
-      // HttpClientResponse 既无 close() 也无 cancel() 方法。
       if (!ok) {
         try {
           await file.delete();
@@ -467,6 +534,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           if (res.statusCode != 200) return false;
           final bb = BytesBuilder(copy: false);
           await for (final chunk in res) {
+            if (_cancelDownloadRequested) return false;
             bb.add(chunk);
           }
           final bytes = bb.takeBytes();
@@ -495,48 +563,55 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     final info = _profile.accountInfo;
     final isFav = StorageService.isFav(_username);
     final isBlocked = StorageService.isBlocked(_username);
-    final timeline = _profile.timeline;
-    final displayTimeline = _showAll ? timeline : timeline.take(_mediaLimit).toList();
+    final filteredTimeline = _filteredTimeline;
+    final displayTimeline = _showAll
+        ? filteredTimeline
+        : filteredTimeline.take(_mediaLimit).toList();
     // 图片画廊（去重保序）：全屏预览翻页用。视频不进这个列表。
     final imageUrls = <String>[];
     final imageIndex = <String, int>{};
     for (final it in displayTimeline) {
-      if (it.type == 'video' || it.type == 'animated_gif') continue;
+      if (isVideoTimelineItem(it)) continue;
       if (it.url.isEmpty || imageIndex.containsKey(it.url)) continue;
       imageIndex[it.url] = imageUrls.length;
       imageUrls.add(it.url);
     }
-    final hasMore = !_showAll && timeline.length > _mediaLimit;
+    final hasMore = !_showAll && filteredTimeline.length > _mediaLimit;
     // 屏蔽规则生效：用户标签命中「标签管理→屏蔽」列表时给提示条。
-    //
-    // 判定已收进 StorageService.blockTagHits —— 列表页现在用同一条规则真的把
-    // 这类账号藏起来了，这里只负责「告诉用户是哪个标签命中的」。两处必须共用
-    // 同一个判定：各写一份的话，列表藏了而详情不提示（或反过来）就又是一次漂移。
     final blockedHits = StorageService.blockTagHits(_userTags);
     final showBlockBanner = blockedHits.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('@$_username'),
+        title: GestureDetector(
+          onLongPress: _copyUserInfo,
+          child: Text('@$_username'),
+        ),
         actions: [
           IconButton(
-            icon: Icon(Icons.edit, size: 20),
+            icon: const Icon(Icons.copy_outlined, size: 19),
+            onPressed: _copyUserInfo,
+            tooltip: '复制用户名',
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit, size: 20),
             onPressed: () => setState(() => _showTagModal = true),
             tooltip: '修改标签',
           ),
         ],
       ),
+      floatingActionButton: _showBackToTop
+          ? FloatingActionButton.small(
+              onPressed: _scrollToTop,
+              tooltip: '回到顶部',
+              child: const Icon(Icons.vertical_align_top),
+            )
+          : null,
       body: Stack(
         children: [
-          // ListView.builder 惰性构建：滚动到哪建到哪。原实现把所有媒体卡
-          // 一次性塞进 children，“展开全部”会瞬间创建全部 TwitterVideo、
-          // 同时触发所有视频下载；builder 化后视频只在滚入视口时才创建/下载。
           RefreshIndicator(
             color: const Color(0xFF4F6CFF),
-            backgroundColor: Colors.white,
             onRefresh: () async {
-              // 媒体时间线也要刷新：此前只重载标签/表情，卡在“暂无内容”
-              // 时下拉永远救不回来。
               final err = await _refreshProfile();
               await _loadTags();
               await _loadEmojis();
@@ -546,9 +621,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
               ));
             },
             child: ListView.builder(
-              // 预构建窗口：默认 250 逻辑像素，卡片一屏才 1~2 张，快速滑动时
-              // 还没轮到构建的就是一片空白。放宽到 1800 后，视口外两三张卡片
-              // 会提前构建并开始下载图片，滑过去基本已经有内容。
+              controller: _scrollCtrl,
               cacheExtent: 1800,
               padding: const EdgeInsets.all(12),
               itemCount: _detailItemCount(showBlockBanner, displayTimeline, hasMore),
@@ -558,32 +631,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                 if (showBlockBanner && j == 0) return _buildBlockBanner(blockedHits);
                 if (showBlockBanner) j--;
                 if (displayTimeline.isEmpty) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 48, horizontal: 16),
-                    child: Column(
-                      children: [
-                        Icon(Icons.photo_library_outlined, size: 48, color: Colors.grey),
-                        SizedBox(height: 12),
-                        Text('暂无内容', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                        SizedBox(height: 4),
-                        Text('该用户还没有发布任何媒体', style: TextStyle(color: Colors.grey, fontSize: 13)),
-                      ],
-                    ),
-                  );
+                  return _buildEmptyTimelineState();
                 }
                 if (j < displayTimeline.length) {
                   final item = displayTimeline[j];
                   return _MediaCard(
-                    // key 必须唯一：同一 URL 会在时间线里重复出现（后端返的是
-                    // 未去重的，上面的 imageIndex 才做去重）。重复 ValueKey 在
-                    // debug 会断言、在 release 会让两张卡共用 element 状态。
-                    // 带上位置 j：续载是往尾部追加，已有条目的 j 不变，所以
-                    // 同一张卡的 key 在续载前后保持稳定，状态不会丢。
                     key: ValueKey('${item.url}#$j'),
                     item: item,
                     proxy: widget.proxy,
-                    // 全屏预览要能左右/上下翻页：把本页所有图片按顺序带过去
-                    // （视频有自己的播放器，不参与图片翻页）。
                     gallery: imageUrls,
                     galleryIndex: imageIndex[item.url] ?? 0,
                   );
@@ -614,7 +669,53 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     );
   }
 
-  static const int _kHeaderCount = 10; // 头部固定条目数（头像行到标签区）
+  Widget _buildEmptyTimelineState() {
+    if (_profile.timeline.isNotEmpty && _mediaFilter != MediaFilter.all) {
+      final typeLabel = _mediaFilter == MediaFilter.photo ? '图片' : '视频';
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 16),
+        child: Column(
+          children: [
+            Icon(
+              _mediaFilter == MediaFilter.photo
+                  ? Icons.image_not_supported_outlined
+                  : Icons.videocam_off_outlined,
+              size: 44,
+              color: Colors.grey,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '没有$typeLabel内容',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => setState(() {
+                _mediaFilter = MediaFilter.all;
+                _mediaLimit = 10;
+              }),
+              icon: const Icon(Icons.filter_alt_off, size: 16),
+              label: const Text('查看全部媒体'),
+            ),
+          ],
+        ),
+      );
+    }
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 48, horizontal: 16),
+      child: Column(
+        children: [
+          Icon(Icons.photo_library_outlined, size: 48, color: Colors.grey),
+          SizedBox(height: 12),
+          Text('暂无内容', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          SizedBox(height: 4),
+          Text('该用户还没有发布任何媒体', style: TextStyle(color: Colors.grey, fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+  static const int _kHeaderCount = 10; // 头部固定条目数（头像行到媒体筛选栏）
 
   /// 惰性续载：列表滚到尾部就自动 +10（首屏不满一屏时也会自动补满）。
   /// 用 post-frame 回调，避免在 build 里 setState。
@@ -626,7 +727,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       _loadMoreScheduled = false;
       if (!mounted) return;
       final before = _mediaLimit;
-      final total = _profile.timeline.length;
+      final total = _filteredTimeline.length;
       if (_mediaLimit >= total) return;
       setState(() => _mediaLimit = (_mediaLimit + 10).clamp(0, total));
       // 新露出来的这批也提前取一下缩略图。
@@ -635,21 +736,16 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   }
 
   /// 预取 [from] 起 [count] 张图片：滑到那里时基本已经在缓存里了。
-  ///
-  /// 媒体一律 origin（不做 name= 档位），预取是滑动体验的主要保障。
-  /// 视频不预热（动辄几 MB）。
   void _precacheAhead(int from, int count) {
     if (!mounted) return;
     final port = widget.proxy.port;
     if (port == null) return;
-    final timeline = _profile.timeline;
+    final timeline = _filteredTimeline;
     var scheduled = 0;
     for (var i = from; i < timeline.length && scheduled < count; i++) {
       final url = timeline[i].url;
       if (!MediaUrl.isImage(url)) continue;
       scheduled++;
-      // 必须与 _MediaCard (thumb: true) 使用相同的缩略图 URL，否则预取的是
-      // name=orig 原图而卡片查的是 name=small，缓存 key 完全错位。
       final thumbUrl = MediaUrl.thumbOf(url);
       precacheImage(
         ProgressiveImageProvider(EchUrl.rewrite(thumbUrl, port)),
@@ -692,7 +788,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     );
   }
 
-  // 头部第 i 个条目（0..9）：头像行 / 三排按钮 / 标签区，夹以间距。
+  // 头部第 i 个条目（0..9）：头像行 / 三排按钮 / 标签区 / 媒体类型筛选与排序栏。
   Widget _buildHeader(int i, TwitterUser info, bool isFav, bool isBlocked) {
     switch (i) {
       case 0:
@@ -718,9 +814,23 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                       maxLines: 1,
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      '@$_username',
-                      style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: _copyUserInfo,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              '@$_username',
+                              style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Icon(Icons.copy, size: 12, color: Colors.grey.shade500),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -732,7 +842,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         return const SizedBox(height: 12);
       case 2:
         return HorizontalButtonRow(buttons: [
-          _pill('展开全部', Icons.expand_more, Colors.green, () => setState(() => _showAll = true)),
+          _pill(
+            _showAll ? '已展开全部' : '展开全部',
+            _showAll ? Icons.unfold_less : Icons.expand_more,
+            Colors.green,
+            () => setState(() {
+              _showAll = !_showAll;
+              if (!_showAll) _mediaLimit = 10;
+            }),
+          ),
           _pill(isFav ? '已收藏' : '收藏', Icons.star, Colors.amber, () { setState(() { StorageService.toggleFav(_username); }); }),
           ActionChip(
             onPressed: _updating ? null : _handleUpdate,
@@ -751,14 +869,26 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       case 3:
         return const SizedBox(height: 8);
       case 4:
+        final dlCount = _mediaFilter == MediaFilter.all
+            ? _profile.totalUrls
+            : _filteredTimeline.length;
+        final dlLabel = _mediaFilter == MediaFilter.all
+            ? '下载 $dlCount'
+            : (_mediaFilter == MediaFilter.photo
+                ? '下载图片 $dlCount'
+                : '下载视频 $dlCount');
         return HorizontalButtonRow(buttons: [
-          if (_downloading)
+          if (_downloading) ...[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  SizedBox(width: 14, height: 14, child: const CircularProgressIndicator(strokeWidth: 2)),
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
                   const SizedBox(width: 6),
                   Text(
                     '下载中 $_dlDone/$_dlTotal',
@@ -766,9 +896,19 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                   ),
                 ],
               ),
-            )
-          else ...[
-            _pill('下载 ${_profile.totalUrls}', Icons.download, Colors.indigo, _downloadAll),
+            ),
+            _pill(
+              _cancelDownloadRequested ? '正在取消...' : '取消下载',
+              Icons.cancel_outlined,
+              Colors.red,
+              () {
+                if (!_cancelDownloadRequested) {
+                  setState(() => _cancelDownloadRequested = true);
+                }
+              },
+            ),
+          ] else ...[
+            _pill(dlLabel, Icons.download, Colors.indigo, _downloadAll),
             _pill('兼容下载', Icons.download_done, Colors.teal, _downloadAllLegacy),
             _pill('应急下载', Icons.emergency, Colors.orange, _downloadEmergency),
           ],
@@ -798,22 +938,149 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           tags: _userTags,
           onTapTag: (tag) => _openTagInPlace(tag),
         );
+      case 9:
+        if (_profile.timeline.isEmpty) return const SizedBox(height: 4);
+        return _buildMediaFilterBar();
       default:
         return const SizedBox(height: 4);
     }
   }
 
+  /// 媒体类型筛选（全部 / 图片 / 视频）与时间排序（最新↓ / 最早↑）工具栏。
+  Widget _buildMediaFilterBar() {
+    final allCount = _profile.timeline.length;
+    var videoCount = 0;
+    for (final it in _profile.timeline) {
+      if (isVideoTimelineItem(it)) videoCount++;
+    }
+    final photoCount = allCount - videoCount;
+
+    Widget filterChip(MediaFilter type, String label, IconData icon) {
+      final selected = _mediaFilter == type;
+      final color = selected ? const Color(0xFF4F6CFF) : Colors.grey.shade700;
+      return InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () {
+          if (_mediaFilter == type) return;
+          setState(() {
+            _mediaFilter = type;
+            _mediaLimit = 10;
+          });
+          WidgetsBinding.instance
+              .addPostFrameCallback((_) => _precacheAhead(0, 6));
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: selected
+                ? const Color(0xFF4F6CFF).withValues(alpha: 0.14)
+                : Colors.grey.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: selected
+                  ? const Color(0xFF4F6CFF)
+                  : Colors.grey.withValues(alpha: 0.3),
+              width: selected ? 1.3 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 13, color: color),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            filterChip(
+              MediaFilter.all,
+              '全部 ($allCount)',
+              Icons.grid_view_rounded,
+            ),
+            const SizedBox(width: 6),
+            filterChip(
+              MediaFilter.photo,
+              '图片 ($photoCount)',
+              Icons.photo_outlined,
+            ),
+            const SizedBox(width: 6),
+            filterChip(
+              MediaFilter.video,
+              '视频 ($videoCount)',
+              Icons.videocam_outlined,
+            ),
+            const SizedBox(width: 10),
+            InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () {
+                setState(() {
+                  _oldestFirst = !_oldestFirst;
+                });
+                WidgetsBinding.instance
+                    .addPostFrameCallback((_) => _precacheAhead(0, 6));
+              },
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: _oldestFirst
+                      ? Colors.teal.withValues(alpha: 0.12)
+                      : Colors.grey.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: _oldestFirst
+                        ? Colors.teal
+                        : Colors.grey.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _oldestFirst ? Icons.north : Icons.south,
+                      size: 13,
+                      color:
+                          _oldestFirst ? Colors.teal.shade700 : Colors.grey.shade700,
+                    ),
+                    const SizedBox(width: 3),
+                    Text(
+                      _oldestFirst ? '最早优先' : '最新优先',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight:
+                            _oldestFirst ? FontWeight.w600 : FontWeight.normal,
+                        color: _oldestFirst
+                            ? Colors.teal.shade700
+                            : Colors.grey.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 点标签 → **留在用户列表页**按该标签查找，不新开标签页。
-  ///
-  /// 三件事的顺序不能换：
-  ///  1. 先把请求递回用户列表页（它会真的去加载，状态落在它自己身上）；
-  ///  2. 递回成功才 pop 详情页——否则 pop 完却什么都没切换，用户被丢回
-  ///     列表页但看不到任何变化，比不响应更难理解；
-  ///  3. pop 用**本页自己的** Navigator，不传 context 给别人 pop（Flutter
-  ///     里 `Navigator.of(本页 context)` 才能保证弹的是压着本页的那一层）。
-  ///
-  /// 拿不到请求句柄时（如从收藏页进来，背后没有列表页可递回）如实说明，
-  /// 而不是点了没反应。
   void _openTagInPlace(String tag) {
     final req = widget.tagBrowse;
     if (req == null) {
@@ -822,8 +1089,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
     enterTagInPlace(req, tag, onDone: () {
       if (!mounted) return;
-      // 能 pop 才 pop：若本页已是栈底（例如它被 replace 过），pop 会连带
-      // 弹掉列表页，那比不 pop 更糟——此时让标签结果留在列表页即可。
       final nav = Navigator.maybeOf(context);
       if (nav != null && nav.canPop()) nav.pop();
     });
@@ -854,6 +1119,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   @override
   void dispose() {
+    _scrollCtrl.removeListener(_onScroll);
+    _scrollCtrl.dispose();
     if (_ownsApi) _api.dispose();
     super.dispose();
   }
@@ -875,7 +1142,7 @@ class _MediaCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isVideo = item.type == 'video' || item.type == 'animated_gif';
+    final isVideo = isVideoTimelineItem(item);
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 5, horizontal: 8),
       elevation: 0,
@@ -889,9 +1156,6 @@ class _MediaCard extends StatelessWidget {
             TwitterVideo(url: item.url, proxy: proxy)
           else
             TwitterImage(
-              // 卡片只拉 name=small 缩略图（一屏十几张，原图就是"列表半天
-              // 出不来画面"的主因）；全屏预览走 gallery 里的**原图** URL，
-              // 下载分享同样用原图，两边画质都不受影响。
               url: item.url,
               proxy: proxy,
               thumb: true,
@@ -903,6 +1167,12 @@ class _MediaCard extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: Row(
                 children: [
+                  Icon(
+                    isVideo ? Icons.videocam_outlined : Icons.photo_outlined,
+                    size: 12,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(width: 4),
                   const Icon(Icons.schedule, size: 12, color: Colors.grey),
                   const SizedBox(width: 4),
                   Text(

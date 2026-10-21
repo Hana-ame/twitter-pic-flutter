@@ -4,6 +4,44 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+/// 最近浏览历史条目：记录用户访问过的推主详情页信息。
+class BrowseHistoryEntry {
+  final String username;
+  final String? nick;
+  final String? avatar;
+  final int visitedAtMs;
+
+  const BrowseHistoryEntry({
+    required this.username,
+    this.nick,
+    this.avatar,
+    required this.visitedAtMs,
+  });
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'username': username,
+        if (nick != null && nick!.isNotEmpty) 'nick': nick,
+        if (avatar != null && avatar!.isNotEmpty) 'avatar': avatar,
+        'visitedAtMs': visitedAtMs,
+      };
+
+  factory BrowseHistoryEntry.fromJson(Map<String, dynamic> json) {
+    final u = (json['username'] ?? '').toString().trim();
+    final n = json['nick']?.toString();
+    final a = json['avatar']?.toString();
+    final tsRaw = json['visitedAtMs'];
+    final ts = tsRaw is int
+        ? tsRaw
+        : (tsRaw is num ? tsRaw.toInt() : (int.tryParse('$tsRaw') ?? 0));
+    return BrowseHistoryEntry(
+      username: u,
+      nick: (n == null || n.isEmpty) ? null : n,
+      avatar: (a == null || a.isEmpty) ? null : a,
+      visitedAtMs: ts,
+    );
+  }
+}
+
 class StorageService {
   static const _kFavMap = 'fav-map';
   static const _kBlockMap = 'block-map';
@@ -13,6 +51,12 @@ class StorageService {
   static const _kDecodeBudget = 'decode-budget';
   static const _kGayMode = 'gay-mode';
   static const _kGayTags = 'gay-tags';
+  static const _kBrowseHistory = 'browse-history';
+  static const _kThemeMode = 'theme-mode';
+
+  /// 浏览历史保留上限。
+  static const int maxBrowseHistory = 50;
+
   /// **跨端契约**：Gay 模式默认词表。与图站 `gallery/static/home.js` 的
   /// `DEFAULT_GAY_TAGS` 必须是同一份。
   ///
@@ -155,6 +199,139 @@ class StorageService {
       map[username] = true;
     }
     setBlockMap(map);
+  }
+
+  /// 获取所有已屏蔽的用户名列表（按字母升序排列，便于稳定渲染与查找）。
+  static List<String> getBlockedUsers() {
+    final map = getBlockMap();
+    final users = <String>[
+      for (final e in map.entries)
+        if (e.key.trim().isNotEmpty && e.value == true) e.key.trim(),
+    ];
+    users.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return users;
+  }
+
+  /// 显式将指定用户加入黑名单（自动剥除前导 `@` 与空白）。
+  static void addBlockedUser(String username) {
+    final clean = username.trim().replaceFirst(RegExp(r'^@+'), '').trim();
+    if (clean.isEmpty) return;
+    final map = getBlockMap();
+    map[clean] = true;
+    setBlockMap(map);
+  }
+
+  /// 显式将指定用户移出黑名单。
+  static void removeBlockedUser(String username) {
+    final clean = username.trim().replaceFirst(RegExp(r'^@+'), '').trim();
+    if (clean.isEmpty) return;
+    final map = getBlockMap();
+    if (map.containsKey(clean)) {
+      map.remove(clean);
+      setBlockMap(map);
+    }
+  }
+
+  /// 清空所有已屏蔽用户。
+  static void clearBlockedUsers() {
+    setBlockMap(<String, dynamic>{});
+  }
+
+  // --- browse-history ---
+  /// 读取最近浏览历史（按访问时间倒序，最近访问的排在最前）。
+  static List<BrowseHistoryEntry> getBrowseHistory() {
+    final s = _read(_kBrowseHistory);
+    if (s.isEmpty) return const <BrowseHistoryEntry>[];
+    try {
+      final decoded = jsonDecode(s);
+      if (decoded is List) {
+        final out = <BrowseHistoryEntry>[];
+        for (final item in decoded) {
+          if (item is Map) {
+            final entry = BrowseHistoryEntry.fromJson(
+              Map<String, dynamic>.from(item),
+            );
+            if (entry.username.isNotEmpty) out.add(entry);
+          }
+        }
+        return out;
+      }
+    } catch (_) {}
+    return const <BrowseHistoryEntry>[];
+  }
+
+  /// 记录一次浏览历史（同名账号去重并置顶，最多保留 [maxBrowseHistory] 条）。
+  static void addBrowseHistory(
+    String username, {
+    String? nick,
+    String? avatar,
+    int? visitedAtMs,
+  }) {
+    final clean = username.trim().replaceFirst(RegExp(r'^@+'), '').trim();
+    if (clean.isEmpty) return;
+    final current = List<BrowseHistoryEntry>.of(getBrowseHistory());
+    BrowseHistoryEntry? prev;
+    for (final e in current) {
+      if (e.username == clean) {
+        prev = e;
+        break;
+      }
+    }
+    current.removeWhere((e) => e.username == clean);
+    final mergedNick = (nick != null && nick.isNotEmpty) ? nick : prev?.nick;
+    final mergedAvatar =
+        (avatar != null && avatar.isNotEmpty) ? avatar : prev?.avatar;
+    current.insert(
+      0,
+      BrowseHistoryEntry(
+        username: clean,
+        nick: mergedNick,
+        avatar: mergedAvatar,
+        visitedAtMs: visitedAtMs ?? DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (current.length > maxBrowseHistory) {
+      current.removeRange(maxBrowseHistory, current.length);
+    }
+    _write(
+      _kBrowseHistory,
+      jsonEncode(current.map((e) => e.toJson()).toList(growable: false)),
+    );
+  }
+
+  /// 删除单条浏览历史。
+  static void removeBrowseHistory(String username) {
+    final clean = username.trim().replaceFirst(RegExp(r'^@+'), '').trim();
+    if (clean.isEmpty) return;
+    final current = List<BrowseHistoryEntry>.of(getBrowseHistory());
+    final before = current.length;
+    current.removeWhere((e) => e.username == clean);
+    if (current.length != before) {
+      _write(
+        _kBrowseHistory,
+        jsonEncode(current.map((e) => e.toJson()).toList(growable: false)),
+      );
+    }
+  }
+
+  /// 清空全部浏览历史。
+  static void clearBrowseHistory() {
+    _write(_kBrowseHistory, jsonEncode(const <Map<String, dynamic>>[]));
+  }
+
+  // --- theme-mode ---
+  /// 外观主题模式：`'light'`（默认）/ `'dark'` / `'system'`。
+  static String getThemeMode() {
+    final v = _read(_kThemeMode).trim().toLowerCase();
+    if (v == 'dark' || v == 'system' || v == 'light') return v;
+    return 'light';
+  }
+
+  static void setThemeMode(String mode) {
+    final clean = mode.trim().toLowerCase();
+    final valid =
+        (clean == 'dark' || clean == 'system') ? clean : 'light';
+    _write(_kThemeMode, valid);
   }
 
   // --- tag-rules ---

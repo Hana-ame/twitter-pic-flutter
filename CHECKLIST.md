@@ -1,6 +1,6 @@
 # 项目总检清单
 
-> 最后核对：v0.7.4（2026-10-05）。细节见 [README](README.md)、
+> 最后核对：v0.8.0（2026-10-20）。细节见 [README](README.md)、
 > [doc/architecture.md](doc/architecture.md)、[doc/troubleshooting.md](doc/troubleshooting.md)。
 
 ## 目标
@@ -69,6 +69,15 @@
       `services/video_downloader.dart`（卡片/全屏曾各有一份逐字拷贝）；黑帧判定 →
       `utils/frame_luma.dart`。顺带删掉 `_capturePoster` 成功路径重复的第二次
       `_becomePosterOnly()` 与两处空转的 `SingleTickerProviderStateMixin`
+
+## v0.8.0 本轮新增与完善（2026-10-20）
+- [x] **详情页媒体筛选与排序**（`filterAndSortTimeline`）：支持 `全部 / 图片 / 视频` 筛选及 `最新优先 / 最早优先` 排序切换，画廊预览与预取同步对齐
+- [x] **批量下载中途取消**：新增 `_cancelDownloadRequested` 与「取消下载」按钮，安全中断后续项并保留已落盘文件
+- [x] **单张媒体直接保存到本地**（`lib/services/media_saver.dart`）：图片卡片、全屏相册、视频卡片、全屏视频均支持直接保存到公共 `Download` 目录（带 `stableHash` 防碰撞与异常清理）
+- [x] **已屏蔽账号可视化恢复**：`StorageService` 新增 `getBlockedUsers` / `addBlockedUser` / `removeBlockedUser` / `clearBlockedUsers`，在标签管理页与设置页提供解除入口
+- [x] **最近浏览历史与收藏夹内搜索**：新增 `BrowseHistoryScreen`（上限 50 条）及 `FavList` 本地搜索框、排序切换与多格式导入解析
+- [x] **深色模式 / 外观主题切换**（`StorageService.getThemeMode` / `setThemeMode`）：支持浅色、深色、跟随系统
+- [x] **新增与扩展单测/组件测试**：`media_saver_and_timeline_filter_test.dart`、`browse_history_screen_test.dart` 及 `storage_service_test.dart`、`poster_service_test.dart`、`fav_list_test.dart`
 
 ## v0.5.14 本轮修复（2026-09-12）
 > 主题：**fork 后的效率修正 + 视频侧组件化 + 单测补齐**。
@@ -188,7 +197,7 @@
 - [ ] **Go 日志缓冲的下标漂移**：`logBuffer` 是线性尾截断而非环形，截断后
       `ECHGetLogCount` / `ECHGetLog` 的下标会整体左移，读到重复或漏行。
       Dart 侧的 2 行锚点已经兜住，彻底修好需要新增「按序号增量拉取」的导出。
-- [ ] **`poster_service` 磁盘封面缓存无淘汰**：跨会话累积，磁盘满后 `writeAsBytes` 静默失败。
+- [x] **`poster_service` 磁盘封面缓存 LRU 淘汰（v0.8.0 已补齐）**：默认上限 1000 张，写入采用 `.tmp` 原子替换并按 mtime 异步淘汰最旧封面。
 - [ ] 全屏画廊**双击放大后无法平移**（只能看画面中央那 40%）。
 - [ ] `twitter_image.dart` 的 `_watchSize` 用 `NetworkImage` 量尺寸，与
       `ProgressiveImageProvider` 的缓存 key 不同 → 同一张图会下载两遍。属效率缺陷，不影响正确性。
