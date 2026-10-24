@@ -295,10 +295,12 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         if (!mounted) return;
         final item = items[i];
         try {
-          final ext =
-              item.type == 'video' || item.type == 'animated_gif' ? '.mp4' : '.jpg';
+          // 扩展名按 URL 推导（twimg 图片 `?format=png|webp|gif` 也认），
+          // 推不出再按类型兜底：视频/动图是 mp4，其余图片 jpg。
+          final ext = MediaUrl.extFromUrl(item.url) ??
+              (item.type == 'video' || item.type == 'animated_gif' ? 'mp4' : 'jpg');
           final base = item.url.split('/').last.split('?').first.split('.').first;
-          final file = File('${dlDir.path}/${_username}_$base$ext');
+          final file = File('${dlDir.path}/${_username}_$base.$ext');
           if (await fetchOne(item, file)) ok++;
         } catch (_) {
           // 单个失败继续下一个

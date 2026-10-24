@@ -10,13 +10,15 @@
 
 import 'dart:io';
 
-import '../utils/stable_hash.dart';
+import '../utils/download_name.dart';
 
 class VideoDownloader {
   VideoDownloader._();
 
   /// 落到系统临时目录并返回文件。**同名碰撞**：不同用户/路径的末段可能都叫
   /// `1.mp4`，拼 `stableHash(url)` 保证唯一（同 downloadToTempFile 的修法）。
+  /// 文件名交给 [videoTempFileName]：哈希在扩展名之前，保证 `.mp4` 是末段
+  /// （哈希放后面会把扩展名变成 `.mp4-<hash>`，手机上得手动删多余后缀）。
   static Future<File> fetchToTemp({
     required Uri uri,
     required String url,
@@ -30,8 +32,7 @@ class VideoDownloader {
         throw Exception('HTTP ${response.statusCode}');
       }
 
-      final base = url.split('/').last.split('?').first;
-      final fileName = '${base}-${stableHash(url)}';
+      final fileName = videoTempFileName(url);
       final file = File('${Directory.systemTemp.path}/$fileName');
       RandomAccessFile? raf;
       try {
