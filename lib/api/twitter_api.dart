@@ -637,6 +637,30 @@ class TwitterApi {
     return UserMetaData.fromJson(_asJsonMap(resp.data, 'getMetaData($username)'));
   }
 
+  /// 拉取某用户的**配文**（媒体与正文分开存：服务端 `<user>.texts.json.gz`）。
+  ///
+  /// 返回 `tweet_id -> 正文` 映射，供 UI 按 [TimelineItem.tweetId] 关联。
+  /// 配文文件可能尚未生成（老数据/新爬虫上线前）或该用户确实没有正文——
+  /// 任何失败都静默降级为空映射，绝不能影响详情页主流程。
+  Future<Map<String, String>> getTexts(String username) async {
+    try {
+      final resp = await _dio.get('/$username.texts.json.gz');
+      final raw = _asJsonMap(resp.data, 'getTexts($username)')['texts'];
+      final out = <String, String>{};
+      if (raw is Map) {
+        raw.forEach((k, v) {
+          if (v is Map) {
+            final content = (v['content'] ?? '').toString().trim();
+            if (content.isNotEmpty) out[k.toString()] = content;
+          }
+        });
+      }
+      return out;
+    } catch (_) {
+      return const {};
+    }
+  }
+
   /// 添加/更新一个用户的元数据。
   ///
   /// ── 为什么 [tags] 是必填、而不是可选 ──────────────────────────────────────
