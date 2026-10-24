@@ -143,3 +143,29 @@ Git Tag (v*) Pushed ────► 1. flutter_test (静态分析 + 114+ 全量�
    git push origin vX.Y.Z
    ```
 4. **监控 CI 执行**：推送 tag 将自动触发 GitHub Actions 的 `create_release` 流水线。可在 GitHub Actions 界面确认所有任务全绿并生成 Release。
+
+---
+
+## 6. Issue 处理流程（2026-10-25 用户定规）
+
+**分两种来源，流程不同：**
+
+| issue 提出者 | 流程 |
+|---|---|
+| **Hana-ame 本人** | 可直接修 → PR → CI 绿 → 合并（照常发版） |
+| **非 Hana-ame**（其他用户） | ① 在分支上实现 → ② CI 出**测试包** → ③ 在 issue 里回复**下载链接 + 修改位置 + 测试步骤** → ④ **等提出者测试并回复 OK 之后才合并** |
+
+**非本人 issue 的操作细节：**
+
+1. 从 `main` 拉分支实现修复；版本号 +0.0.1（测试包版本要能辨认）。
+2. 出测试包：推 tag `v<版本>-test-issue<N>`（**非 semver**，CI 只留 artifact、不发 Release），
+   再下载 artifact 用 `gh release create <tag> --prerelease` 附上 APK / Windows zip，
+   得到无需登录的公开下载链接。
+3. 在 issue 回复里必须**完整给出**：
+   - 测试包下载链接（APK / Windows zip）；
+   - **改了哪些文件、哪一层**（服务端 / 客户端 / 数据格式）；
+   - **测试步骤**（怎么装、看哪里、点哪里），以及已知限制（如旧数据无新字段）；
+   - 对需求描述有歧义的地方，列出自己的实现口径并请对方确认。
+4. **提出者回复 OK 前**：不合并 PR、不打正式版 tag。
+   回复 OK 后：合并 PR → 打正式版 tag 发版 → 在 issue 里回正式版链接。
+5. 提出者要求修改时：在同一分支继续改、重推测试 tag 出包、再回复。
