@@ -175,43 +175,75 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     }
   }
 
+  /// 启动失败后的自动重试延迟（依次递增，最多补 [length] 轮）。
+  ///
+  /// 背景（2026-10-24 用户反馈）：DoH 节点偶发「连接被远端强制关闭」
+  /// （wsarecv: An existing connection was forcibly closed by the remote
+  /// host）时抖动窗口可持续几十秒~几分钟。Go 侧 DoH 已有指数退避（约 2
+  /// 分钟预算，见 ech-proxy doFetchECHConfig），这里在 App 层再兜几轮，
+  /// 覆盖更长的窗口；重试期间 UI 保持「正在初始化」而不是直接变「已停止」，
+  /// 全部耗尽才把错误亮给用户。
+  static const List<Duration> _kStartRetryDelays = [
+    Duration(seconds: 5),
+    Duration(seconds: 15),
+    Duration(seconds: 30),
+  ];
+
   Future<void> _start() async {
     if (_startInFlight) return;
     _startInFlight = true;
     try {
-      // 1. 解析 DoH 服务器 IP
-      String? ip;
-      for (var i = 0; i < 5; i++) {
+      for (var attempt = 0; ; attempt++) {
         try {
-          ip = await resolveDomainRobustly(kDohHost);
-          break;
-        } catch (e) {
-          if (i >= 4) rethrow;
-          await Future.delayed(const Duration(seconds: 2));
+          await _startOnce();
+          return; // 成功
+        } catch (e, st) {
+          _logs = _proxy.getLogs();
+          // 不落盘的话反馈包里完全没有痕迹：app 重启后 _proxyError 也空了，
+          // 排查者根本不知道这次启动失败过。
+          LogService.recordError('ProxyStart', e, st);
+          if (attempt >= _kStartRetryDelays.length) {
+            if (!mounted) return;
+            setState(() => _proxyError = e.toString());
+            return;
+          }
+          if (!mounted) return;
+          // 自动重试：等待期间 _startInFlight 保持 true，按钮禁用、显示转圈。
+          await Future.delayed(_kStartRetryDelays[attempt]);
+          if (!mounted) return;
         }
       }
-
-      // 2. 启动代理（内部完成 ECH 初始化 + 启动 HTTP 代理）
-      final port = await _proxy.start(bootstrapIp: ip!);
-      print('ECH proxy started on port $port');
-
-      // 立即补一次 Go 日志，不等 2 秒的定时轮询：启动后 2 秒内的诊断行
-      // 是「代理连不上」时唯一有用的线索。
-      unawaited(LogService.pollGoLogs(_proxy.getLogs()));
-
-      _logs = _proxy.getLogs();
-      if (!mounted) return;
-      setState(() => _proxyReady = true);
-    } catch (e, st) {
-      _logs = _proxy.getLogs();
-      // 不落盘的话反馈包里完全没有痕迹：app 重启后 _proxyError 也空了，
-      // 排查者根本不知道这次启动失败过。
-      LogService.recordError('ProxyStart', e, st);
-      if (!mounted) return;
-      setState(() => _proxyError = e.toString());
     } finally {
       _startInFlight = false;
     }
+  }
+
+  /// 单次「解析 DoH IP → 启动 ECH 代理」。失败时抛异常，由 [_start] 决定
+  /// 是否自动重试。
+  Future<void> _startOnce() async {
+    // 1. 解析 DoH 服务器 IP
+    String? ip;
+    for (var i = 0; i < 5; i++) {
+      try {
+        ip = await resolveDomainRobustly(kDohHost);
+        break;
+      } catch (e) {
+        if (i >= 4) rethrow;
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+
+    // 2. 启动代理（内部完成 ECH 初始化 + 启动 HTTP 代理）
+    final port = await _proxy.start(bootstrapIp: ip!);
+    print('ECH proxy started on port $port');
+
+    // 立即补一次 Go 日志，不等 2 秒的定时轮询：启动后 2 秒内的诊断行
+    // 是「代理连不上」时唯一有用的线索。
+    unawaited(LogService.pollGoLogs(_proxy.getLogs()));
+
+    _logs = _proxy.getLogs();
+    if (!mounted) return;
+    setState(() => _proxyReady = true);
   }
 
   /// 运行中重启 ECH 代理。
