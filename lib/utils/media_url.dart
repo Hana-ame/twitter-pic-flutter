@@ -143,4 +143,63 @@ class MediaUrl {
     // name=small：封面只是卡片上的一小块，没必要按原图拉。
     return 'https://pbs.twimg.com/$prefix/$id/img/photo1.jpg?format=jpg&name=small';
   }
+
+  // ─── 媒体扩展名推导（下载落地用）────────────────────────────────────────
+
+  /// 已知媒体扩展名（不带点，小写）：图片与视频的常用后缀。
+  static const Set<String> kKnownMediaExts = {
+    'jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp',
+    'mp4', 'mov', 'webm', 'm4v',
+  };
+
+  /// 是否是已知媒体扩展名（[ext] 不带点、大小写不敏感）。
+  static bool isKnownMediaExt(String ext) =>
+      kKnownMediaExts.contains(ext.toLowerCase());
+
+  /// 从 URL 推导媒体扩展名（不带点）：`?format=` 参数优先（twimg 图片的
+  /// 权威来源，路径末段常是 `FooBar` 这种无扩展名形态），其次路径末段
+  /// 自带扩展名（twimg 视频是 `.../xyz.mp4?tag=29`）。
+  ///
+  /// 推不出、或推出来不是已知媒体类型时返回 null，由调用方决定兜底。
+  static String? extFromUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return null;
+    final format = uri.queryParameters['format'];
+    if (format != null && isKnownMediaExt(format)) return format.toLowerCase();
+    final segment = uri.pathSegments.isEmpty ? '' : uri.pathSegments.last;
+    final dot = segment.lastIndexOf('.');
+    if (dot <= 0 || dot == segment.length - 1) return null;
+    final ext = segment.substring(dot + 1).toLowerCase();
+    return isKnownMediaExt(ext) ? ext : null;
+  }
+
+  /// 从 HTTP Content-Type 推导媒体扩展名（不带点）；非媒体类型返回 null。
+  static String? extFromContentType(String? contentType) {
+    if (contentType == null) return null;
+    final mime = contentType.split(';').first.trim().toLowerCase();
+    switch (mime) {
+      case 'image/jpeg':
+        return 'jpg';
+      case 'image/png':
+        return 'png';
+      case 'image/gif':
+        return 'gif';
+      case 'image/webp':
+        return 'webp';
+      case 'image/avif':
+        return 'avif';
+      case 'image/bmp':
+        return 'bmp';
+      case 'video/mp4':
+        return 'mp4';
+      case 'video/quicktime':
+        return 'mov';
+      case 'video/webm':
+        return 'webm';
+      case 'video/x-m4v':
+        return 'm4v';
+      default:
+        return null;
+    }
+  }
 }

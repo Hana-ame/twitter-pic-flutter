@@ -23,9 +23,9 @@ import 'package:photo_view/photo_view_gallery.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/proxy_manager.dart';
+import '../utils/download_name.dart';
 import '../utils/ech_url.dart';
 import '../utils/media_url.dart';
-import '../utils/stable_hash.dart';
 import 'progressive_image.dart';
 
 /// 单次下载的整体预算。[HttpClient.connectionTimeout] 只管建连，
@@ -404,10 +404,13 @@ Future<File?> downloadToTempFile(Uri uri, String originalUrl) async {
     // 文件名不能直接取 URL 末段：不同用户/不同路径很容易同名（1.jpg、
     // default.png），后下的会覆盖前下的，用户分享时拿到的是别人的图。
     // 拼上 URL 的稳定哈希，并顺手把路径分隔符等非文件名字符清掉。
-    final raw = originalUrl.split('/').last.split('?').first;
-    final safeBase = raw.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-    final fileName =
-        'twitter_${stableHash(originalUrl)}_${safeBase.isEmpty ? 'file' : safeBase}';
+    // 扩展名交给 imageTempFileName：图片必须带后缀（`format=` 参数 / 响应
+    // Content-Type 推导，兜底 .jpg），否则相册/文件管理器不认成图片，
+    // 用户得手动补后缀。
+    final fileName = imageTempFileName(
+      originalUrl,
+      contentType: response.headers.contentType?.mimeType,
+    );
     final file = File('${Directory.systemTemp.path}/$fileName');
     final raf = await file.open(mode: FileMode.write);
     try {

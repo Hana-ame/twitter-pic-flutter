@@ -185,4 +185,60 @@ void main() {
           reason: 'id 段必须全是数字，否则说明不是这套约定，应退回抓帧而不是乱拼');
     });
   });
+
+  // ─── 下载落地：扩展名推导 ────────────────────────────────────────────────
+
+  group('extFromUrl：下载文件名的扩展名来源', () {
+    test('图片 format= 参数是权威来源', () {
+      expect(MediaUrl.extFromUrl(
+          'https://pbs.twimg.com/media/HRHinAZa8AA7G2D?format=jpg&name=orig'),
+          'jpg');
+      expect(MediaUrl.extFromUrl('https://pbs.twimg.com/media/X?format=png'),
+          'png');
+      expect(MediaUrl.extFromUrl('https://pbs.twimg.com/media/X?format=webp'),
+          'webp');
+    });
+
+    test('视频取路径末段扩展名', () {
+      expect(MediaUrl.extFromUrl(
+          'https://video.twimg.com/amplify_video/1/vid/avc1/720x720/x.mp4?tag=29'),
+          'mp4');
+      expect(MediaUrl.extFromUrl(
+          'https://video.twimg.com/amplify_video/1/vid/avc1/720x1280/x.mp4'),
+          'mp4');
+    });
+
+    test('推不出时返回 null（无 format、路径也无已知扩展名）', () {
+      expect(MediaUrl.extFromUrl('https://pbs.twimg.com/media/X'), isNull);
+      expect(MediaUrl.extFromUrl('https://pbs.twimg.com/media/X?name=orig'),
+          isNull);
+    });
+
+    test('非媒体与畸形输入不抛异常', () {
+      expect(MediaUrl.extFromUrl('https://example.com/a.txt'), isNull);
+      expect(MediaUrl.extFromUrl('not a url'), isNull);
+      expect(MediaUrl.extFromUrl(''), isNull);
+    });
+  });
+
+  group('extFromContentType：响应头 Content-Type → 扩展名', () {
+    test('常见媒体类型', () {
+      expect(MediaUrl.extFromContentType('image/jpeg'), 'jpg');
+      expect(MediaUrl.extFromContentType('image/png'), 'png');
+      expect(MediaUrl.extFromContentType('image/gif'), 'gif');
+      expect(MediaUrl.extFromContentType('image/webp'), 'webp');
+      expect(MediaUrl.extFromContentType('video/mp4'), 'mp4');
+    });
+
+    test('带参数与大小写不敏感', () {
+      expect(MediaUrl.extFromContentType('image/jpeg; charset=utf-8'), 'jpg');
+      expect(MediaUrl.extFromContentType('IMAGE/PNG'), 'png');
+    });
+
+    test('非媒体与空值返回 null', () {
+      expect(MediaUrl.extFromContentType('application/octet-stream'), isNull);
+      expect(MediaUrl.extFromContentType('text/html'), isNull);
+      expect(MediaUrl.extFromContentType(null), isNull);
+    });
+  });
 }
