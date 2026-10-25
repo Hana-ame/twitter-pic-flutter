@@ -233,19 +233,13 @@ class TimelineItem {
   final String type;
   final String? date;
 
-  /// 这条媒体所属推文的 id（字符串）。配文不在媒体条目里——服务端把正文
-  /// **单独存**在 json.gz 的 `texts` 里（同一条推文多张图共用一份正文），
-  /// 客户端用 [tweetId] 去 [UserMetaData.texts] 关联。
-  final String tweetId;
-
-  TimelineItem({required this.url, required this.type, this.date, this.tweetId = ''});
+  TimelineItem({required this.url, required this.type, this.date});
 
   factory TimelineItem.fromJson(Map<String, dynamic> json) {
     return TimelineItem(
       url: _str(json['url']),
       type: _str(json['type']),
       date: _strOrNone(json['date']),
-      tweetId: _str(json['tweet_id']),
     );
   }
 }
