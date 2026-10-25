@@ -75,6 +75,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   int _mediaLimit = 10;
   Map<String, dynamic> _userTags = {};
   Map<String, int> _emojiCounts = {};
+  /// 配文：tweet_id -> 正文（服务端单独文件 `<user>.texts.json.gz`）。
+  Map<String, String> _texts = {};
   String? _votingEmoji;
   bool _showTagModal = false;
   late String _username;
@@ -88,6 +90,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     _username = _profile.accountInfo.username;
     _loadTags();
     _loadEmojis();
+    _loadTexts();
     // 占位数据（元数据加载失败时点进来的）：自动拉取完整数据。
     if (_profile.timeline.isEmpty) {
       _refreshProfile();
@@ -102,6 +105,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final refreshed = await _api.getMetaData(_username, forceRefresh: true);
       if (!mounted) return null;
       setState(() => _profile = refreshed);
+      // 配文单独文件，与元数据一起刷新（失败静默，不影响主数据）。
+      _loadTexts();
       return null;
     } catch (e) {
       return '$e';
@@ -123,8 +128,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         _votingEmoji = null;
         _showAll = false;
         _mediaLimit = 10;
+        _texts = {};
         _loadTags();
         _loadEmojis();
+        _loadTexts();
       }
     }
   }
@@ -143,6 +150,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         _emojiCounts = data.map((k, v) => MapEntry(k, (v as num).toInt()));
       });
     }).catchError((_) {});
+  }
+
+  /// 拉取配文（媒体与正文分开存，服务端单独文件）。
+  ///
+  /// 失败静默：老数据没有该文件时就是「没配文」，不能把详情页打红。
+  Future<void> _loadTexts() async {
+    final texts = await _api.getTexts(_username);
+    if (!mounted) return;
+    setState(() => _texts = texts);
   }
 
   bool _updating = false;
@@ -501,12 +517,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     final displayTimeline = _showAll ? timeline : timeline.take(_mediaLimit).toList();
     // 图片画廊（去重保序）：全屏预览翻页用。视频不进这个列表。
     final imageUrls = <String>[];
+    // 与 imageUrls 一一对应的配文（tweet_id 关联，服务端单独文件）。
+    final imageCaptions = <String>[];
     final imageIndex = <String, int>{};
     for (final it in displayTimeline) {
       if (it.type == 'video' || it.type == 'animated_gif') continue;
       if (it.url.isEmpty || imageIndex.containsKey(it.url)) continue;
       imageIndex[it.url] = imageUrls.length;
       imageUrls.add(it.url);
+      imageCaptions.add(_texts[it.tweetId] ?? '');
     }
     final hasMore = !_showAll && timeline.length > _mediaLimit;
     // 屏蔽规则生效：用户标签命中「标签管理→屏蔽」列表时给提示条。
@@ -584,9 +603,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                     key: ValueKey('${item.url}#$j'),
                     item: item,
                     proxy: widget.proxy,
+                    caption: _texts[item.tweetId] ?? '',
                     // 全屏预览要能左右/上下翻页：把本页所有图片按顺序带过去
                     // （视频有自己的播放器，不参与图片翻页）。
                     gallery: imageUrls,
+                    galleryCaptions: imageCaptions,
                     galleryIndex: imageIndex[item.url] ?? 0,
                   );
                 }
@@ -865,14 +886,19 @@ class _MediaCard extends StatelessWidget {
   final TimelineItem item;
   final ProxyManager proxy;
   final List<String> gallery;
+  final List<String> galleryCaptions;
   final int galleryIndex;
+  /// 该媒体所属推文的配文（空串 = 没有）。
+  final String caption;
 
   const _MediaCard({
     super.key,
     required this.item,
     required this.proxy,
     required this.gallery,
+    required this.galleryCaptions,
     required this.galleryIndex,
+    this.caption = '',
   });
 
   @override
@@ -897,8 +923,24 @@ class _MediaCard extends StatelessWidget {
               url: item.url,
               proxy: proxy,
               thumb: true,
+              caption: caption,
               gallery: gallery,
+              galleryCaptions: galleryCaptions,
               galleryIndex: galleryIndex,
+            ),
+          // 配文（与媒体分开存）：卡片里跟在图片下方，最多 4 行。
+          if (caption.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  caption,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13, height: 1.35, color: Colors.black87),
+                ),
+              ),
             ),
           if (item.date != null)
             Padding(

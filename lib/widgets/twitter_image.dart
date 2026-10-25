@@ -54,6 +54,13 @@ class TwitterImage extends StatefulWidget {
   /// 滑动翻页。为空时只预览当前这一张。
   final List<String>? gallery;
 
+  /// 本图的配文（媒体与正文在服务端分开存，由详情页按 tweet_id 关联后传入）。
+  /// 空串 = 该图没有配文。卡片里显示在图片下方，全屏预览里显示为底部浮层。
+  final String caption;
+
+  /// 与 [gallery] 一一对应的配文列表（全屏翻页时每页各显各的）。
+  final List<String>? galleryCaptions;
+
   /// 本图在 [gallery] 中的下标。
   final int galleryIndex;
 
@@ -66,6 +73,8 @@ class TwitterImage extends StatefulWidget {
     this.height,
     this.thumb = false,
     this.gallery,
+    this.caption = '',
+    this.galleryCaptions,
     this.galleryIndex = 0,
   });
 
@@ -215,6 +224,9 @@ class _TwitterImageState extends State<TwitterImage> {
           gallery: gallery,
           initialIndex: initial,
           proxy: widget.proxy,
+          // 配文与 gallery 一一对应；没有时全用空串兜底，保证按下标取安全。
+          captions: widget.galleryCaptions ??
+              List<String>.filled(gallery.length, widget.caption),
         ),
       ),
     );
@@ -553,10 +565,14 @@ class _ImageViewer extends StatefulWidget {
   final int initialIndex;
   final ProxyManager proxy;
 
+  /// 与 [gallery] 一一对应的配文（可为空串）；长度不足时按下标兜底为空。
+  final List<String> captions;
+
   const _ImageViewer({
     required this.gallery,
     required this.initialIndex,
     required this.proxy,
+    this.captions = const [],
   });
 
   @override
@@ -664,7 +680,9 @@ class _ImageViewerState extends State<_ImageViewer> {
           ),
         ],
       ),
-      body: PhotoViewGallery.builder(
+      body: Stack(
+        children: [
+          PhotoViewGallery.builder(
         pageController: _pageController,
         itemCount: widget.gallery.length,
         onPageChanged: (i) {
@@ -717,6 +735,59 @@ class _ImageViewerState extends State<_ImageViewer> {
             ),
           );
         },
+          ),
+          // 配文浮层（媒体与正文分开存，这里按当前页下标取）。
+          _CaptionOverlay(
+            text: _index < widget.captions.length ? widget.captions[_index] : '',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 全屏浏览时的配文浮层：底部半透明黑色渐变 + 可滚动的白色正文。
+///
+/// 文案较长（推文可带长文）时只限制最大高度并允许滚动，不截断——看到的
+/// 就是完整配文。空配文直接不渲染，不影响看图。
+class _CaptionOverlay extends StatelessWidget {
+  final String text;
+
+  const _CaptionOverlay({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    if (text.trim().isEmpty) return const SizedBox.shrink();
+    final maxHeight = MediaQuery.of(context).size.height * 0.42;
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: Container(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.transparent, Color(0xCC000000)],
+          ),
+        ),
+        padding: EdgeInsets.fromLTRB(
+          16,
+          28,
+          16,
+          16 + MediaQuery.of(context).padding.bottom,
+        ),
+        child: SingleChildScrollView(
+          child: SelectableText(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              height: 1.45,
+            ),
+          ),
+        ),
       ),
     );
   }
