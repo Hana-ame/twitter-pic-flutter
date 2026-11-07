@@ -24,6 +24,7 @@ void main() {
       'https://pbs.twimg.com/media/HRHinAZa8AA7G2D?format=jpg&name=orig',
       'https://pbs.twimg.com/media/X?format=png',
       'https://pbs.twimg.com/media/X',
+      'https://pbs.moonchan.xyz/media/HRHinAZa8AA7G2D?format=jpg&name=small',
     ];
     for (final u in urls) {
       expect(MediaUrl.isImage(u), isTrue, reason: u);

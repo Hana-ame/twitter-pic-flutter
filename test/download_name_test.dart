@@ -7,7 +7,10 @@
 //
 // 纯函数，无 StorageService / 网络，不触发存储闸门。
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:twitter_pic_flutter/services/video_downloader.dart';
 import 'package:twitter_pic_flutter/utils/download_name.dart';
 
 void main() {
@@ -68,6 +71,46 @@ void main() {
     test('路径末段无扩展名时兜底 .mp4', () {
       expect(videoTempFileName('https://video.twimg.com/amplify_video/1/vid/xyz'),
           endsWith('.mp4'));
+    });
+  });
+
+  group('VideoDownloader.cleanExpiredTempFiles：清理过期分享临时文件', () {
+    test('仅清理匹配命名规则且已过期的临时文件，保留新鲜文件与无关文件', () async {
+      final tmp = await Directory.systemTemp.createTemp('clean_temp_test');
+      addTearDown(() async {
+        if (await tmp.exists()) await tmp.delete(recursive: true);
+      });
+
+      final oldImg = File(
+        '${tmp.path}/${imageTempFileName("https://pbs.twimg.com/media/A?format=jpg")}',
+      );
+      final oldVid = File(
+        '${tmp.path}/${videoTempFileName("https://video.twimg.com/ext/1/x.mp4")}',
+      );
+      final freshVid = File(
+        '${tmp.path}/${videoTempFileName("https://video.twimg.com/ext/2/y.mp4")}',
+      );
+      final unrelated = File('${tmp.path}/other_system_file.txt');
+
+      await oldImg.writeAsBytes([1, 2, 3]);
+      await oldVid.writeAsBytes([4, 5, 6]);
+      await freshVid.writeAsBytes([7, 8, 9]);
+      await unrelated.writeAsString('keep me');
+
+      final past = DateTime.now().subtract(const Duration(hours: 30));
+      oldImg.setLastModifiedSync(past);
+      oldVid.setLastModifiedSync(past);
+
+      final deleted = await VideoDownloader.cleanExpiredTempFiles(
+        maxAge: const Duration(hours: 24),
+        tempDir: tmp,
+      );
+
+      expect(deleted, 2);
+      expect(await oldImg.exists(), isFalse);
+      expect(await oldVid.exists(), isFalse);
+      expect(await freshVid.exists(), isTrue);
+      expect(await unrelated.exists(), isTrue);
     });
   });
 }

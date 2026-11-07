@@ -23,6 +23,7 @@ import 'services/log_service.dart';
 import 'services/poster_service.dart';
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
+import 'services/video_downloader.dart';
 import 'screens/ranking_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/user_detail_screen.dart';
@@ -68,6 +69,7 @@ void main() {
     // 图片磁盘缓存（v0.6.1）：滚回来的图直接从磁盘读，不再经 ECH 重下。
     // 失败也无所谓——未就绪时自动降级为纯内存，不是功能依赖。
     unawaited(ProgressiveDiskCache.ensureInitialized());
+    unawaited(VideoDownloader.cleanExpiredTempFiles());
 
     // 顺序要紧：先读上一次的会话文件判断是否正常结束，再写本次会话 ——
     // 反过来的话 startSession() 会先把旧记录覆盖掉，永远检测不到异常退出。
@@ -337,7 +339,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   builder: (routeCtx) => Scaffold(
                     appBar: AppBar(title: const Text('Emoji 排行榜')),
                     body: RankingScreen(
-                      api: TwitterApi(),
+                      proxy: _proxy,
                       onSelectUser: (profile) {
                         Navigator.of(routeCtx).push(
                           MaterialPageRoute(

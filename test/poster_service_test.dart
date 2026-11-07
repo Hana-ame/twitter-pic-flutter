@@ -105,4 +105,19 @@ void main() {
     expect(PosterService.memory(url), isNull);
     expect(await PosterService.load(url), isNull);
   });
+
+  test('磁盘缓存超上限时按 mtime 淘汰最老文件', () async {
+    const limit = 10;
+    for (var i = 0; i < limit + 2; i++) {
+      final u = 'https://video.twimg.com/disk_$i.mp4';
+      await PosterService.put(u, bytesOf([i + 1]), maxDiskLimit: limit);
+    }
+    final dir = Directory(PosterService.directoryPath!);
+    final files = dir
+        .listSync()
+        .whereType<File>()
+        .where((f) => !f.path.endsWith('.tmp'))
+        .toList();
+    expect(files.length, lessThanOrEqualTo(limit));
+  });
 }

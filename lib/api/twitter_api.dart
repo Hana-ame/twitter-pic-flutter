@@ -50,32 +50,33 @@ class TagUserPage {
   /// 本页的裸用户名。
   final List<String> usernames;
 
+  /// V2 接口直接返回的富卡片用户列表（含 nick、avatar、totalUrls、tags）。
+  /// 若走旧版 `/api/tag/<tag>` 回退路径，则此列表为空，调用方按需回退到 [usernames]。
+  final List<TwitterUser> users;
+
   /// 本页的 offset，便于调用方继续翻页。
   final int offset;
 
   /// 这个标签下总共多少个用户（与标签云里的 Count 同源）。
-  ///
-  /// 实测 `女性` 的 total=7591，与 tag-cloud 的 `Count`=7591 相等，即**人数**
-  /// 口径。`by=tag` 对同一标签只回 15 条是**分页上限**，不能拿它反推口径。
   final int? total;
+
+  /// 服务端 V2 显式返回的 has_more 标志（为 null 时按条数 < requested 推导）。
+  final bool? hasMore;
 
   const TagUserPage({
     required this.usernames,
     required this.offset,
+    this.users = const <TwitterUser>[],
     this.total,
+    this.hasMore,
   });
 
-  /// 本页是否已到末尾（返回条数 < 请求 limit 即认为结束）。
-  ///
-  /// 画廊端点**不返回** hasMore 字段，只能拿条数与请求 limit 比；满页时
-  /// 上层继续请求一次，拿到空页（0 < limit）后由这条判定收住，不会死循环。
-  ///
-  /// ⚠️ 这条判定**只能在服务端按稳定全序返回时**成立。反查 SQL 是
-  /// `ORDER BY cnt DESC, username ASC`（go/tags/tags.go 的
-  /// `UsersForTagPaged`），username 唯一所以确实是全序；实测把 offset=0…725
-  /// 逐页拉过一遍，每页都是满 25 条且与相邻页首尾不重叠，无空洞也无重复。
-  /// 真正的兜底在 UI 侧：跨页按 username 去重（`_loadMoreTagUsers`）。
-  bool isLastPage(int requested) => usernames.length < requested;
+  /// 本页是否已到末尾（优先认服务端 V2 的 [hasMore]，否则返回条数 < 请求 limit 即认为结束）。
+  bool isLastPage(int requested) {
+    if (hasMore != null) return !hasMore!;
+    final count = users.isNotEmpty ? users.length : usernames.length;
+    return count < requested;
+  }
 }
 
 /// 结构化 API 异常，包装 Dio 错误供 UI 层使用。
@@ -277,6 +278,120 @@ class TwitterApi {
       },
     );
     return _decodeUserList(resp.data, 'getUserList');
+  }
+
+  /// V2 首页用户列表：`GET /api/twitter/v2/users`，单次返回带 `nick`、`avatar`、
+  /// `total_urls`、`tags` 的富卡片列表，无需预热或逐行下载 `<username>.json.gz`。
+  /// 若测试假适配器或旧服务端尚未返回 V2 `{"users": [...]}` 结构，则平滑回退 `getUserList`。
+  Future<List<TwitterUser>> getUserListV2({String? after, int limit = 25}) async {
+    try {
+      final resp = await _dio.get(
+        '/v2/users',
+        queryParameters: {
+          'limit': limit,
+          if (after != null && after.isNotEmpty) 'after': after,
+        },
+      );
+      final raw = resp.data;
+      if (raw is Map && raw['users'] is List) {
+        return _decodeUserList(raw['users'], 'getUserListV2');
+      }
+      if (raw is List) {
+        return _decodeUserList(raw, 'getUserListV2');
+      }
+    } catch (_) {
+      // 回退至 V1 接口以兼容未注册 /v2/users 的旧测试适配器
+    }
+    return getUserList(after: after);
+  }
+
+  /// V2 标签反查用户列表：`GET /api/twitter/v2/tags/:tag/users`。
+  /// 服务端直接关联 `users.status = 'SUCCESS'` 并一次返回完整富卡片（含 `nick`、`avatar`、`total_urls`、`tags`）。
+  /// 若测试假适配器未注册 V2 路由，则自动回退至 `getUsersByTagPage` + `getTagWeightsBatch`。
+  Future<TagUserPage> getUsersByTagPageV2(
+    String tag, {
+    int limit = 25,
+    int offset = 0,
+    String sort = 'weight',
+  }) async {
+    if (tag.isEmpty) {
+      return const TagUserPage(usernames: <String>[], offset: 0);
+    }
+    try {
+      final resp = await _dio.get(
+        '/v2/tags/${Uri.encodeComponent(tag)}/users',
+        queryParameters: {
+          'limit': limit,
+          'offset': offset,
+          'sort': sort,
+        },
+      );
+      final data = _asJsonMap(resp.data, 'getUsersByTagPageV2($tag)');
+      final rawUsers = data['users'];
+      if (rawUsers is List && (rawUsers.isEmpty || rawUsers.first is Map)) {
+        final richUsers = _decodeUserList(rawUsers, 'getUsersByTagPageV2($tag)')
+            .where((u) => (u.tags[tag] ?? 0) > 0 && !isKnownMissing(u.username))
+            .toList();
+        return TagUserPage(
+          usernames: richUsers.map((u) => u.username).toList(),
+          users: richUsers,
+          total: _asInt(data['total']),
+          offset: _asInt(data['offset']) ?? offset,
+          hasMore: data['has_more'] is bool ? data['has_more'] as bool : null,
+        );
+      }
+    } catch (_) {
+      // 回退到旧版两段式接口（兼容现有单元测试的 _TagAdapter / _RouteAdapter）
+    }
+    final page = await getUsersByTagPage(tag, limit: limit, offset: offset);
+    final weights = await getTagWeightsBatch(page.usernames);
+    final users = <TwitterUser>[];
+    for (final name in page.usernames) {
+      final w = weights[name];
+      if (w == null) continue;
+      if ((w[tag] ?? 0) <= 0) continue;
+      if (isKnownMissing(name)) continue;
+      users.add(TwitterUser(username: name, tags: w));
+    }
+    return TagUserPage(
+      usernames: page.usernames,
+      users: users,
+      total: page.total,
+      offset: page.offset,
+    );
+  }
+
+  /// V2 批量获取多用户富卡片：`GET /api/twitter/v2/users/batch?keys=u1,u2...`。
+  /// 供收藏夹等组件单次请求水合昵称、头像、媒体数与标签权重。
+  Future<Map<String, TwitterUser>> getUsersBatchV2(
+    List<String> usernames, {
+    int chunk = 50,
+  }) async {
+    final out = <String, TwitterUser>{};
+    if (usernames.isEmpty) return out;
+    final size = chunk <= 0 ? usernames.length : chunk;
+    for (var i = 0; i < usernames.length; i += size) {
+      final part = usernames.skip(i).take(size).toList();
+      final resp = await _dio.get(
+        '/v2/users/batch',
+        queryParameters: {'keys': part.join(',')},
+      );
+      final data = _asJsonMap(resp.data, 'getUsersBatchV2');
+      final byName = data['by_name'];
+      if (byName is Map) {
+        byName.forEach((k, v) {
+          if (v is Map) {
+            final u = TwitterUser.fromJson(_asJsonMap(v, 'getUsersBatchV2[$k]'));
+            out[u.username.isNotEmpty ? u.username : '$k'] = u;
+          }
+        });
+      } else if (data['users'] is List) {
+        for (final u in _decodeUserList(data['users'], 'getUsersBatchV2.users')) {
+          if (u.username.isNotEmpty) out[u.username] = u;
+        }
+      }
+    }
+    return out;
   }
 
   /// 标签云：`GET /api/tag-cloud?limit=N`（别名 `/api/tags/cloud`）。
@@ -725,6 +840,22 @@ class TwitterApi {
     final raw = _asJsonMap(resp.data, 'getRanking');
     return raw.map((k, v) =>
         MapEntry(k, EmojiPeriodData.fromJson(_asJsonMap(v, 'ranking[$k]'))));
+  }
+
+  /// V2 排行榜：`GET /api/twitter/v2/ranking`，一次请求返回全量榜单 + 上榜用户的头像与昵称字典。
+  /// 若旧服务端或测试假适配器未返回 `rankings`，自动回退至 `getRanking()`。
+  Future<RankingV2Data> getRankingV2() async {
+    try {
+      final resp = await _dio.get('/v2/ranking');
+      final raw = _asJsonMap(resp.data, 'getRankingV2');
+      if (raw.containsKey('rankings') || raw.values.any((v) => v is Map)) {
+        return RankingV2Data.fromJson(raw);
+      }
+    } catch (_) {
+      // 回退到旧版 /emojis.json.gz
+    }
+    final fallback = await getRanking();
+    return RankingV2Data(rankings: fallback);
   }
 
   /// 将 DioException 映射为结构化 ApiException。

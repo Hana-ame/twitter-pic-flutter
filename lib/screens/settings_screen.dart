@@ -14,6 +14,7 @@ import '../services/log_service.dart';
 import '../services/poster_service.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
+import '../services/video_downloader.dart';
 import '../utils/doh_resolver.dart';
 import '../utils/ech_url.dart';
 import '../widgets/progressive_image.dart';
@@ -566,6 +567,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await PosterService.clearAll();
     // 图片磁盘缓存（v0.6.1 新增，image-cache/）：同一个理由，而且它更大。
     await ProgressiveDiskCache.clearAll();
+    await VideoDownloader.cleanExpiredTempFiles(maxAge: Duration.zero);
     if (mounted) {
       setState(() {
         _gayMode = StorageService.isGayMode();
@@ -854,7 +856,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('调试日志'),
         content: SizedBox(
-          width: double.maxFinite,
+          // 不用 double.maxFinite：Windows 桌面端会撑满整屏宽（与 _showIncidents 保持同一定宽策略）。
+          width: 520,
           height: 400,
           child: logs.isEmpty
               ? const Center(child: Text('暂无日志'))

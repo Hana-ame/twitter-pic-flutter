@@ -56,6 +56,7 @@ const Duration _kAutoRetryDelay = Duration(milliseconds: 1200);
 
 class TwitterVideo extends StatefulWidget {
   final String url;
+  final String? cover;
   final ProxyManager proxy;
   final double? width;
   final double? height;
@@ -63,6 +64,7 @@ class TwitterVideo extends StatefulWidget {
   const TwitterVideo({
     super.key,
     required this.url,
+    this.cover,
     required this.proxy,
     this.width,
     this.height,
@@ -243,17 +245,22 @@ class _TwitterVideoState extends State<TwitterVideo>
       });
       return;
     }
-    // 没缓存：先试**推导出来的封面 URL**（纯网络请求，不占解码器）。
-    final derived = MediaUrl.videoPosterOf(widget.url);
-    if (derived != null) {
-      final port = widget.proxy.port;
-      if (port != null) {
-        final ok = await _tryLoadDerivedPoster(EchUrl.rewrite(derived, port));
-        if (ok) return;
-      }
+    final port = widget.proxy.port;
+    // 1. 优先使用服务端/爬虫回填的原生 cover 字段（经 MediaUrl.thumbOf(cover) + EchUrl.rewrite 加载），
+    //    绝大多数视频卡片无需初始化播放器即可零解码器秒出静帧。
+    final rawCover = widget.cover?.trim();
+    if (rawCover != null && rawCover.isNotEmpty && port != null) {
+      final thumbCover = MediaUrl.thumbOf(rawCover);
+      final ok = await _tryLoadDerivedPoster(EchUrl.rewrite(thumbCover, port));
+      if (ok) return;
     }
-    // 推导失败（URL 推不出、或那个封面取不到）：退回旧路径——申请一个解码器
-    // 槽位去抓一帧。**这才是槽位池存在的唯一理由**，不再是常规路径。
+    // 2. 无 cover 历史数据的回退推导：试推导出来的封面 URL（纯网络请求，不占解码器）。
+    final derived = MediaUrl.videoPosterOf(widget.url);
+    if (derived != null && port != null) {
+      final ok = await _tryLoadDerivedPoster(EchUrl.rewrite(derived, port));
+      if (ok) return;
+    }
+    // 3. 兜底路径：申请一个解码器槽位去抓一帧。
     if (!mounted) return;
     _requestSlot();
   }
@@ -342,7 +349,7 @@ class _TwitterVideoState extends State<TwitterVideo>
       _isDragging = false;
       _autoRetried = false;
       // 只有换了视频才丢封面：封面按视频 URL 缓存，代理换端口不影响内容。
-      if (old.url != widget.url) {
+      if (old.url != widget.url || old.cover != widget.cover) {
         _poster = null;
         unawaited(_loadPoster());
       } else {
@@ -711,6 +718,15 @@ class _TwitterVideoState extends State<TwitterVideo>
     _scheduleHideControls();
   }
 
+  void _onSeekCancel() {
+    if (!mounted) return;
+    setState(() {
+      _isDragging = false;
+      _dragPositionMs = null;
+    });
+    _scheduleHideControls();
+  }
+
   Future<void> _enterFullscreen() async {
     // 同一个 controller 只能有一个 VideoPlayer 在渲染：卡片和全屏同时挂着
     // 会共用同一个 texture，表现为鬼影/花屏，全屏还可能是黑的。全屏期间把
@@ -966,6 +982,7 @@ class _TwitterVideoState extends State<TwitterVideo>
             onStart: _onSeekStart,
             onChanged: _onSeekChanged,
             onEnd: (v) => _onSeekEnd(Duration(milliseconds: v.toInt())),
+            onCancel: _onSeekCancel,
           ),
 
           // 时间 + 按钮

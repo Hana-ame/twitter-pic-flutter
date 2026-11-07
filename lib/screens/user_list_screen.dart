@@ -178,25 +178,12 @@ class UserListScreenState extends State<UserListScreen> {
     });
     final settled = await Future.wait(tags.map((tag) async {
       try {
-        final page = await _api.getUsersByTagPage(tag,
+        final page = await _api.getUsersByTagPageV2(tag,
             limit: _kTagPageSize, offset: 0);
-        final weights = await _api.getTagWeightsBatch(page.usernames);
-        final users = <TwitterUser>[];
-        for (final name in page.usernames) {
-          final w = weights[name];
-          // 过滤条件：
-          // 1. 服务端省略的键（banned 或不存在于 tags.db）
-          // 2. 当前标签投票 <= 0
-          // 3. 已知 404 账号
-          if (w == null) continue;
-          if ((w[tag] ?? 0) <= 0) continue;
-          if (TwitterApi.isKnownMissing(name)) continue;
-          users.add(TwitterUser(username: name, tags: w));
-        }
         return (
           tag: tag,
           page: page,
-          users: users,
+          users: page.users,
           error: null as String?,
         );
       } catch (e) {
@@ -275,21 +262,12 @@ class UserListScreenState extends State<UserListScreen> {
     final settled = await Future.wait(pending.map((tag) async {
       final st = _tagPages[tag] ?? const _TagPaging(offset: 0, hasMore: true);
       try {
-        final page = await _api.getUsersByTagPage(tag,
+        final page = await _api.getUsersByTagPageV2(tag,
             limit: _kTagPageSize, offset: st.offset);
-        final weights = await _api.getTagWeightsBatch(page.usernames);
-        final users = <TwitterUser>[];
-        for (final name in page.usernames) {
-          final w = weights[name];
-          if (w == null) continue;
-          if ((w[tag] ?? 0) <= 0) continue;
-          if (TwitterApi.isKnownMissing(name)) continue;
-          users.add(TwitterUser(username: name, tags: w));
-        }
         return (
           tag: tag,
           page: page,
-          users: users,
+          users: page.users,
           error: null as String?,
         );
       } catch (e) {
@@ -405,7 +383,7 @@ class UserListScreenState extends State<UserListScreen> {
 
   Future<void> _load() async {
     try {
-      final users = await _api.getUserList();
+      final users = await _api.getUserListV2();
       if (!mounted) return;
       // 参考 0.5.x：首屏获取到用户列表后立即渲染，
       // 绝不在此处阻塞等待 20+ 个 .json.gz 下载（大幅减轻 API 负担与加载延迟）。
@@ -955,8 +933,12 @@ class UserListScreenState extends State<UserListScreen> {
   static const int _kPrewarmConcurrency = 6;
 
   Future<void> _prewarmMeta(List<TwitterUser> users) async {
-    final names =
-        users.take(_kPrewarmCount).map((u) => u.username).toList(growable: false);
+    // V2 接口已直接返回 nick 与 avatar，仅对缺失 nick/avatar 的裸用户条目做预热兜底。
+    final names = users
+        .where((u) => u.avatar == null && u.nick == null)
+        .take(_kPrewarmCount)
+        .map((u) => u.username)
+        .toList(growable: false);
     if (names.isEmpty) return;
     for (var i = 0; i < names.length; i += _kPrewarmConcurrency) {
       if (!mounted) return;
@@ -1940,7 +1922,7 @@ class _LoadMoreButtonState extends State<_LoadMoreButton> {
     if (_loading) return;
     setState(() => _loading = true);
     try {
-      final users = await widget.api.getUserList(after: widget.after);
+      final users = await widget.api.getUserListV2(after: widget.after);
       if (!mounted) return;
       // 参考 0.5.x：获取到新一页后立即回调更新列表，不阻塞等待 20+ 个 json.gz 下载
       widget.onLoaded(users);

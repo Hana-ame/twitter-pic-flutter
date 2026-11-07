@@ -65,6 +65,13 @@ void main() {
         reason: '负分标签在详情页本就不展示，拿它当屏蔽依据会多屏蔽一批人');
   });
 
+  test('零分标签不算命中屏蔽（统一仅正权重 score > 0 生效）', () {
+    StorageService.setBlockTags(['无关内容']);
+    expect(StorageService.shouldHideUser('carol_zero', {'无关内容': 0}), isFalse,
+        reason: '0 分代表赞踩抵消，不应触发屏蔽标签隐藏或警告');
+    expect(StorageService.blockTagHits({'无关内容': 0}), isEmpty);
+  });
+
   test('blockTagHits 返回具体命中的标签名（详情页提示条要用）', () {
     StorageService.setBlockTags(['无关内容', '广告']);
     final hits = StorageService.blockTagHits({'无关内容': 2, '自拍': 5});

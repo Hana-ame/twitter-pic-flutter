@@ -27,12 +27,13 @@ void main() {
       expect(find.text('二次元'), findsOneWidget);
     });
 
-    testWidgets('score < 0 的标签不作为标签展示', (tester) async {
+    testWidgets('score <= 0（含 0 分与负分）的标签不作为标签展示', (tester) async {
       await tester.pumpWidget(wrap(const TagDisplayArea(
-        tags: {'自拍': -1, '无关内容': -2},
+        tags: {'自拍': -1, '无关内容': -2, '零分标签': 0},
       )));
       expect(find.text('自拍'), findsNothing);
       expect(find.text('无关内容'), findsNothing);
+      expect(find.text('零分标签'), findsNothing);
     });
 
     testWidgets('点击标签触发 onTapTag 回调进行反查', (tester) async {

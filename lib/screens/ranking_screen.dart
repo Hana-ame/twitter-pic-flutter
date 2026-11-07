@@ -3,20 +3,33 @@ import 'package:flutter/material.dart';
 
 import '../api/twitter_api.dart';
 import '../models/user.dart';
+import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
+import '../widgets/proxy_avatar.dart';
 
 class RankingScreen extends StatefulWidget {
-  final TwitterApi api;
+  /// 仅供测试注入（配假 `HttpClientAdapter`）；生产调用点不传，由本页自建并在 dispose 中释放。
+  final TwitterApi? api;
+  final ProxyManager? proxy;
   final void Function(UserMetaData) onSelectUser;
 
-  const RankingScreen({super.key, required this.api, required this.onSelectUser});
+  const RankingScreen({
+    super.key,
+    this.api,
+    this.proxy,
+    required this.onSelectUser,
+  });
 
   @override
   State<RankingScreen> createState() => _RankingScreenState();
 }
 
 class _RankingScreenState extends State<RankingScreen> {
+  late final TwitterApi _api;
+  late final bool _ownsApi;
+
   Map<String, EmojiPeriodData>? _data;
+  Map<String, TwitterUser> _users = const <String, TwitterUser>{};
   String? _activeEmoji;
   bool _loading = true;
   String? _error;
@@ -25,7 +38,15 @@ class _RankingScreenState extends State<RankingScreen> {
   @override
   void initState() {
     super.initState();
+    _api = widget.api ?? TwitterApi();
+    _ownsApi = widget.api == null;
     _load();
+  }
+
+  @override
+  void dispose() {
+    if (_ownsApi) _api.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -34,10 +55,12 @@ class _RankingScreenState extends State<RankingScreen> {
       _error = null;
     });
     try {
-      final data = await widget.api.getRanking();
+      final v2 = await _api.getRankingV2();
       if (!mounted) return;
+      final data = v2.rankings;
       setState(() {
         _data = data;
+        _users = v2.users;
         _loading = false;
         final keys = data.keys.toList();
         if (keys.isNotEmpty && (_activeEmoji == null || !data.containsKey(_activeEmoji))) {
@@ -140,23 +163,56 @@ class _RankingScreenState extends State<RankingScreen> {
             child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
           ),
           ...visibleEntries.asMap().entries.map((e) {
-            final isRowLoading = _loadingUser == e.value.username;
+            final username = e.value.username;
+            final richUser = _users[username];
+            final nick = (richUser?.nick != null && richUser!.nick!.isNotEmpty)
+                ? richUser.nick!
+                : null;
+            final avatar = richUser?.avatar;
+            final isRowLoading = _loadingUser == username;
+            final badgeColor = e.key == 0
+                ? Colors.amber
+                : e.key == 1
+                    ? Colors.grey
+                    : e.key == 2
+                        ? Colors.orange
+                        : Colors.grey.shade400;
             return ListTile(
               dense: true,
-              leading: CircleAvatar(
-                radius: 12,
-                backgroundColor: e.key == 0
-                    ? Colors.amber
-                    : e.key == 1
-                        ? Colors.grey
-                        : e.key == 2
-                            ? Colors.orange
-                            : Colors.grey.shade200,
-                child: Text('${e.key + 1}',
-                    style: const TextStyle(fontSize: 10, color: Colors.white)),
-              ),
-              title: Text('@${e.value.username}',
+              leading: widget.proxy != null && avatar != null && avatar.isNotEmpty
+                  ? Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        ProxyAvatar(
+                          url: avatar,
+                          fallbackText: username[0].toUpperCase(),
+                          proxy: widget.proxy!,
+                          radius: 16,
+                        ),
+                        Positioned(
+                          right: -4,
+                          bottom: -4,
+                          child: CircleAvatar(
+                            radius: 8,
+                            backgroundColor: badgeColor,
+                            child: Text('${e.key + 1}',
+                                style: const TextStyle(fontSize: 9, color: Colors.white)),
+                          ),
+                        ),
+                      ],
+                    )
+                  : CircleAvatar(
+                      radius: 12,
+                      backgroundColor: badgeColor,
+                      child: Text('${e.key + 1}',
+                          style: const TextStyle(fontSize: 10, color: Colors.white)),
+                    ),
+              title: Text(nick ?? '@$username',
                   style: const TextStyle(fontSize: 14)),
+              subtitle: nick != null
+                  ? Text('@$username',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey))
+                  : null,
               trailing: isRowLoading
                   ? const SizedBox(
                       width: 16,
@@ -167,10 +223,9 @@ class _RankingScreenState extends State<RankingScreen> {
                       style: const TextStyle(fontSize: 12, color: Colors.blue)),
               onTap: () async {
                 if (_loadingUser != null) return;
-                final username = e.value.username;
                 setState(() => _loadingUser = username);
                 try {
-                  final profile = await widget.api.getMetaData(username);
+                  final profile = await _api.getMetaData(username);
                   if (mounted && profile.accountInfo.username.isNotEmpty) {
                     widget.onSelectUser(profile);
                   }

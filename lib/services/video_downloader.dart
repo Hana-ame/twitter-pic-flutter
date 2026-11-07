@@ -60,4 +60,42 @@ class VideoDownloader {
       client.close();
     }
   }
+
+  /// 匹配分享/下载落盘到系统临时目录的图片或视频临时文件名：
+  /// - 图片：`twitter_<16位hex>_*`（见 [imageTempFileName]）
+  /// - 视频：`*-<16位hex>.(mp4|mov|webm|m4v)`（见 [videoTempFileName]）
+  static final RegExp _kTempShareFilePattern = RegExp(
+    r'^(?:twitter_[0-9a-f]{16}_.+|.+-[0-9a-f]{16}\.(?:mp4|mov|webm|m4v))$',
+    caseSensitive: false,
+  );
+
+  /// 清理系统临时目录下超过 [maxAge] 的历史分享/下载临时文件（默认 24 小时）。
+  /// 在应用启动与设置页「清除数据」（传 `Duration.zero`）时调用，防止临时视频撑爆存储。
+  static Future<int> cleanExpiredTempFiles({
+    Duration maxAge = const Duration(hours: 24),
+    Directory? tempDir,
+  }) async {
+    final dir = tempDir ?? Directory.systemTemp;
+    var deleted = 0;
+    try {
+      if (!await dir.exists()) return 0;
+      final now = DateTime.now();
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final name = entity.uri.pathSegments.isNotEmpty
+            ? entity.uri.pathSegments.last
+            : entity.path.split(Platform.pathSeparator).last;
+        if (!_kTempShareFilePattern.hasMatch(name)) continue;
+        try {
+          if (maxAge > Duration.zero) {
+            final stat = await entity.stat();
+            if (now.difference(stat.modified) < maxAge) continue;
+          }
+          await entity.delete();
+          deleted++;
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return deleted;
+  }
 }

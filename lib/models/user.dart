@@ -175,8 +175,10 @@ class TwitterUser {
 ///
 /// 权重仍然有用，只是不当门禁：当命中用户的权重是负数时，UI 用红色 chip
 /// 标出（见 user_list_screen 的 _TagFilterBar），让"这条是反向票"可见。
+/// 标签过滤的匹配口径：仅正权重命中（`(user.tags[tag] ?? 0) > 0`），
+/// 与 AGENTS.md 中 v0.7.10 裁决的「仅展示和匹配正权重标签」契约保持一致。
 bool matchesTagFilter(TwitterUser user, String tag) =>
-    user.tags.containsKey(tag);
+    (user.tags[tag] ?? 0) > 0;
 
 /// 按选中的标签过滤用户（**纯**标签维度，不含屏蔽 / Gay 模式）。
 ///
@@ -232,14 +234,24 @@ class TimelineItem {
   final String url;
   final String type;
   final String? date;
+  final String? cover;
 
-  TimelineItem({required this.url, required this.type, this.date});
+  TimelineItem({
+    required this.url,
+    required this.type,
+    this.date,
+    this.cover,
+  });
 
   factory TimelineItem.fromJson(Map<String, dynamic> json) {
+    final rawCover = _strOrNone(json['cover']);
     return TimelineItem(
       url: _str(json['url']),
       type: _str(json['type']),
       date: _strOrNone(json['date']),
+      cover: (rawCover != null && rawCover.trim().isNotEmpty)
+          ? rawCover.trim()
+          : null,
     );
   }
 }
@@ -310,5 +322,39 @@ class EmojiPeriodData {
       week: _entries('week'),
       month: _entries('month'),
     );
+  }
+}
+
+/// V2 排行榜响应结构：同时携带日/周/月榜单与上榜用户富卡片字典 `users`。
+class RankingV2Data {
+  final Map<String, EmojiPeriodData> rankings;
+  final Map<String, TwitterUser> users;
+
+  const RankingV2Data({
+    required this.rankings,
+    this.users = const <String, TwitterUser>{},
+  });
+
+  factory RankingV2Data.fromJson(Map<String, dynamic> json) {
+    // 兼容 V2 `{"rankings": {...}, "users": {...}}` 与 V1 裸 `{"😍": {...}}`
+    final hasRankingsKey = json['rankings'] is Map;
+    final rawRankings = hasRankingsKey ? _map(json['rankings']) : json;
+    final parsedRankings = <String, EmojiPeriodData>{};
+    rawRankings.forEach((k, v) {
+      if (k == 'users' && !hasRankingsKey) return;
+      if (v is Map) {
+        parsedRankings[k] = EmojiPeriodData.fromJson(_map(v));
+      }
+    });
+
+    final parsedUsers = <String, TwitterUser>{};
+    if (json['users'] is Map) {
+      _map(json['users']).forEach((k, v) {
+        if (v is Map) {
+          parsedUsers[k] = TwitterUser.fromJson(_map(v));
+        }
+      });
+    }
+    return RankingV2Data(rankings: parsedRankings, users: parsedUsers);
   }
 }

@@ -150,5 +150,53 @@ void main() {
       expect(d.week, isEmpty);
       expect(d.month, isEmpty);
     });
+
+    test('TimelineItem.fromJson 解析视频 cover 字段（空串视为 null）', () {
+      final withCover = TimelineItem.fromJson({
+        'url': 'https://video.twimg.com/ext_tw_video/1/pu/vid/x.mp4',
+        'type': 'video',
+        'cover': 'https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/hash.jpg',
+      });
+      expect(
+        withCover.cover,
+        'https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/hash.jpg',
+      );
+
+      final emptyCover = TimelineItem.fromJson({
+        'url': 'https://video.twimg.com/ext_tw_video/1/pu/vid/x.mp4',
+        'type': 'video',
+        'cover': '',
+      });
+      expect(emptyCover.cover, isNull);
+    });
+  });
+
+  group('RankingV2Data.fromJson', () {
+    test('解析 rankings 与 users 富卡片字典', () {
+      final v2 = RankingV2Data.fromJson({
+        'rankings': {
+          '❤️': {
+            'day': [
+              {'username': 'alice', 'votes': 12},
+            ],
+          },
+        },
+        'users': {
+          'alice': {
+            'username': 'alice',
+            'nick': '爱丽丝',
+            'avatar': 'https://pbs.twimg.com/profile_images/1/a.jpg',
+            'total_urls': 20,
+          },
+        },
+      });
+      expect(v2.rankings['❤️']?.day.single.username, 'alice');
+      expect(v2.rankings['❤️']?.day.single.votes, 12);
+      expect(v2.users['alice']?.nick, '爱丽丝');
+      expect(
+        v2.users['alice']?.avatar,
+        'https://pbs.twimg.com/profile_images/1/a.jpg',
+      );
+    });
   });
 }

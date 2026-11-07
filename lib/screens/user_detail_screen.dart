@@ -888,7 +888,7 @@ class _MediaCard extends StatelessWidget {
       child: Column(
         children: [
           if (isVideo)
-            TwitterVideo(url: item.url, proxy: proxy)
+            TwitterVideo(url: item.url, cover: item.cover, proxy: proxy)
           else
             TwitterImage(
               // 卡片只拉 name=small 缩略图（一屏十几张，原图就是"列表半天

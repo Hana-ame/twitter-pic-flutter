@@ -33,6 +33,9 @@ class PosterService {
   /// 60 条也就是几 MB —— 比让用户重新抽帧划算。
   static const int maxMemoryEntries = 60;
 
+  /// 磁盘缓存条数上限（超过后按 mtime 淘汰最老的 10%）。
+  static const int maxDiskEntries = 1000;
+
   /// 磁盘目录名（在应用支持目录下）。
   static const String dirName = 'posters';
 
@@ -44,6 +47,7 @@ class PosterService {
   static Directory? _rootDir;
   static Directory? _dirOverride;
   static bool _ready = false;
+  static int _diskEntryCount = 0;
 
   static bool get isReady => _ready;
 
@@ -56,6 +60,15 @@ class PosterService {
       _rootDir = Directory('${base.path}/$dirName');
       if (!await _rootDir!.exists()) {
         await _rootDir!.create(recursive: true);
+      }
+      try {
+        _diskEntryCount = _rootDir!
+            .listSync()
+            .whereType<File>()
+            .where((f) => !f.path.endsWith('.tmp'))
+            .length;
+      } catch (_) {
+        _diskEntryCount = 0;
       }
       _ready = true;
     } catch (e) {
@@ -93,6 +106,7 @@ class PosterService {
       if (!await f.exists()) return null;
       final bytes = await f.readAsBytes();
       if (bytes.isEmpty) return null;
+      _touchDisk(f);
       _putMemory(videoUrl, bytes);
       return bytes;
     } catch (e) {
@@ -101,19 +115,66 @@ class PosterService {
     }
   }
 
-  /// 写入内存 + 磁盘。
+  /// 写入内存 + 磁盘（.tmp 原子替换 + 超限按 mtime 淘汰）。
   ///
   /// 磁盘失败不影响内存命中（本次会话里照样有封面可用）。
-  static Future<void> put(String videoUrl, Uint8List bytes) async {
+  static Future<void> put(
+    String videoUrl,
+    Uint8List bytes, {
+    int maxDiskLimit = maxDiskEntries,
+  }) async {
     if (bytes.isEmpty) return;
     _putMemory(videoUrl, bytes);
     final f = _file(videoUrl);
     if (f == null) return;
+    final tmp = File('${f.path}.tmp');
     try {
-      await f.writeAsBytes(bytes, flush: true);
+      final existed = await f.exists();
+      await tmp.writeAsBytes(bytes, flush: true);
+      await tmp.rename(f.path);
+      if (!existed) _diskEntryCount++;
+      await _evictDiskIfNeeded(limit: maxDiskLimit);
     } catch (e) {
       debugPrint('PosterService.put failed: $e');
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
     }
+  }
+
+  static Future<void> _evictDiskIfNeeded({int limit = maxDiskEntries}) async {
+    if (_diskEntryCount <= limit) return;
+    final dir = _rootDir;
+    if (dir == null) return;
+    try {
+      final entries = <(File, DateTime)>[];
+      await for (final entity in dir.list()) {
+        if (entity is File && !entity.path.endsWith('.tmp')) {
+          final stat = await entity.stat();
+          entries.add((entity, stat.modified));
+        }
+      }
+      _diskEntryCount = entries.length;
+      if (_diskEntryCount <= limit) return;
+      entries.sort((a, b) => a.$2.compareTo(b.$2));
+      final target = limit - (limit ~/ 10 > 0 ? limit ~/ 10 : 1);
+      var over = _diskEntryCount - target;
+      for (final (f, _) in entries) {
+        if (over-- <= 0) break;
+        try {
+          await f.delete();
+          _diskEntryCount--;
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('PosterService evict failed: $e');
+    }
+  }
+
+  static void _touchDisk(File f) {
+    try {
+      f.setLastModifiedSync(DateTime.now());
+    } catch (_) {}
   }
 
   static void _putMemory(String videoUrl, Uint8List bytes) {
@@ -139,6 +200,7 @@ class PosterService {
     try {
       if (await dir.exists()) await dir.delete(recursive: true);
       await dir.create(recursive: true);
+      _diskEntryCount = 0;
     } catch (e) {
       debugPrint('PosterService.clearAll failed: $e');
     }
@@ -151,6 +213,7 @@ class PosterService {
     _ready = false;
     _rootDir = null;
     _dirOverride = null;
+    _diskEntryCount = 0;
     _memory.clear();
     _memoryOrder.clear();
   }

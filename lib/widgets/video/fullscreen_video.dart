@@ -173,6 +173,12 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
     _scheduleHideControls();
   }
 
+  void _onSeekCancel() {
+    if (!mounted) return;
+    setState(() => _dragPositionMs = null);
+    _scheduleHideControls();
+  }
+
   /// 同卡片版：seek 失败会以 PlatformException 回来，不接住就永远查不到。
   Future<void> _seek(Duration value) async {
     try {
@@ -306,6 +312,7 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
                       onChanged: _onSeekChanged,
                       onEnd: (v) =>
                           _onSeekEnd(Duration(milliseconds: v.toInt())),
+                      onCancel: _onSeekCancel,
                     ),
                     Row(
                       children: [

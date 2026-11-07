@@ -122,14 +122,19 @@ void main() {
     });
   });
 
-  group('权重符号口径', () {
-    test('负权也算命中 —— 只看键是否存在', () {
-      final user = u('a', {'COS': -1});
+  group('权重符号口径（统一仅正权重 score > 0 算命中）', () {
+    test('正权重算命中', () {
+      final user = u('a', {'COS': 1});
       expect(matchesTagFilter(user, 'COS'), isTrue);
     });
 
-    test('权重 0 也算命中', () {
-      expect(matchesTagFilter(u('a', {'露奶': 0}), '露奶'), isTrue);
+    test('负权不算命中（反对票不应出现在该标签筛选结果中）', () {
+      final user = u('a', {'COS': -1});
+      expect(matchesTagFilter(user, 'COS'), isFalse);
+    });
+
+    test('权重 0 不算命中（赞踩抵消不应作为有效标签命中）', () {
+      expect(matchesTagFilter(u('a', {'露奶': 0}), '露奶'), isFalse);
     });
 
     test('没有这个键就不命中', () {
@@ -140,7 +145,7 @@ void main() {
       expect(matchesTagFilter(u('a'), 'COS'), isFalse);
     });
 
-    test('hasTagKey / weightOf 与 matchesTagFilter 同口径', () {
+    test('hasTagKey / weightOf 保留底层原始键值查询能力', () {
       final user = u('a', {'COS': -3});
       expect(user.hasTagKey('COS'), isTrue);
       expect(user.weightOf('COS'), -3);
@@ -164,14 +169,14 @@ void main() {
           ['alice', 'bob', 'carol', 'dave']);
     });
 
-    test('单选按键命中，负权用户照样留下', () {
+    test('单选仅保留正权重命中用户，负权用户被排除', () {
       final out = filterUsersByTags(users, {'COS'});
-      expect(out.map((e) => e.username).toList(), ['alice', 'carol']);
+      expect(out.map((e) => e.username).toList(), ['alice']);
     });
 
-    test('多选是 OR 并集', () {
+    test('多选是正权重 OR 并集', () {
       final out = filterUsersByTags(users, {'COS', '自拍'});
-      expect(out.map((e) => e.username).toList(), ['alice', 'bob', 'carol']);
+      expect(out.map((e) => e.username).toList(), ['alice', 'bob']);
     });
 
     test('零命中的标签给出空列表（空态由 UI 区分「无结果」）', () {

@@ -316,7 +316,7 @@ class StorageService {
   ///     之后同一个账号会既被「Gay 模式」放行、又被「屏蔽标签」拦下，
   ///     两条规则互相打架。
   ///
-  /// 零分算命中，与旧实现一致（那里判的是 score < 0 才排除）。
+  /// 仅正权重（score > 0）算命中：0 分与负分均排除，全端口径一致。
   ///
   /// 原来这段逻辑内嵌在 user_detail_screen.dart 里，列表页拿不到；现在收到
   /// 这里，两处共用同一个判定，避免再次各抄一份而漂移。
@@ -328,7 +328,7 @@ class StorageService {
     tags.forEach((k, v) {
       if (!blocked.contains(k)) return;
       final score = v is num ? v.toInt() : (int.tryParse('$v') ?? 0);
-      if (score < 0) return;
+      if (score <= 0) return;
       if (isGay && kGayTags.contains(k)) return;
       hits.add(k);
     });

@@ -1,4 +1,6 @@
 // 收藏列表组件，展示已收藏的用户并提供导入导出功能
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -23,9 +25,17 @@ class _FavListState extends State<FavList> {
   int _limit = 10;
   String _importText = '';
   bool _showImport = false;
+  Map<String, TwitterUser> _batchCache = const <String, TwitterUser>{};
+  Future<Map<String, TwitterUser>>? _batchFuture;
+  String _lastBatchKey = '';
 
   void _onStorageChanged() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {
+        _lastBatchKey = '';
+        _batchFuture = null;
+      });
+    }
   }
 
   @override
@@ -40,6 +50,22 @@ class _FavListState extends State<FavList> {
     super.dispose();
   }
 
+  void _ensureBatchLoaded(List<String> visible) {
+    final key = visible.join(',');
+    if (key == _lastBatchKey || visible.isEmpty) return;
+    _lastBatchKey = key;
+    final fut = widget.api
+        .getUsersBatchV2(visible)
+        .catchError((_) => <String, TwitterUser>{});
+    _batchFuture = fut;
+    unawaited(fut.then((map) {
+      if (!mounted || map.isEmpty) return;
+      setState(() {
+        _batchCache = <String, TwitterUser>{..._batchCache, ...map};
+      });
+    }));
+  }
+
   @override
   Widget build(BuildContext context) {
     final rawUsernames = StorageService.getFavMap().keys.toList().reversed.toList();
@@ -47,6 +73,7 @@ class _FavListState extends State<FavList> {
         .where((u) => u.isNotEmpty && !StorageService.isBlocked(u))
         .toList();
     final visible = allUsernames.take(_limit).toList();
+    _ensureBatchLoaded(visible);
 
     if (rawUsernames.isEmpty && !_showImport) {
       return Center(
@@ -78,7 +105,11 @@ class _FavListState extends State<FavList> {
           // 带 key：取消收藏后剩下的 tile 不会按位置错配、也不会重发元数据请求。
           ...visible.map((u) => _FavTile(
             key: ValueKey('fav_$u'),
-            username: u, api: widget.api, proxy: widget.proxy,
+            username: u,
+            user: _batchCache[u],
+            batchFuture: _batchFuture,
+            api: widget.api,
+            proxy: widget.proxy,
             onUnfav: () => setState(() {}),
           )),
           if (_limit < allUsernames.length)
@@ -165,6 +196,7 @@ class _FavListState extends State<FavList> {
     setState(() {
       _importText = '';
       _showImport = false;
+      _lastBatchKey = '';
     });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Row(children: [Icon(Icons.check_circle, size: 18), SizedBox(width: 8), Text('导入成功')])),
@@ -178,6 +210,8 @@ class _FavListState extends State<FavList> {
 
 class _FavTile extends StatefulWidget {
   final String username;
+  final TwitterUser? user;
+  final Future<Map<String, TwitterUser>>? batchFuture;
   final TwitterApi api;
   final ProxyManager proxy;
   final VoidCallback? onUnfav;
@@ -185,6 +219,8 @@ class _FavTile extends StatefulWidget {
   const _FavTile({
     super.key,
     required this.username,
+    this.user,
+    this.batchFuture,
     required this.api,
     required this.proxy,
     this.onUnfav,
@@ -197,10 +233,41 @@ class _FavTile extends StatefulWidget {
 class _FavTileState extends State<_FavTile> {
   Future<UserMetaData>? _meta;
 
-  /// 并发拉取元数据与标签权重：`<user>.json.gz` 的 `account_info` 不含 `tags`
-  /// 字段，若直接拿 `accountInfo.tags`（恒为空 Map）送进 `shouldHideUser`，
-  /// 会导致收藏夹里「屏蔽标签」完全失效、且开启 Gay 模式时所有收藏项被误判隐藏。
+  UserMetaData _metaFromBatchUser(TwitterUser u) {
+    return UserMetaData(
+      accountInfo: TwitterUser(
+        username: u.username.isNotEmpty ? u.username : widget.username,
+        nick: u.nick,
+        avatar: u.avatar,
+        totalUrls: u.totalUrls,
+        tags: u.tags,
+      ),
+      timeline: const [],
+      totalUrls: u.totalUrls ?? 0,
+    );
+  }
+
+  /// 优先采用父级 `GET /api/twitter/v2/users/batch` 一次拿回的富卡片（含 nick、avatar、tags）；
+  /// 若未命中或旧测试适配器未提供，则回退到并发拉取元数据与标签权重。
   Future<UserMetaData> _loadMetaWithTags(String username) async {
+    final batchUser = widget.user;
+    if (batchUser != null &&
+        (batchUser.nick != null ||
+            batchUser.avatar != null ||
+            batchUser.tags.isNotEmpty)) {
+      return _metaFromBatchUser(batchUser);
+    }
+    if (widget.batchFuture != null) {
+      try {
+        final batch = await widget.batchFuture!;
+        final hit = batch[username];
+        if (hit != null &&
+            (hit.nick != null || hit.avatar != null || hit.tags.isNotEmpty)) {
+          return _metaFromBatchUser(hit);
+        }
+      } catch (_) {}
+    }
+
     final metaFuture = widget.api.getMetaData(username);
     final tagsFuture = widget.api
         .getTagWeights(username)
@@ -233,9 +300,8 @@ class _FavTileState extends State<_FavTile> {
   @override
   void didUpdateWidget(_FavTile old) {
     super.didUpdateWidget(old);
-    // 原实现在 build 里直接 new FutureBuilder future，父组件任意 setState
-    // （导入/导出/加载更多）都会让所有可见 tile 重发请求。
-    if (old.username != widget.username) {
+    if (old.username != widget.username ||
+        (old.user == null && widget.user != null)) {
       _meta = _loadMetaWithTags(widget.username);
     }
   }
@@ -268,10 +334,8 @@ class _FavTileState extends State<_FavTile> {
             ),
           );
         }
-        final info = snapshot.data?.accountInfo;
+        final info = snapshot.data?.accountInfo ?? widget.user;
         final tags = info?.tags ?? const <String, int>{};
-        // 收藏夹此前**完全不过滤**（连用户名屏蔽都没应用）——用户屏蔽了某个
-        // 账号，它照样出现在收藏里。统一走 shouldHideUser，与其它列表同口径。
         if (StorageService.isBlocked(widget.username) ||
             (tags.isNotEmpty &&
                 StorageService.shouldHideUser(widget.username, tags))) {
@@ -293,31 +357,10 @@ class _FavTileState extends State<_FavTile> {
             await Navigator.push(context, PageRouteBuilder(
               transitionDuration: const Duration(milliseconds: 300),
               reverseTransitionDuration: const Duration(milliseconds: 300),
-              // ⚠️ `tagBrowse: null` 是**显式决定**，不是漏传（UserDetailScreen.tagBrowse
-              // 是 required，漏传编译不过，代码里不存在「忘了传」这种可能）。
-              //
-              // 详情页点标签时会把请求**递回**背后那个用户列表页、就地切换、然后
-              // pop 自己（widgets/tag_browse.dart 的说明）。收藏页背后**没有**
-              // 列表页——`FavoritesTab` 与 `UserListScreen` 是 IndexedStack 里两个
-              // 平级的 Tab、彼此不可见。所以「不能就地切」在这里是**合法且正确**
-              // 的状态：能递回的只有 UserListScreen，而让它从另一个 Tab 的
-              // Scaffold 里起作用等于跨 Tab 操纵，会造出「用户在收藏 Tab、标签结果
-              // 却出现在用户 Tab」这种比一句提示更糟的状态。另一条路是在收藏页把
-              // 标签查找**再做一份**，那是 tag_browse.dart 开头已否掉的方案
-              // （同一件事两份实现，必然各自漂移）。
-              //
-              // 那为什么保留这个入口？因为它承载用户可见的必要反馈：详情页必须
-              // 明确说「此页不支持标签就地查看，请从用户列表进入」，点了不能静默
-              // 无反应。test/fav_tag_browse_contract_test.dart 走真实点击路径钉住
-              // 三条：提示出现 / 没被 pop / 没多发一个标签反查请求。
               pageBuilder: (_, a, __) => UserDetailScreen(
                 profile: snapshot.data!,
                 proxy: widget.proxy,
                 tagBrowse: null,
-                // 透传 api：详情页默认**自建**一个 TwitterApi 打真实网络，于是
-                // 它的标签区与外面这个实例无关——注入假适配器的测试永远构造不出
-                // 可点的标签区（tag_same_page_test 靠显式注入才跑得起来）。
-                // 复用同一个实例，也让这一页的请求走同一条连接与同一份缓存。
                 api: widget.api,
               ),
               transitionsBuilder: (_, a, __, child) {
@@ -331,8 +374,6 @@ class _FavTileState extends State<_FavTile> {
                 );
               },
             ));
-            // 详情页里可能取消收藏：返回后让父列表重新读取收藏表，
-            // 否则该项会一直留在收藏夹里。
             widget.onUnfav?.call();
           },
           onLongPress: () {

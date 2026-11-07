@@ -42,7 +42,7 @@ class MediaUrl {
     if (uri.host == 'video.twimg.com' ||
         uri.host == 'video-cf.twimg.com' ||
         uri.host == 'abs.twimg.com') return false;
-    return uri.host == 'pbs.twimg.com';
+    return uri.host == 'pbs.twimg.com' || uri.host == 'pbs.moonchan.xyz';
   }
 
   // ─── 缩略图档位 ──────────────────────────────────────────────────────────

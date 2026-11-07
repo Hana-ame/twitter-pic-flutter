@@ -32,7 +32,7 @@ class TagDisplayArea extends StatelessWidget {
           final score = e.value is num
               ? e.value.toInt()
               : (int.tryParse('${e.value}') ?? 0);
-          if (score < 0) return false;
+          if (score <= 0) return false;
           return isGay || !kGayTags.contains(e.key);
         })
         .toList();
@@ -51,7 +51,7 @@ class TagDisplayArea extends StatelessWidget {
           final score = e.value is num
               ? e.value.toInt()
               : (int.tryParse('${e.value}') ?? 0);
-          final color = score > 0 ? Colors.blue : Colors.red;
+          const color = Colors.blue;
           final isHighlighted = hits.contains(e.key);
           final chip = Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
