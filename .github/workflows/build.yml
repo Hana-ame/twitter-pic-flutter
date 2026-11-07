@@ -26,9 +26,9 @@ on:
 # 两条版本线因此分开编号，互不冒充。
 env:
   # 控制面 API 走 ECH 的支持（ech-proxy flutter/main.go apiProxyHandler
-  # 从直连切到 cloudflare_ech.Do + 同主机 3xx 跟随，commit 1ad250c）。
-  # CI 全绿确认后再打 flutter-lib-v1.0.2 固化。
-  ECH_PROXY_REF: 1ad250c
+  # 从直连切到 cloudflare_ech.Do + 同主机 3xx 跟随，commit 1442435；
+  # 含 CGO_ENABLED=0 vet 兼容修复）。CI 全绿确认后再打 flutter-lib-v1.0.2 固化。
+  ECH_PROXY_REF: 1442435
 
 concurrency:
   group: build-${{ github.ref }}
