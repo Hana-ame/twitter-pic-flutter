@@ -324,12 +324,11 @@ void main() {
     test('注册端口后 host 改写为 127.0.0.1，路径保留 /api/ 前缀', () async {
       TwitterApi.resetForTests();
       TwitterApi.setProxyPort(9123);
-      final via = TwitterApi();
-      addTearDown(via.dispose);
-
-      await via.getUserList();
-      await via.getMetaData('alice', forceRefresh: true);
-      await via.getTagCloud();
+      // 复用 setUp 里注入了假适配器的 api 实例：静态代理端口对所有实例生效，
+      // 新开 TwitterApi() 会走真网络（CI 上表现为 "网络不可达"）。
+      await api.getUserList();
+      await api.getMetaData('alice', forceRefresh: true);
+      await api.getTagCloud();
 
       expect(adapter.seen, hasLength(3));
       for (final o in adapter.seen) {
@@ -357,10 +356,8 @@ void main() {
     test('query 参数在代理改写下原样保留', () async {
       TwitterApi.resetForTests();
       TwitterApi.setProxyPort(9123);
-      final via = TwitterApi();
-      addTearDown(via.dispose);
 
-      await via.searchUsersByTag('女性');
+      await api.searchUsersByTag('女性');
       expect(adapter.seen.single.uri.host, '127.0.0.1');
       expect(adapter.seen.single.uri.queryParameters, {'by': 'tag', 'search': '女性'});
     });
