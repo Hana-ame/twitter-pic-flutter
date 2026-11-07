@@ -4,8 +4,10 @@
 // 与旧版 (v0.2.8) 的主要差异：
 //   1. 删除了所有 per-request FFI 调用（fetchAsync / fetchToFileAsync）
 //   2. 启动时调用 proxy.start() 启动本机 HTTP 代理
-//   3. 网络分流：JSON/API 直连 x.moonchan.xyz；仅 twimg 媒体（图片/视频/
-//      头像）经 EchUrl.rewrite() 改写走 127.0.0.1:port 的 ECH 代理
+//   3. 网络分流：控制面（JSON/API）与媒体（图片/视频/头像）都走
+//      127.0.0.1:port 的 ECH 代理——控制面经 TwitterApi.setProxyPort 把
+//      x.moonchan.xyz 改写为代理地址（x.moonchan.xyz 被墙后保持可用），
+//      媒体经 EchUrl.rewrite() 改写（见 ech-proxy flutter/main.go router）
 //   4. 新增「重启 ECH」按钮（AppBar），用于代理异常时手动恢复
 //   5. 新增 _startInFlight 守卫，防止并发启动
 //   6. 重启后端口可能变化，通过 _port 字段统一管理
@@ -238,6 +240,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     // 2. 启动代理（内部完成 ECH 初始化 + 启动 HTTP 代理）
     final port = await _proxy.start(bootstrapIp: ip!);
     print('ECH proxy started on port $port');
+    // 控制面也改走 ECH 代理（x.moonchan.xyz 被墙时保持可用）。
+    TwitterApi.setProxyPort(port);
 
     // 立即补一次 Go 日志，不等 2 秒的定时轮询：启动后 2 秒内的诊断行
     // 是「代理连不上」时唯一有用的线索。
@@ -486,6 +490,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     _logTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _proxy.dispose();
+    // App 退出：控制面回到直连（下次启动再注册）。
+    TwitterApi.setProxyPort(null);
     super.dispose();
   }
 }

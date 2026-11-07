@@ -197,11 +197,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ///
   /// 这里必须整包下载（要解析 JSON 校验字段），因此逐级显式设超时：
   /// 大账号的 json.gz 若无超时会把整个诊断永久卡在步骤 2。
+  ///
+  /// 通道：代理端口注册后经 ECH 代理（`http://127.0.0.1:<port>/api/twitter/...`），
+  /// 未注册时回退直连（诊断隔离"被墙"与"Dio 层故障"）。
   Future<_RawJsonResult> _fetchRawJson(String username) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
     try {
       final date = DateTime.now().toIso8601String().split('T')[0];
-      final url = '$kApiBase/$username.json.gz?t=$date';
+      final port = TwitterApi.proxyPort;
+      final url = port != null
+          ? 'http://127.0.0.1:$port/api/twitter/$username.json.gz?t=$date'
+          : '$kApiBase/$username.json.gz?t=$date';
       final req = await client
           .getUrl(Uri.parse(url))
           .timeout(const Duration(seconds: 15));
@@ -379,12 +385,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     }
 
-    // 1. API 直连（TwitterApi 实际使用的通道：JSON/API 不经代理）
-    await step('1. API 直连 (TwitterApi 实际通道)', () async {
+    // 1. API 经 ECH 代理（TwitterApi 实际通道：x.moonchan.xyz 被墙后走
+    //    127.0.0.1:<port> 的 ECH 隧道；代理未启动时回退直连）
+    await step('1. API 经 ECH 代理 (TwitterApi 实际通道)', () async {
       final api = TwitterApi();
       try {
         final users = await api.getUserList();
-        return '$kApiBase → ${users.length} 个用户';
+        final via = TwitterApi.proxyPort != null
+            ? '127.0.0.1:${TwitterApi.proxyPort}'
+            : '直连(未注册代理端口)';
+        return '$via → ${users.length} 个用户';
       } finally {
         api.dispose();
       }
@@ -429,9 +439,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
 
-    // 3. API 原始探测（不经 Dio，用 dart:io 直接 GET，区分 Dio/网络层问题）
-    await step('3. API 原始探测 (不经 Dio)', () {
-      return _httpProbe('$kApiBase/?list=users');
+    // 3. API 原始探测（不经 Dio，用 dart:io 直接 GET，区分 Dio/网络层问题）。
+    //    3a 直连（x.moonchan.xyz 被墙时预期失败）；3b 经 ECH 代理（实际通道）。
+    await step('3a. API 直连 (预期失败，被墙)', () {
+      return _httpProbe('$kApiBase/?list=users', timeoutSec: 10);
+    }, expectFail: true);
+    await step('3b. API 经代理 raw (实际通道)', () async {
+      final port = TwitterApi.proxyPort;
+      if (port == null) return '失败: 未注册代理端口';
+      return _httpProbe('http://127.0.0.1:$port/api/twitter/?list=users');
     });
 
     // 4. video-cf 经本机 ECH 代理
@@ -528,7 +544,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     buf.writeln('Twitter Pic 诊断报告 · ${widget.buildNum}');
     buf.writeln(
         '代理: ${widget.proxy.isRunning ? '运行中' : '已停止'} · port=${widget.proxy.port ?? '-'} · init=${widget.proxy.isInitialized}');
-    buf.writeln('API endpoint: $kApiBase (直连)');
+    final via = TwitterApi.proxyPort != null
+        ? '经 ECH 代理 127.0.0.1:${TwitterApi.proxyPort}'
+        : '直连(未注册代理端口)';
+    buf.writeln('API endpoint: $kApiBase ($via)');
     buf.writeln('');
     for (final d in _diag) {
       buf.writeln('【${d.label}】 ${d.running ? 'RUNNING' : (d.ok ? 'PASS' : 'FAIL')}');
@@ -792,7 +811,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       '代理': widget.proxy.isRunning ? '运行中' : '已停止',
       '端口': '${widget.proxy.port ?? '-'}',
       'ECH 初始化': '${widget.proxy.isInitialized}',
-      'API endpoint': '$kApiBase (直连)',
+      'API endpoint': TwitterApi.proxyPort != null
+          ? '$kApiBase → 127.0.0.1:${TwitterApi.proxyPort} (ECH)'
+          : '$kApiBase (直连)',
     });
   }
 

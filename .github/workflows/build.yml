@@ -25,7 +25,10 @@ on:
 # 上还有尚未发布的 CONNECT 隧道提交，打 v1.3.0 会谎称服务端已发版。
 # 两条版本线因此分开编号，互不冒充。
 env:
-  ECH_PROXY_REF: flutter-lib-v1.0.1
+  # 控制面 API 走 ECH 的支持（ech-proxy flutter/main.go apiProxyHandler
+  # 从直连切到 cloudflare_ech.Do + 同主机 3xx 跟随，commit 1ad250c）。
+  # CI 全绿确认后再打 flutter-lib-v1.0.2 固化。
+  ECH_PROXY_REF: 1ad250c
 
 concurrency:
   group: build-${{ github.ref }}

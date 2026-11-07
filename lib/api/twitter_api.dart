@@ -13,9 +13,10 @@ import 'package:flutter/foundation.dart';
 
 import '../models/user.dart';
 
-/// API 与媒体分流：JSON/API **直连** x.moonchan.xyz（自建域名，可正常访问，
-/// 无需 ECH）；只有 twimg 媒体（pbs/video(.cf).twimg.com）才经本机
-/// ProxyManager + EchUrl.rewrite 走 ECH。
+/// API 与媒体分流：控制面 JSON/API 与 twimg 媒体都走本机 ECH 代理
+/// （127.0.0.1:<port>，见 [setProxyPort] 与 ech-proxy flutter/main.go 的
+/// router——`/api/` 前缀转发到 x.moonchan.xyz 并经 ECH 隧道访问）。
+/// 代理端口未注册（测试环境/代理未启动）时回退直连，行为与旧版一致。
 const kApiBase = 'https://x.moonchan.xyz/api/twitter';
 
 /// 图站（gallery）的 origin —— **与 [kApiBase] 不是同一个 base**。
@@ -198,7 +199,28 @@ class TwitterApi {
     _metaCacheTime.clear();
     _metaMissing.clear();
     _metaMissingTime.clear();
+    _proxyPort = null;
   }
+
+  /// 控制面 ECH 代理端口（`http://127.0.0.1:<port>`）。
+  ///
+  /// 由 main.dart 在 ECH 代理启动成功后注册（[setProxyPort]）：此后
+  /// `_dio` / `_gallery` 的请求 host 从 `x.moonchan.xyz` 改写为
+  /// `127.0.0.1:<port>`，落进本机 ECH 代理的 `/api/` 前缀，经 ECH 隧道访问
+  /// 被墙的控制面（见 ech-proxy flutter/main.go apiProxyHandler）。
+  /// 为 `null`（代理未启动 / 测试环境）时保持直连，行为与旧版一致。
+  static int? _proxyPort;
+
+  /// 注册/清除控制面 ECH 代理端口。端口变化（代理重启）时调用方需重新注册。
+  /// 返回 true 表示端口有变化（调用方可用于刷界面）。
+  static bool setProxyPort(int? port) {
+    if (_proxyPort == port) return false;
+    _proxyPort = port;
+    return true;
+  }
+
+  /// 当前控制面代理端口（未注册为 null）。
+  static int? get proxyPort => _proxyPort;
 
   late final Dio _dio;
 
@@ -238,12 +260,33 @@ class TwitterApi {
     // emojis 全部 403。之前只有 getUserList 用了 '/' 所以只有它正常，
     // 详情页"暂无内容"、头像全空、标签空都是这一个原因。
     // 这里统一补前导斜杠，避免以后新增调用再次踩坑。
+    //
+    // 控制面代理改写：`_proxyPort` 注册后（见 [setProxyPort]），把
+    // `x.moonchan.xyz` 的 host 换成 `127.0.0.1:<port>`。path 保持不变——
+    // `/api/twitter/...` 与 `/api/tag-cloud` 等本就走 ech-proxy 的 `/api/`
+    // 前缀（ech-proxy flutter/main.go router 对 `/api/` 转发到原 host 并经
+    // ECH 隧道访问），因此改写 host 即可，query 原样保留。
     InterceptorsWrapper normalize() => InterceptorsWrapper(
       onRequest: (options, handler) {
         final p = options.path;
         final absolute = p.startsWith('http://') || p.startsWith('https://');
         if (!absolute && !p.startsWith('/')) {
           options.path = '/$p';
+        }
+        final port = _proxyPort;
+        if (port != null) {
+          final u = options.uri;
+          if (u.host == 'x.moonchan.xyz') {
+            // 换成 127.0.0.1:<port>，但**保留原 baseUrl 的路径段**——
+            // kApiBase 自带 `/api/twitter`，丢了会走到代理的媒体分支
+            // （Dio 是 baseUrl + path 字符串拼接，uri 会按新 baseUrl 重算）。
+            final base = Uri.parse(options.baseUrl);
+            var basePath = base.path;
+            if (basePath.endsWith('/')) {
+              basePath = basePath.substring(0, basePath.length - 1);
+            }
+            options.baseUrl = 'http://127.0.0.1:$port$basePath';
+          }
         }
         handler.next(options);
       },

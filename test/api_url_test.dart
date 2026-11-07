@@ -301,4 +301,68 @@ void main() {
           reason: '写操作后缓存应失效，重新读要发新请求');
     });
   });
+
+  // ─── 控制面 ECH 代理改写（setProxyPort）─────────────────────────────────
+  //
+  // x.moonchan.xyz 被墙后，main.dart 在 ECH 代理启动成功后调用
+  // TwitterApi.setProxyPort(port)，此后 _dio / _gallery 的请求 host 改写为
+  // 127.0.0.1:<port>，落进 ech-proxy 的 /api/ 前缀经 ECH 隧道访问。
+  // 未注册时保持直连（旧行为）。
+
+  group('setProxyPort 控制面代理改写', () {
+    tearDown(() {
+      TwitterApi.resetForTests();
+    });
+
+    test('未注册端口时保持直连（host 仍是 x.moonchan.xyz）', () async {
+      TwitterApi.resetForTests();
+      await api.getUserList();
+      expect(adapter.seen.single.uri.scheme, 'https');
+      expect(adapter.seen.single.uri.host, 'x.moonchan.xyz');
+    });
+
+    test('注册端口后 host 改写为 127.0.0.1，路径保留 /api/ 前缀', () async {
+      TwitterApi.resetForTests();
+      TwitterApi.setProxyPort(9123);
+      final via = TwitterApi();
+      addTearDown(via.dispose);
+
+      await via.getUserList();
+      await via.getMetaData('alice', forceRefresh: true);
+      await via.getTagCloud();
+
+      expect(adapter.seen, hasLength(3));
+      for (final o in adapter.seen) {
+        expect(o.uri.scheme, 'http', reason: '${o.uri} 应为 http 走本地代理');
+        expect(o.uri.host, '127.0.0.1', reason: '${o.uri} 应指向本机代理');
+        expect(o.uri.port, 9123, reason: '${o.uri} 端口应为注册的代理端口');
+      }
+      // 路径必须保留：kApiBase 的 /api/twitter、图站的 /api/tag-cloud
+      // 都落在 ech-proxy 的 /api/ 前缀。
+      expect(adapter.seen[0].uri.path, '/api/twitter/');
+      expect(adapter.seen[1].uri.path, '/api/twitter/alice.json.gz');
+      expect(adapter.seen[2].uri.path, '/api/tag-cloud');
+    });
+
+    test('setProxyPort(null) 清除后恢复直连', () async {
+      TwitterApi.resetForTests();
+      TwitterApi.setProxyPort(9123);
+      TwitterApi.setProxyPort(null);
+
+      await api.getUserList();
+      expect(adapter.seen.single.uri.host, 'x.moonchan.xyz');
+      expect(adapter.seen.single.uri.scheme, 'https');
+    });
+
+    test('query 参数在代理改写下原样保留', () async {
+      TwitterApi.resetForTests();
+      TwitterApi.setProxyPort(9123);
+      final via = TwitterApi();
+      addTearDown(via.dispose);
+
+      await via.searchUsersByTag('女性');
+      expect(adapter.seen.single.uri.host, '127.0.0.1');
+      expect(adapter.seen.single.uri.queryParameters, {'by': 'tag', 'search': '女性'});
+    });
+  });
 }
