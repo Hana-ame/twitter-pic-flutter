@@ -25,7 +25,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:twitter_pic_flutter/api/twitter_api.dart';
-import 'package:twitter_pic_flutter/models/user.dart';
 import 'package:twitter_pic_flutter/screens/user_list_screen.dart';
 import 'package:twitter_pic_flutter/services/proxy_manager.dart';
 import 'package:twitter_pic_flutter/services/storage_service.dart';

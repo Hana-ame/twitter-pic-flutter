@@ -282,7 +282,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         // FileSystemException，osError.message 一般是 "Permission denied" 或
         // "EACCES"。这里显式识别并给出可操作的提示，而不是把用户带去 System
         // 的"下载失败"（commit ec8aaef 之前正是这个死胡同）。
-        final msg = '${e.message ?? ''} ${e.osError?.message ?? ''}'.toLowerCase();
+        final msg = '${e.message} ${e.osError?.message ?? ''}'.toLowerCase();
         if (msg.contains('permission') || msg.contains('eacces')) {
           _showPermissionDenied(dir: dlDir.path);
           return;

@@ -1332,7 +1332,6 @@ class _AddUserTile extends StatefulWidget {
 class _AddUserTileState extends State<_AddUserTile> {
   bool _isClicked = false;
   bool _submitting = false;
-  bool _showTagPicker = false;
 
   @override
   void didUpdateWidget(_AddUserTile old) {
@@ -1343,7 +1342,6 @@ class _AddUserTileState extends State<_AddUserTile> {
       // 就叠 100 层遮罩，点哪儿都点不动）。
       _tagPickerEntry?.remove();
       _tagPickerEntry = null;
-      _showTagPicker = false;
       _pendingTags = const {};
     }
   }
@@ -1378,13 +1376,12 @@ class _AddUserTileState extends State<_AddUserTile> {
       );
       return;
     }
-    setState(() => _showTagPicker = true);
     _openTagPicker();
   }
 
   /// 提交失败后重新打开标签选择器时带回上次的勾选。
   ///
-  /// 原来失败后 `_showTagPicker` 一直是 false，而 `_tagScores` 活在已经
+  /// 原来失败后弹层不会自动重开，而 `_tagScores` 活在已经
   /// unmount 的 modal State 里 —— 用户重开时 4 个标签全没了，得一个一个重按。
   Map<String, int> _pendingTags = const {};
 
@@ -1426,7 +1423,6 @@ class _AddUserTileState extends State<_AddUserTile> {
   void _closeTagPicker() {
     _tagPickerEntry?.remove();
     _tagPickerEntry = null;
-    if (mounted) setState(() => _showTagPicker = false);
   }
 
   /// 第二步：带着标签提交。
@@ -1441,10 +1437,7 @@ class _AddUserTileState extends State<_AddUserTile> {
       return;
     }
     _pendingTags = Map<String, int>.from(tags);
-    setState(() {
-      _submitting = true;
-      _showTagPicker = false;
-    });
+    setState(() => _submitting = true);
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在添加...')));
     try {
@@ -1458,7 +1451,6 @@ class _AddUserTileState extends State<_AddUserTile> {
     } catch (e) {
       if (!mounted) return;
       // 失败：把选择器**重新弹回来**并带上刚才的勾选，别让用户重按一遍。
-      setState(() => _showTagPicker = true);
       _openTagPicker();
       messenger.showSnackBar(SnackBar(content: Text('添加失败: $e')));
     } finally {
