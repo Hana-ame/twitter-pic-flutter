@@ -307,18 +307,42 @@ void main() {
   // x.moonchan.xyz 被墙后，main.dart 在 ECH 代理启动成功后调用
   // TwitterApi.setProxyPort(port)，此后 _dio / _gallery 的请求 host 改写为
   // 127.0.0.1:<port>，落进 ech-proxy 的 /api/ 前缀经 ECH 隧道访问。
-  // 未注册时保持直连（旧行为）。
+  //
+  // 契约（2026-11-22 变更）：**未就绪时不直连**，请求挂起等待代理启动，
+  // 超过 proxyWaitTimeout（默认 30s）抛 NetworkException。直连在墙内只会得到
+  // 一个超时，还会把"代理没起来"伪装成"网络不通"。
 
   group('setProxyPort 控制面代理改写', () {
     tearDown(() {
       TwitterApi.resetForTests();
     });
 
-    test('未注册端口时保持直连（host 仍是 x.moonchan.xyz）', () async {
+    test('未注册端口时请求挂起等待，注册后按新端口发出', () async {
       TwitterApi.resetForTests();
-      await api.getUserList();
-      expect(adapter.seen.single.uri.scheme, 'https');
-      expect(adapter.seen.single.uri.host, 'x.moonchan.xyz');
+      TwitterApi.debugRequireProxy(true);
+
+      final pending = api.getUserList();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(adapter.seen, isEmpty, reason: '代理未就绪时不得直连发出');
+
+      TwitterApi.setProxyPort(9555);
+      await pending;
+      expect(adapter.seen.single.uri.scheme, 'http');
+      expect(adapter.seen.single.uri.host, '127.0.0.1');
+      expect(adapter.seen.single.uri.port, 9555);
+    });
+
+    test('等待超过 proxyWaitTimeout 抛"代理未就绪"', () async {
+      TwitterApi.resetForTests();
+      TwitterApi.debugRequireProxy(true);
+      TwitterApi.proxyWaitTimeout = const Duration(milliseconds: 60);
+
+      await expectLater(
+        api.getUserList(),
+        throwsA(isA<DioException>()
+            .having((e) => e.error, 'error', isA<NetworkException>())),
+      );
+      expect(adapter.seen, isEmpty, reason: '超时也不许直连');
     });
 
     test('注册端口后 host 改写为 127.0.0.1，路径保留 /api/ 前缀', () async {
@@ -343,14 +367,23 @@ void main() {
       expect(adapter.seen[2].uri.path, '/api/tag-cloud');
     });
 
-    test('setProxyPort(null) 清除后恢复直连', () async {
+    test('setProxyPort(null) 后再次请求重新进入等待', () async {
       TwitterApi.resetForTests();
+      TwitterApi.debugRequireProxy(true);
       TwitterApi.setProxyPort(9123);
-      TwitterApi.setProxyPort(null);
-
       await api.getUserList();
-      expect(adapter.seen.single.uri.host, 'x.moonchan.xyz');
-      expect(adapter.seen.single.uri.scheme, 'https');
+      expect(adapter.seen.single.uri.host, '127.0.0.1');
+      expect(adapter.seen.single.uri.port, 9123);
+
+      TwitterApi.setProxyPort(null);
+      final pending = api.getUserList();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(adapter.seen, hasLength(1), reason: '清除端口后不得直连发出');
+
+      TwitterApi.setProxyPort(9333);
+      await pending;
+      expect(adapter.seen, hasLength(2));
+      expect(adapter.seen.last.uri.port, 9333);
     });
 
     test('query 参数在代理改写下原样保留', () async {

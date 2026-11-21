@@ -45,6 +45,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../services/media_http_client.dart';
 import '../utils/stable_hash.dart';
 
 /// 部分解码节流器。
@@ -144,9 +145,13 @@ class ProgressiveDiskCache {
         await dir.create(recursive: true);
       }
       _rootDir = dir;
-      // 冷启动时数一下已有条目，免得第一次写就误判"已满"而立刻淘汰。
+      // 冷启动时异步统计已有条目，避免缓存文件较多时 listSync() 阻塞 UI 线程。
       try {
-        _entryCount = dir.listSync().whereType<File>().length;
+        var count = 0;
+        await for (final entity in dir.list()) {
+          if (entity is File && !entity.path.endsWith('.tmp')) count++;
+        }
+        _entryCount = count;
       } catch (_) {
         _entryCount = 0;
       }
@@ -247,13 +252,12 @@ class ProgressiveDiskCache {
     }
   }
 
-  /// 读命中时把 mtime 推到"现在"，作为 LRU 的访问序。
+  /// 读命中时异步把 mtime 推到"现在"，作为 LRU 的访问序（避免主线程同步系统调用）。
   static void _touch(File f) {
-    try {
-      f.setLastModifiedSync(DateTime.now());
-    } catch (_) {
-      // 改不了 mtime 不影响正确性，只是 LRU 退化成按写入序淘汰。
-    }
+    // 改不了 mtime 不影响正确性，只是 LRU 退化成按写入序淘汰。
+    unawaited(
+      f.setLastModified(DateTime.now()).then<void>((_) {}, onError: (_) {}),
+    );
   }
 
   /// 清空磁盘缓存（设置页「清除数据」用）。
@@ -394,24 +398,24 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
       await ProgressiveDiskCache._deleteCorrupt(url);
     }
 
-    final client = HttpClient()..connectionTimeout = timeout;
-    client.idleTimeout = timeout;
-    // HttpClient 没有请求级超时，只有 connectionTimeout，它只管建连。建连之后
-    // 等响应头这一段没有任何上限：代理把连接接了却一直不吐头，await 就永远
-    // 挂着，completer 既不 succeed 也不 error，卡片就一直灰着，errorBuilder
-    // 和 proxy_avatar 的重试都等不到。这里用定时器强关 client：force close 会
-    // 让在途请求以错误结束，await 抛错后走下面的 catch 上报给 reportError。
+    final client = MediaHttpClient.shared;
+    final uri = Uri.parse(url);
+    HttpClientRequest? activeRequest;
+    // 复用共享连接池（Keep-Alive），同时保留“建连 + 等响应头”的总预算：
+    // 超时时只 abort 当前单条请求（不强关整个 client），避免误伤并发拉图。
     final deadline = Timer(timeout, () {
-      client.close(force: true);
+      activeRequest?.abort(TimeoutException('图片响应头超时', timeout));
     });
     try {
-      final request = await client.getUrl(Uri.parse(url));
-      final response = await request.close();
+      final request = await client.getUrl(uri).timeout(timeout);
+      activeRequest = request;
+      final response = await request.close().timeout(timeout);
       // 头已到手，剩下的耗时交给下面 chunk 流的 30s 卡死超时管，别让建连预算
       // 把慢速下载的大图误杀。
       deadline.cancel();
       if (response.statusCode != 200) {
-        throw HttpException('HTTP ${response.statusCode}', uri: Uri.parse(url));
+        await response.drain<void>();
+        throw HttpException('HTTP ${response.statusCode}', uri: uri);
       }
       // 上游没给 Content-Length 时（分块编码）expectedTotalBytes 为 null，
       // 进度条会显示成不确定态。
@@ -450,7 +454,6 @@ class _ProgressiveImageCompleter extends ImageStreamCompleter {
       reportError(exception: e, stack: s);
     } finally {
       deadline.cancel();
-      client.close(force: true);
     }
   }
 

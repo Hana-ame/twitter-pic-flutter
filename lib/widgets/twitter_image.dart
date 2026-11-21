@@ -434,9 +434,8 @@ Future<File?> downloadToTempFile(Uri uri, String originalUrl) async {
 /// 图片本身是"下到哪显示到哪"的，所以这不是遮罩，只是提示还剩多少没到。
 class _ProgressOverlay extends StatelessWidget {
   final double? percent;
-  final bool onDark;
 
-  const _ProgressOverlay({this.percent, this.onDark = false});
+  const _ProgressOverlay({this.percent});
 
   @override
   Widget build(BuildContext context) {
@@ -450,8 +449,8 @@ class _ProgressOverlay extends StatelessWidget {
               child: LinearProgressIndicator(
                 value: percent,
                 minHeight: 3,
-                backgroundColor: onDark ? Colors.white24 : Colors.black12,
-                color: onDark ? Colors.white : Colors.black45,
+                backgroundColor: Colors.black12,
+                color: Colors.black45,
               ),
             ),
           ),
@@ -461,7 +460,7 @@ class _ProgressOverlay extends StatelessWidget {
               '${(percent! * 100).clamp(0, 100).toStringAsFixed(0)}%',
               style: TextStyle(
                 fontSize: 11,
-                color: onDark ? Colors.white70 : Colors.black54,
+                color: Colors.black54,
               ),
             ),
           ],
@@ -474,10 +473,9 @@ class _ProgressOverlay extends StatelessWidget {
 /// 占位/进度/错误三合一的定高内容块。
 class _StatusBox extends StatelessWidget {
   final String? message;
-  final double? percent;
   final VoidCallback? onRetry;
 
-  const _StatusBox({this.message, this.percent, this.onRetry});
+  const _StatusBox({this.message, this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -492,17 +490,14 @@ class _StatusBox extends StatelessWidget {
             SizedBox(
               width: 120,
               child: LinearProgressIndicator(
-                value: percent,
                 minHeight: 3,
                 backgroundColor: Colors.grey[300],
               ),
             ),
             const SizedBox(height: 10),
-            Text(
-              percent == null
-                  ? '加载中…'
-                  : '${(percent! * 100).clamp(0, 100).toStringAsFixed(0)}%',
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            const Text(
+              '加载中…',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
             ),
           ] else ...[
             const Icon(Icons.broken_image_outlined, size: 32, color: Colors.grey),
