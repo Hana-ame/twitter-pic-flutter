@@ -112,15 +112,10 @@ class _BrowseHistoryScreenState extends State<BrowseHistoryScreen> {
           profile: profile,
           proxy: widget.proxy,
           api: _api,
-          tagBrowse: widget.tagBrowse == null
-              ? null
-              : (String tag, {void Function(bool)? callback}) {
-                  final ok = widget.tagBrowse!(tag, callback: callback);
-                  if (ok && nav.canPop()) {
-                    nav.pop();
-                  }
-                  return ok;
-                },
+          // 句柄原样递给详情页，**不要**再包一层负责 pop 的闭包：
+          // 详情页 _openTagInPlace 已在 enterTagInPlace 的 onDone 里 pop 掉自己，
+          // 这里再 pop 一次会把浏览历史页也一起弹掉。
+          tagBrowse: widget.tagBrowse,
         ),
       ),
     );
