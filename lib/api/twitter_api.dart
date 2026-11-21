@@ -6,6 +6,7 @@
 //   - 全局拦截器支持（认证、日志、重试）
 //   - 自动 JSON 反序列化
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -16,7 +17,8 @@ import '../models/user.dart';
 /// API 与媒体分流：控制面 JSON/API 与 twimg 媒体都走本机 ECH 代理
 /// （127.0.0.1:<port>，见 [setProxyPort] 与 ech-proxy flutter/main.go 的
 /// router——`/api/` 前缀转发到 x.moonchan.xyz 并经 ECH 隧道访问）。
-/// 代理端口未注册（测试环境/代理未启动）时回退直连，行为与旧版一致。
+/// 代理端口未注册时**不直连**：请求挂起等待代理就绪（默认 30s，超时抛
+/// [NetworkException]）。测试注入假适配器时默认不等待，见 [debugRequireProxy]。
 const kApiBase = 'https://x.moonchan.xyz/api/twitter';
 
 /// 图站（gallery）的 origin —— **与 [kApiBase] 不是同一个 base**。
@@ -200,6 +202,9 @@ class TwitterApi {
     _metaMissing.clear();
     _metaMissingTime.clear();
     _proxyPort = null;
+    _proxyReady = null;
+    _requireProxy = false;
+    proxyWaitTimeout = const Duration(seconds: 30);
   }
 
   /// 控制面 ECH 代理端口（`http://127.0.0.1:<port>`）。
@@ -208,14 +213,44 @@ class TwitterApi {
   /// `_dio` / `_gallery` 的请求 host 从 `x.moonchan.xyz` 改写为
   /// `127.0.0.1:<port>`，落进本机 ECH 代理的 `/api/` 前缀，经 ECH 隧道访问
   /// 被墙的控制面（见 ech-proxy flutter/main.go apiProxyHandler）。
-  /// 为 `null`（代理未启动 / 测试环境）时保持直连，行为与旧版一致。
+  /// 为 `null` 表示未就绪：此时请求挂起等待（见 [_waitForProxy]），
+  /// **不会**退回直连——直连在墙内必失败，还会掩盖代理没起来这件事。
   static int? _proxyPort;
+
+  /// 未就绪时的等待信号；`null` 表示当前无需等待。
+  static Completer<void>? _proxyReady;
+
+  /// 是否要求「先有代理才发请求」。生产为 true；注入假适配器的测试默认 false。
+  static bool _requireProxy = true;
+
+  /// 未就绪时的最长等待时间，超时抛 [NetworkException]。
+  @visibleForTesting
+  static Duration proxyWaitTimeout = const Duration(seconds: 30);
+
+  /// 测试用：强制打开/关闭等待语义（构造带 adapter 的实例会把它置为 false）。
+  @visibleForTesting
+  static void debugRequireProxy(bool value) {
+    _requireProxy = value;
+    if (!value) _proxyReady = null;
+  }
+
+  /// 等待代理就绪；已就绪或测试模式立刻返回。
+  static Future<void> _waitForProxy() {
+    if (!_requireProxy || _proxyPort != null) return Future<void>.value();
+    final waiter = _proxyReady ??= Completer<void>();
+    return waiter.future.timeout(proxyWaitTimeout);
+  }
 
   /// 注册/清除控制面 ECH 代理端口。端口变化（代理重启）时调用方需重新注册。
   /// 返回 true 表示端口有变化（调用方可用于刷界面）。
   static bool setProxyPort(int? port) {
     if (_proxyPort == port) return false;
     _proxyPort = port;
+    if (port != null) {
+      final waiter = _proxyReady;
+      _proxyReady = null;
+      if (waiter != null && !waiter.isCompleted) waiter.complete();
+    }
     return true;
   }
 
@@ -233,6 +268,8 @@ class TwitterApi {
 
   /// [adapter] 仅供测试注入假适配器（不发真实请求），生产代码不传。
   TwitterApi({HttpClientAdapter? adapter}) {
+    // 注入假适配器只出现在测试里：没有真代理可用，也不该让测试卡在等待上。
+    _requireProxy = adapter == null;
     _dio = Dio(BaseOptions(
       baseUrl: kApiBase,
       connectTimeout: const Duration(seconds: 15),
@@ -267,11 +304,27 @@ class TwitterApi {
     // 前缀（ech-proxy flutter/main.go router 对 `/api/` 转发到原 host 并经
     // ECH 隧道访问），因此改写 host 即可，query 原样保留。
     InterceptorsWrapper normalize() => InterceptorsWrapper(
-      onRequest: (options, handler) {
+      onRequest: (options, handler) async {
         final p = options.path;
         final absolute = p.startsWith('http://') || p.startsWith('https://');
         if (!absolute && !p.startsWith('/')) {
           options.path = '/$p';
+        }
+        // 代理未就绪：挂起等待，不直连（直连在墙内只会得到一个超时，
+        // 还会把"代理没起来"伪装成"网络不通"）。
+        if (_requireProxy && _proxyPort == null) {
+          try {
+            await _waitForProxy();
+          } on TimeoutException {
+            handler.reject(DioException(
+              requestOptions: options,
+              type: DioExceptionType.connectionTimeout,
+              error: NetworkException(
+                  'ECH 代理未就绪：已等待 ${proxyWaitTimeout.inSeconds}s，'
+                  '请检查代理是否启动'),
+            ));
+            return;
+          }
         }
         final port = _proxyPort;
         if (port != null) {

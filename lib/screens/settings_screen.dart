@@ -164,12 +164,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     // 1. API 经 ECH 代理（TwitterApi 实际通道：x.moonchan.xyz 被墙后走
-    //    127.0.0.1:<port> 的 ECH 隧道；代理未启动时回退直连）
+    //    127.0.0.1:<port> 的 ECH 隧道；代理未启动时请求会等待，不直连）
     await step('1. API 经 ECH 代理 (TwitterApi 实际通道)', () async {
       final users = await _api.getUserList();
       final via = TwitterApi.proxyPort != null
           ? '127.0.0.1:${TwitterApi.proxyPort}'
-          : '直连(未注册代理端口)';
+          : '等待代理就绪(未注册端口)';
       return '$via → ${users.length} 个用户';
     });
 
@@ -316,7 +316,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         '代理: ${widget.proxy.isRunning ? '运行中' : '已停止'} · port=${widget.proxy.port ?? '-'} · init=${widget.proxy.isInitialized}');
     final via = TwitterApi.proxyPort != null
         ? '经 ECH 代理 127.0.0.1:${TwitterApi.proxyPort}'
-        : '直连(未注册代理端口)';
+        : '等待代理就绪(未注册端口)';
     buf.writeln('API endpoint: $kApiBase ($via)');
     buf.writeln('');
     for (final d in _diag) {
@@ -583,7 +583,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'ECH 初始化': '${widget.proxy.isInitialized}',
       'API endpoint': TwitterApi.proxyPort != null
           ? '$kApiBase → 127.0.0.1:${TwitterApi.proxyPort} (ECH)'
-          : '$kApiBase (直连)',
+          : '$kApiBase (等待代理就绪)',
     });
   }
 

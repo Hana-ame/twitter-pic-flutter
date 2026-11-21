@@ -1,7 +1,8 @@
 # Twitter Pic Flutter
 
 > 浏览 Twitter（X）图片与视频的 Flutter 客户端。墙内直连 `*.twimg.com` 必死，
-> 媒体统一经**本机 Go ECH 代理**转发到 `video-cf.twimg.com`；API/JSON 直连自建后端。
+> 媒体统一经**本机 Go ECH 代理**转发到 `video-cf.twimg.com`；API/JSON 也走同一代理的
+> `/api/` 前缀（`x.moonchan.xyz` 同样被墙），**代理未就绪时请求等待，不直连**。
 
 当前版本 **v0.7.4**（Android arm64 + Windows x64）。
 
@@ -10,11 +11,12 @@
 | Android | `app-release.apk`（包名 `xyz.moonchan.twitterpic`，仅 arm64-v8a） |
 | Windows | `twitter_pic_flutter_windows_amd64.zip` |
 
-## 网络架构：两条通道，别混
+## 网络架构：两条通道，共用代理
 
 ```
-① 控制面（JSON / API）—— 直连，不走代理
-   Dio → https://x.moonchan.xyz/api/twitter/...
+① 控制面（JSON / API）—— 经代理的 /api/ 前缀
+   Dio → http://127.0.0.1:<port>/api/twitter/...
+        （代理按原 host 走 ECH 隧道；端口未注册时请求挂起等待，不直连）
 
 ② 数据面（媒体）—— 必须走 ECH
    Image/ExoPlayer → http://127.0.0.1:<port>/<path>?<query>
@@ -28,8 +30,11 @@
 
 设计要点：
 
-- **API 直连**：`x.moonchan.xyz` 是自建域名，无需 ECH。把 API 塞进代理只会多一跳、
-  还容易因为前缀处理出错（历史事故见 `doc/troubleshooting.md`）。
+- **API 也走代理**：`x.moonchan.xyz` 与媒体同样在墙外，直连只会得到一个超时。
+  代理启动成功后 `TwitterApi.setProxyPort(port)` 把控制面 host 改写为
+  `127.0.0.1:<port>`，路径保留 `/api/twitter` 等前缀，由代理按 `/api/` 转发。
+  **未就绪时不回退直连**：请求挂起等待（默认 30s），超时抛明确错误——
+  否则"代理没起来"会被伪装成"网络不通"。
 - **媒体走代理**：`EchUrl.rewrite()` 丢掉原始域名，只保留 path + query，代理统一拼上
   `https://video-cf.twimg.com`。`pbs.twimg.com`（图片/头像）与 `video.twimg.com`（视频）
   是同一个 CDN 后端，改域名即可命中 ECH 路径（已实测，见下）。

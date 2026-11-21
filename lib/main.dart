@@ -496,7 +496,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     _api.dispose();
     MediaHttpClient.reset(force: true);
     _proxy.dispose();
-    // App 退出：控制面回到直连（下次启动再注册）。
+    // App 退出：清除控制面代理端口（下次启动重新注册；期间请求会等待而非直连）。
     TwitterApi.setProxyPort(null);
     super.dispose();
   }

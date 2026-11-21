@@ -57,7 +57,7 @@ static String rewrite(String url, int port, {String host = '127.0.0.1'}) =>
 - **`port == null` 时不要退化成直连**：墙内直连 twimg 必死（实测 000），退化成直连
   只会得到一个超时，不如明确显示"代理未启动"。
 
-## 2. API 链路：控制面默认经 ECH 代理，未就绪时回退直连
+## 2. API 链路：控制面默认经 ECH 代理，未就绪时挂起等待
 
 ```
 ① 根 API —— Dio(baseUrl: 'https://x.moonchan.xyz/api/twitter')
@@ -70,7 +70,9 @@ static String rewrite(String url, int port, {String host = '127.0.0.1'}) =>
 - 启动 ECH 代理成功后，`main.dart` 调用 `TwitterApi.setProxyPort(port)`；
   `TwitterApi` 拦截器将 `x.moonchan.xyz` 改写为 `http://127.0.0.1:<port>/api/...`，
   经本机 ECH 代理的 `apiProxyHandler` 走 ECH 隧道访问（解决 `x.moonchan.xyz` 被墙问题）。
-- 当代理端口为 `null`（单元测试或代理未启动）时，自动回退直连原始 `https://x.moonchan.xyz`。
+- 当代理端口为 `null`（代理未启动）时**不回退直连**：请求挂起等待代理就绪，
+  超过 `proxyWaitTimeout`（默认 30s）抛 `NetworkException`。直连在墙内必失败，
+  还会把"代理没起来"伪装成"网络不通"。注入假适配器的单测默认不等待。
 - Dio 拼接 `baseUrl + path` **不会补斜杠**，所有 path 必须自己以 `/` 开头；
   构造函数里加了 `onRequest` 拦截器兜底归一化（事故见 troubleshooting 案例 1）。
 - **⚠️ 标签端点挂在 ② 而不是 ①**：它们注册在图站自己的 `http.ServeMux` 上
