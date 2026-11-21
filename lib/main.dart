@@ -22,6 +22,7 @@ import 'package:flutter/painting.dart';
 
 import 'api/twitter_api.dart';
 import 'services/log_service.dart';
+import 'services/media_http_client.dart';
 import 'services/poster_service.dart';
 import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
@@ -97,6 +98,7 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   final ProxyManager _proxy = ProxyManager();
+  final TwitterApi _api = TwitterApi();
   bool _proxyReady = false;
   String? _proxyError;
   List<String> _logs = [];
@@ -343,6 +345,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   builder: (routeCtx) => Scaffold(
                     appBar: AppBar(title: const Text('Emoji 排行榜')),
                     body: RankingScreen(
+                      api: _api,
                       proxy: _proxy,
                       onSelectUser: (profile) {
                         Navigator.of(routeCtx).push(
@@ -351,6 +354,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                               profile: profile,
                               proxy: _proxy,
                               tagBrowse: null,
+                              api: _api,
                             ),
                           ),
                         );
@@ -482,13 +486,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         ),
       );
     }
-    return _HomeScreen(proxy: _proxy);
+    return _HomeScreen(proxy: _proxy, api: _api);
   }
 
   @override
   void dispose() {
     _logTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    _api.dispose();
+    MediaHttpClient.reset(force: true);
     _proxy.dispose();
     // App 退出：控制面回到直连（下次启动再注册）。
     TwitterApi.setProxyPort(null);
@@ -500,7 +506,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
 class _HomeScreen extends StatefulWidget {
   final ProxyManager proxy;
-  const _HomeScreen({required this.proxy});
+  final TwitterApi api;
+  const _HomeScreen({required this.proxy, required this.api});
 
   @override
   State<_HomeScreen> createState() => _HomeScreenState();
@@ -517,9 +524,13 @@ class _HomeScreenState extends State<_HomeScreen> {
       body: IndexedStack(
         index: _tabIndex,
         children: [
-          UserListScreen(proxy: widget.proxy),
-          FavoritesTab(key: ValueKey('fav$_favTick'), proxy: widget.proxy),
-          SettingsTab(proxy: widget.proxy),
+          UserListScreen(proxy: widget.proxy, api: widget.api),
+          FavoritesTab(
+            key: ValueKey('fav$_favTick'),
+            proxy: widget.proxy,
+            api: widget.api,
+          ),
+          SettingsTab(proxy: widget.proxy, api: widget.api),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -554,21 +565,30 @@ class _HomeScreenState extends State<_HomeScreen> {
 
 class FavoritesTab extends StatefulWidget {
   final ProxyManager proxy;
-  const FavoritesTab({super.key, required this.proxy});
+  final TwitterApi? api;
+  const FavoritesTab({super.key, required this.proxy, this.api});
 
   @override
   State<FavoritesTab> createState() => _FavoritesTabState();
 }
 
 class _FavoritesTabState extends State<FavoritesTab> {
-  final TwitterApi _api = TwitterApi();
+  late final TwitterApi _api;
+  late final bool _ownsApi;
   // 下拉刷新时 +1：换 key 重建 FavList（重读收藏并收起"显示更多"），
   // 比导出 State 更省事，也避免把内部 State 变成公开 API。
   int _listTick = 0;
 
   @override
+  void initState() {
+    super.initState();
+    _api = widget.api ?? TwitterApi();
+    _ownsApi = widget.api == null;
+  }
+
+  @override
   void dispose() {
-    _api.dispose();
+    if (_ownsApi) _api.dispose();
     super.dispose();
   }
 
@@ -617,7 +637,8 @@ class _FavoritesTabState extends State<FavoritesTab> {
 
 class SettingsTab extends StatefulWidget {
   final ProxyManager proxy;
-  const SettingsTab({super.key, required this.proxy});
+  final TwitterApi? api;
+  const SettingsTab({super.key, required this.proxy, this.api});
 
   @override
   State<SettingsTab> createState() => _SettingsTabState();
@@ -626,6 +647,11 @@ class SettingsTab extends StatefulWidget {
 class _SettingsTabState extends State<SettingsTab> {
   @override
   Widget build(BuildContext context) {
-    return SettingsScreen(proxy: widget.proxy, buildNum: _kBuildNum, embedded: true);
+    return SettingsScreen(
+      proxy: widget.proxy,
+      api: widget.api,
+      buildNum: _kBuildNum,
+      embedded: true,
+    );
   }
 }

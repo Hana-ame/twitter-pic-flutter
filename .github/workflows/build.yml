@@ -68,7 +68,7 @@ jobs:
       - name: Static analysis (quality gate)
         run: |
           cd /tmp/test_project
-          flutter analyze --no-fatal-infos --no-fatal-warnings
+          flutter analyze --no-fatal-infos
 
       # 定位用：逐个测试文件跑并各自限时。整包 flutter test 一旦挂死，
       # 日志取不到、定位不到是哪个文件，只能干等超时（本次就白等了 30 多分钟）。
@@ -187,21 +187,6 @@ jobs:
       # 第 3 级必须查产物本身而非步骤状态：Upload coverage 用了
       # `if-no-files-found: warn`，文件不存在时那一步**照样绿**。今天正是靠直接
       # 查 artifact（8118 字节）才发现「绿了但数据没落盘」。
-      - name: Per-file test report (diagnostic only - NOT acceptance)
-        if: always()
-        run: |
-          cd /tmp/test_project
-          for f in test/*.dart; do
-            start=$(date +%s)
-            if timeout 180 flutter test "$f" > /tmp/t.log 2>&1; then
-              echo "OK   $f ($(( $(date +%s) - start ))s)"
-            else
-              rc=$?
-              echo "FAIL $f rc=$rc ($(( $(date +%s) - start ))s)"
-              tail -25 /tmp/t.log
-            fi
-          done
-
       # 整包 + --coverage，这是判据。隔离跑某几个文件通过不算数：
       # 挂死正是「单文件全过、合起来挂」才暴露的。
       #
@@ -226,6 +211,22 @@ jobs:
         run: |
           cd /tmp/test_project
           flutter test --coverage
+
+      # 仅在整包失败时触发逐文件定位，避免正常绿灯时将全部测试重复跑两遍。
+      - name: Per-file test report (diagnostic only - runs on failure)
+        if: failure()
+        run: |
+          cd /tmp/test_project
+          for f in test/*.dart; do
+            start=$(date +%s)
+            if timeout 180 flutter test "$f" > /tmp/t.log 2>&1; then
+              echo "OK   $f ($(( $(date +%s) - start ))s)"
+            else
+              rc=$?
+              echo "FAIL $f rc=$rc ($(( $(date +%s) - start ))s)"
+              tail -25 /tmp/t.log
+            fi
+          done
 
       # 覆盖率数据要留存，否则无从追踪退化。现在**先攒着不加门槛**：
       # 不知道基线多少就直接卡门槛，只会挡住真改动。等基线稳定再谈。
@@ -435,12 +436,27 @@ jobs:
           done
           sed -i 's|android:label="[^"]*"|android:label="推图"|' "$MANIFEST"
           # API/图片/视频全部经 http://127.0.0.1:<port> 本机代理。Android 9+
-          # （targetSdk 28+）默认禁明文，不注入该属性时所有代理请求会被系统
-          # 静默拒绝（表现为"暂无内容"），CI 却全绿。
-          if ! grep -q 'android:usesCleartextTraffic' "$MANIFEST"; then
-            sed -i 's|<application|<application android:usesCleartextTraffic="true"|' "$MANIFEST"
+          # （targetSdk 28+）默认禁明文；使用 network_security_config.xml 仅对
+          # 本机回环（127.0.0.1 / localhost）放行明文流量，不对公网域名放开。
+          NSC_DIR=/tmp/build_project/android/app/src/main/res/xml
+          NSC_FILE="$NSC_DIR/network_security_config.xml"
+          mkdir -p "$NSC_DIR"
+          cat > "$NSC_FILE" << 'NSC_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <base-config cleartextTrafficPermitted="false" />
+              <domain-config cleartextTrafficPermitted="true">
+                  <domain includeSubdomains="false">127.0.0.1</domain>
+                  <domain includeSubdomains="false">localhost</domain>
+              </domain-config>
+          </network-security-config>
+          NSC_EOF
+          sed -i 's/^          //' "$NSC_FILE"
+          if ! grep -q 'android:networkSecurityConfig' "$MANIFEST"; then
+            sed -i 's|<application|<application android:networkSecurityConfig="@xml/network_security_config"|' "$MANIFEST"
           fi
-          grep -q 'android:usesCleartextTraffic="true"' "$MANIFEST" || { echo "::error::usesCleartextTraffic injection failed"; exit 1; }
+          grep -q 'android:networkSecurityConfig="@xml/network_security_config"' "$MANIFEST" || { echo "::error::networkSecurityConfig injection failed"; exit 1; }
+          grep -q '127.0.0.1' "$NSC_FILE" || { echo "::error::network_security_config.xml missing 127.0.0.1"; exit 1; }
           # 后置校验：缺任何一个权限的 APK 静默失败，CI 却全绿。
           grep -q 'android.permission.INTERNET' "$MANIFEST" || { echo "::error::INTERNET permission injection failed"; exit 1; }
           grep -q 'android.permission.WRITE_EXTERNAL_STORAGE' "$MANIFEST" || { echo "::error::WRITE_EXTERNAL_STORAGE injection failed"; exit 1; }

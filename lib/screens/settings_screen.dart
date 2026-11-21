@@ -2,8 +2,6 @@
 // 设置页面：查看代理状态、网络诊断、清除缓存、关于信息
 
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import '../api/twitter_api.dart';
 import '../services/log_service.dart';
+import '../services/network_diagnostics_service.dart';
 import '../services/poster_service.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
@@ -22,6 +21,7 @@ import '../widgets/report_help.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ProxyManager proxy;
+  final TwitterApi? api;
   final String buildNum;
 
   /// 作为主界面 Tab 内嵌时由外层提供 Scaffold/AppBar，避免双层工具栏
@@ -31,6 +31,7 @@ class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
     required this.proxy,
+    this.api,
     this.buildNum = 'dev',
     this.embedded = false,
   });
@@ -40,6 +41,8 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  late final TwitterApi _api;
+  late final bool _ownsApi;
   bool _restarting = false;
   bool _gayMode = false;
   /// 上一次 didChangeDependencies 看到的 ModalRoute，用于判断路由是否换了。
@@ -48,6 +51,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _api = widget.api ?? TwitterApi();
+    _ownsApi = widget.api == null;
     _gayMode = StorageService.isGayMode();
     StorageService.changes.addListener(_syncGayMode);
   }
@@ -55,6 +60,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     StorageService.changes.removeListener(_syncGayMode);
+    if (_ownsApi) _api.dispose();
     super.dispose();
   }
 
@@ -93,231 +99,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // ─── 网络诊断 ─────────────────────────────────────────────────────────────
   bool _diagRunning = false;
-  final List<_DiagItem> _diag = [];
-
-  /// 发起一次 HTTP 探测，返回简短结果文本。
-  ///
-  /// body 只读前 [maxReadBytes]（足够判断通道通不通）：原先用 `drain()`
-  /// 会把整张图下完，媒体经 ECH 拉全图轻松超过默认超时，于是“探测超时”
-  /// 其实是探针自己造成的。读够即 break，剩余字节由 `close(force: true)`
-  /// 丢弃。超时同时计入首包与后续静默（Stream.timeout）。
-  Future<String> _httpProbe(String url,
-      {int timeoutSec = 20, int maxReadBytes = 64 * 1024}) async {
-    final client = HttpClient()
-      ..connectionTimeout = Duration(seconds: timeoutSec);
-    final sw = Stopwatch()..start();
-    try {
-      final req = await client
-          .getUrl(Uri.parse(url))
-          .timeout(Duration(seconds: timeoutSec));
-      final res = await req.close().timeout(Duration(seconds: timeoutSec));
-      final len = res.contentLength;
-      var got = 0;
-      await for (final chunk
-          in res.timeout(Duration(seconds: timeoutSec), onTimeout: (s) {
-        s.addError(TimeoutException('body 读取超时', Duration(seconds: timeoutSec)));
-      })) {
-        got += chunk.length;
-        if (got >= maxReadBytes) break;
-      }
-      return 'HTTP ${res.statusCode} · ${sw.elapsedMilliseconds}ms · ${len >= 0 ? len : '?'}B (读 ${got}B)';
-    } catch (e) {
-      // 带上耗时：区分“秒断（连不上）”与“撑到超时（链路慢/上游挂）”
-      return '失败: ${sw.elapsedMilliseconds}ms · $e';
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// Range 分段探测。ExoPlayer（video_player 底层）播 MP4 一定要分段拉取：
-  /// 上游必须回 206 + Content-Range，否则拿不到文件尾部的 moov，视频永不开播。
-  Future<String> _rangeProbe(String url, {int timeoutSec = 20}) async {
-    final client = HttpClient()..connectionTimeout = Duration(seconds: timeoutSec);
-    final sw = Stopwatch()..start();
-    try {
-      final req = await client
-          .getUrl(Uri.parse(url))
-          .timeout(Duration(seconds: timeoutSec));
-      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1023');
-      final res = await req.close().timeout(Duration(seconds: timeoutSec));
-      final cr = res.headers.value(HttpHeaders.contentRangeHeader) ?? '-';
-      final ar = res.headers.value('accept-ranges') ?? '-';
-      final cl = res.headers.value(HttpHeaders.contentLengthHeader) ?? '-';
-      var got = 0;
-      await for (final chunk in res) {
-        got += chunk.length;
-        if (got > 8 * 1024) break;
-      }
-      final detail =
-          'HTTP ${res.statusCode} · Content-Range: $cr · Accept-Ranges: $ar · Content-Length: $cl · 收到 ${got}B · ${sw.elapsedMilliseconds}ms';
-      // 只认 206：回 200 说明 Range 被吞了，播放器拿不到尾部元数据。
-      return res.statusCode == 206 ? detail : '失败: Range 未被支持 → $detail';
-    } catch (e) {
-      return '失败: ${sw.elapsedMilliseconds}ms · $e';
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// 用 widget 真正使用的那套栈（ProgressiveImageProvider → ECH 代理 →
-  /// 逐块解码 → 图片缓存/磁盘缓存）验证一张图，而不是 raw HttpClient。
-  /// 两者失败原因可能完全不同（例如解码失败、缺 Content-Length 导致 codec
-  /// 报错等）。
-  ///
-  /// v0.6.4：这里从 NetworkImage 改成 ProgressiveImageProvider，否则诊断页说的
-  /// 「widget 用的就是这套栈」与实际不符——ProxyAvatar 已改用后者（v0.6.4 起
-  /// 所有 media 统一走 ProgressiveImageProvider，见 proxy_avatar.dart）。
-  /// 诊断页与被诊断对象必须同栈，否则它报「widget 层正常」而实际是坏的。
-  Future<String> _imageDecodeProbe(String url, {int timeoutSec = 30}) async {
-    final sw = Stopwatch()..start();
-    final completer = Completer<String>();
-    final stream =
-        ProgressiveImageProvider(url).resolve(ImageConfiguration.empty);
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (info, _) {
-        stream.removeListener(listener);
-        completer.complete(
-            '解码成功 ${info.image.width}x${info.image.height} · ${sw.elapsedMilliseconds}ms');
-      },
-      onError: (e, _) {
-        stream.removeListener(listener);
-        completer.complete('失败: ${sw.elapsedMilliseconds}ms · $e');
-      },
-    );
-    stream.addListener(listener);
-    return completer.future.timeout(
-      Duration(seconds: timeoutSec),
-      onTimeout: () => '失败: ${timeoutSec}s 超时（连上但没出图）',
-    );
-  }
-
-  /// 抓取 `<username>.json.gz`，返回响应头、编码方式与原始 JSON。
-  /// 不解析成模型，供诊断编码与字段结构。
-  ///
-  /// 这里必须整包下载（要解析 JSON 校验字段），因此逐级显式设超时：
-  /// 大账号的 json.gz 若无超时会把整个诊断永久卡在步骤 2。
-  ///
-  /// 通道：代理端口注册后经 ECH 代理（`http://127.0.0.1:<port>/api/twitter/...`），
-  /// 未注册时回退直连（诊断隔离"被墙"与"Dio 层故障"）。
-  Future<_RawJsonResult> _fetchRawJson(String username) async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
-    try {
-      final date = DateTime.now().toIso8601String().split('T')[0];
-      final port = TwitterApi.proxyPort;
-      final url = port != null
-          ? 'http://127.0.0.1:$port/api/twitter/$username.json.gz?t=$date'
-          : '$kApiBase/$username.json.gz?t=$date';
-      final req = await client
-          .getUrl(Uri.parse(url))
-          .timeout(const Duration(seconds: 15));
-      req.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-      final res = await req.close().timeout(const Duration(seconds: 20));
-      final headers = <String, String>{
-        'content-type': res.headers.value('content-type') ?? '?',
-        'content-encoding': res.headers.value('content-encoding') ?? '无',
-        'content-length': res.headers.value('content-length') ?? '?',
-      };
-      if (res.statusCode != 200) {
-        return _RawJsonResult(
-          statusCode: res.statusCode,
-          headers: headers,
-          error: 'HTTP ${res.statusCode}',
-        );
-      }
-      final bytes = await res
-          .timeout(const Duration(seconds: 45), onTimeout: (s) {
-            s.addError(TimeoutException(
-                'body 读取超时', const Duration(seconds: 45)));
-          })
-          .fold<List<int>>(
-            <int>[],
-            (acc, chunk) => acc..addAll(chunk),
-          );
-      // 编码检测：先按 utf8 解，失败则按 gzip+utf8 解，记录实际编码。
-      var text = '';
-      var method = 'utf8';
-      try {
-        text = utf8.decode(bytes);
-      } catch (_) {
-        text = utf8.decode(gzip.decode(bytes));
-        method = 'gzip+utf8';
-      }
-      final decoded = jsonDecode(text);
-      return _RawJsonResult(
-        statusCode: res.statusCode,
-        headers: headers,
-        decodeMethod: method,
-        bytes: bytes.length,
-        json: decoded is Map<String, dynamic> ? decoded : null,
-      );
-    } catch (e) {
-      return _RawJsonResult(statusCode: 0, headers: const {}, error: '$e');
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// 检查 JSON 字段是否匹配模型（TimelineItem/TwitterUser 的期望 key）。
-  String _checkJsonFields(_RawJsonResult res) {
-    final buf = StringBuffer();
-    buf.writeln('HTTP ${res.statusCode}');
-    buf.writeln('content-type: ${res.headers['content-type']}');
-    buf.writeln('content-encoding: ${res.headers['content-encoding']}');
-    if (res.error != null) {
-      buf.writeln('错误: ${res.error}');
-      return buf.toString();
-    }
-    buf.writeln('解码: ${res.decodeMethod} · ${res.bytes}B');
-    final json = res.json;
-    if (json == null) {
-      buf.writeln('JSON 非对象');
-      return buf.toString();
-    }
-
-    final tl = json['timeline'];
-    buf.writeln('顶层字段: ${json.keys.join(', ')}');
-    buf.writeln('timeline: ${tl is List ? '${tl.length} 条' : '非数组!'}');
-    if (tl is List && tl.isNotEmpty && tl.first is Map) {
-      const need = ['url', 'type', 'date'];
-      final first = tl.first as Map;
-      for (final k in need) {
-        buf.writeln("timeline[0].'$k' ${first.containsKey(k) ? '✓' : '✗ 缺失'}");
-      }
-      final sample = first.entries.take(3).map((e) {
-        final v = e.value.toString();
-        return "'${e.key}': ${v.length > 50 ? '${v.substring(0, 50)}…' : v}";
-      }).join(' | ');
-      buf.writeln('样例: $sample');
-    }
-
-    final info = json['account_info'];
-    if (info is Map) {
-      const need = ['name', 'nick', 'profile_image'];
-      for (final k in need) {
-        buf.writeln("account_info.'$k' ${info.containsKey(k) ? '✓' : '✗ 缺失'}");
-      }
-      buf.writeln('头像: ${info['profile_image']}');
-    } else {
-      buf.writeln('account_info: 缺失或非对象');
-    }
-    return buf.toString();
-  }
-
-  /// 判定一次诊断结果是否“通过”。
-  ///
-  /// 之前只看是否以“失败”开头，导致 HTTP 404/502 也标成绿色✓——恰恰是
-  /// 最需要被看见的错误。现在按 HTTP 状态码与字段检查符号判定。
-  static bool _passed(String result) {
-    if (result.startsWith('失败') || result.contains('（跳过）')) return false;
-    final m = RegExp(r'HTTP (\d{3})').firstMatch(result);
-    if (m != null) {
-      final code = int.parse(m.group(1)!);
-      return code >= 200 && code < 400;
-    }
-    // 无状态码的纯文本结果（字段/编码检查）：出现 ✗ 判为不通过。
-    return !result.contains('✗');
-  }
+  final List<DiagItem> _diag = [];
 
   Future<void> _runDiag() async {
     if (_diagRunning) return;
@@ -329,7 +111,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     Future<void> step(String label, Future<String> Function() fn,
         {bool expectFail = false}) async {
       if (!mounted) return;
-      setState(() => _diag.add(_DiagItem(label: label, running: true)));
+      setState(() => _diag.add(DiagItem(label: label, running: true)));
       String result;
       try {
         result = await fn();
@@ -337,11 +119,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         result = '失败: $e';
       }
       if (!mounted) return;
-      final pass = _passed(result);
+      final pass = NetworkDiagnosticsService.passed(result);
       setState(() {
         final i = _diag.indexWhere((d) => d.label == label);
         if (i >= 0) {
-          _diag[i] = _DiagItem(
+          _diag[i] = DiagItem(
             label: label,
             result: result,
             ok: expectFail ? !pass : pass,
@@ -352,52 +134,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     // 取样一次供 2/6/7/8/9 复用：原先每个测试各自下一遍 100KB+ 的 json.gz，
     // 一整轮诊断光下载就要十几秒。
-    _RawJsonResult? sample;
+    RawJsonResult? sample;
     String? avatarUrl, photoUrl, videoUrl;
     Future<void> ensureSample() async {
       if (sample != null) return;
-      final api = TwitterApi();
-      try {
-        final users = await api.getUserList();
-        if (users.isEmpty) return;
-        final raw = await _fetchRawJson(users.first.username);
-        sample = raw;
-        if (raw.error != null) return;
-        avatarUrl = raw.json?['account_info']?['profile_image']?.toString();
-        final tl = raw.json?['timeline'];
-        if (tl is List) {
-          for (final e in tl) {
-            if (e is! Map) continue;
-            final u = e['url']?.toString() ?? '';
-            final t = e['type']?.toString() ?? '';
-            if (photoUrl == null && u.contains('pbs.twimg.com')) photoUrl = u;
-            if (videoUrl == null &&
-                (u.contains('video.twimg.com') ||
-                    t == 'video' ||
-                    t == 'animated_gif')) {
-              videoUrl = u;
-            }
-            if (photoUrl != null && videoUrl != null) break;
+      final users = await _api.getUserList();
+      if (users.isEmpty) return;
+      final raw =
+          await NetworkDiagnosticsService.fetchRawJson(users.first.username);
+      sample = raw;
+      if (raw.error != null) return;
+      avatarUrl = raw.json?['account_info']?['profile_image']?.toString();
+      final tl = raw.json?['timeline'];
+      if (tl is List) {
+        for (final e in tl) {
+          if (e is! Map) continue;
+          final u = e['url']?.toString() ?? '';
+          final t = e['type']?.toString() ?? '';
+          if (photoUrl == null && u.contains('pbs.twimg.com')) photoUrl = u;
+          if (videoUrl == null &&
+              (u.contains('video.twimg.com') ||
+                  t == 'video' ||
+                  t == 'animated_gif')) {
+            videoUrl = u;
           }
+          if (photoUrl != null && videoUrl != null) break;
         }
-      } finally {
-        api.dispose();
       }
     }
 
     // 1. API 经 ECH 代理（TwitterApi 实际通道：x.moonchan.xyz 被墙后走
     //    127.0.0.1:<port> 的 ECH 隧道；代理未启动时回退直连）
     await step('1. API 经 ECH 代理 (TwitterApi 实际通道)', () async {
-      final api = TwitterApi();
-      try {
-        final users = await api.getUserList();
-        final via = TwitterApi.proxyPort != null
-            ? '127.0.0.1:${TwitterApi.proxyPort}'
-            : '直连(未注册代理端口)';
-        return '$via → ${users.length} 个用户';
-      } finally {
-        api.dispose();
-      }
+      final users = await _api.getUserList();
+      final via = TwitterApi.proxyPort != null
+          ? '127.0.0.1:${TwitterApi.proxyPort}'
+          : '直连(未注册代理端口)';
+      return '$via → ${users.length} 个用户';
     });
 
     // 2. 原始 JSON：编码检测 + 字段与模型匹配检查
@@ -405,19 +178,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await ensureSample();
       final s = sample;
       if (s == null) return '失败: 用户列表为空';
-      return _checkJsonFields(s);
+      return NetworkDiagnosticsService.checkJsonFields(s);
     });
 
     // 2b. getMetaData 经 Dio + fromJson 解析 —— App 显示头像/媒体走的就是这条
     // 路。测试 2 是 raw 抓取，绕过了 Dio 与模型层，两者结论可能完全不同：
     // raw 有 644 条而这里为 0，就说明问题在解析层而不是网络。
     await step('2b. getMetaData 经 Dio+模型解析', () async {
-      final api = TwitterApi();
       try {
-        final users = await api.getUserList();
+        final users = await _api.getUserList();
         if (users.isEmpty) return '失败: 用户列表为空';
         final meta =
-            await api.getMetaData(users.first.username, forceRefresh: true);
+            await _api.getMetaData(users.first.username, forceRefresh: true);
         final av = meta.accountInfo.avatar;
         final line = 'timeline ${meta.timeline.length} 条 · '
             '头像: ${av ?? '-'} · total_urls: ${meta.totalUrls} · '
@@ -434,32 +206,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'API base: $kApiBase';
       } catch (e) {
         return '失败: $e';
-      } finally {
-        api.dispose();
       }
     });
 
     // 3. API 原始探测（不经 Dio，用 dart:io 直接 GET，区分 Dio/网络层问题）。
     //    3a 直连（x.moonchan.xyz 被墙时预期失败）；3b 经 ECH 代理（实际通道）。
     await step('3a. API 直连 (预期失败，被墙)', () {
-      return _httpProbe('$kApiBase/?list=users', timeoutSec: 10);
+      return NetworkDiagnosticsService.httpProbe('$kApiBase/?list=users', timeoutSec: 10);
     }, expectFail: true);
     await step('3b. API 经代理 raw (实际通道)', () async {
       final port = TwitterApi.proxyPort;
       if (port == null) return '失败: 未注册代理端口';
-      return _httpProbe('http://127.0.0.1:$port/api/twitter/?list=users');
+      return NetworkDiagnosticsService.httpProbe('http://127.0.0.1:$port/api/twitter/?list=users');
     });
 
     // 4. video-cf 经本机 ECH 代理
     await step('4. video-cf 经 ECH 代理', () async {
       final port = widget.proxy.port;
       if (port == null) return '失败: 代理未启动 (port=null)';
-      return _httpProbe('http://127.0.0.1:$port/favicon.ico');
+      return NetworkDiagnosticsService.httpProbe('http://127.0.0.1:$port/favicon.ico');
     });
 
     // 5. video-cf 直连（预期失败：被墙，需 ECH）
     await step('5. video-cf 直连 (预期失败)', () {
-      return _httpProbe('https://video-cf.twimg.com/favicon.ico', timeoutSec: 10);
+      return NetworkDiagnosticsService.httpProbe('https://video-cf.twimg.com/favicon.ico', timeoutSec: 10);
     }, expectFail: true);
 
     // 6. 真实头像 URL → 代理 → raw HttpClient（证明“链路通不通”）
@@ -470,7 +240,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final avatar = avatarUrl;
       if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
       final replaced = EchUrl.rewrite(avatar, port);
-      final probe = await _httpProbe(replaced, timeoutSec: 30);
+      final probe = await NetworkDiagnosticsService.httpProbe(replaced, timeoutSec: 30);
       return '原始: $avatar\n代理: $replaced\n→ $probe';
     });
 
@@ -483,7 +253,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await ensureSample();
       final avatar = avatarUrl;
       if (avatar == null || avatar.isEmpty) return '失败: 无头像 URL';
-      final r = await _imageDecodeProbe(EchUrl.rewrite(avatar, port));
+      final r = await NetworkDiagnosticsService.imageDecodeProbe(EchUrl.rewrite(avatar, port));
       return '${EchUrl.rewrite(avatar, port)}\n→ $r';
     });
 
@@ -495,7 +265,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final photo = photoUrl;
       if (photo == null || photo.isEmpty) return '无 pbs 图片条目（跳过）';
       final rewritten = EchUrl.rewrite(photo, port);
-      final r = await _imageDecodeProbe(rewritten);
+      final r = await NetworkDiagnosticsService.imageDecodeProbe(rewritten);
       return '原始: $photo\n代理: $rewritten\n→ $r';
     });
 
@@ -507,7 +277,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final video = videoUrl;
       if (video == null || video.isEmpty) return '无视频条目（跳过）';
       final rewritten = EchUrl.rewrite(video, port);
-      final r = await _rangeProbe(rewritten);
+      final r = await NetworkDiagnosticsService.rangeProbe(rewritten);
       return '原始: $video\n代理: $rewritten\n→ $r';
     });
 
@@ -963,42 +733,8 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
-/// 单条诊断结果。
-class _DiagItem {
-  final String label;
-  final String result;
-  final bool ok;
-  final bool running;
-
-  _DiagItem({
-    required this.label,
-    this.result = '',
-    this.ok = false,
-    this.running = false,
-  });
-}
-
-/// 原始 JSON 抓取结果：响应头 + 解码方式 + 解析后的 JSON。
-class _RawJsonResult {
-  final int statusCode;
-  final Map<String, String> headers;
-  final String? decodeMethod; // 'utf8' 或 'gzip+utf8'
-  final int bytes;
-  final Map<String, dynamic>? json;
-  final String? error;
-
-  _RawJsonResult({
-    required this.statusCode,
-    required this.headers,
-    this.decodeMethod,
-    this.bytes = 0,
-    this.json,
-    this.error,
-  });
-}
-
 class _DiagTile extends StatelessWidget {
-  final _DiagItem item;
+  final DiagItem item;
 
   const _DiagTile({required this.item});
 

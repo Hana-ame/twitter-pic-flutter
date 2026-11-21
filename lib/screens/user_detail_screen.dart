@@ -1,12 +1,12 @@
 // 用户详情页面：展示头像、标签、投票及媒体内容
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../api/twitter_api.dart';
 import '../models/user.dart';
+import '../services/batch_download_service.dart';
 import '../services/proxy_manager.dart';
 import '../services/storage_service.dart';
 import '../utils/ech_url.dart';
@@ -404,92 +404,34 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     ]);
   }
 
-  /// 流式写入文件，成功返回 true。
-  ///
-  /// 连接或写入任一步失败时关闭句柄并删除半写文件——原实现 writeFrom 抛错
-  /// （磁盘满/连接中断）时 RAF 不关闭，残留部分写入文件。
-  Future<bool> _streamToFile(HttpClient client, Uri uri, File file) async {
-    RandomAccessFile? raf;
-    var ok = false;
-    try {
-      final req = await client.getUrl(uri);
-      final resp = await req.close();
-      if (resp.statusCode != 200) return false;
-      final rafHandle = await file.open(mode: FileMode.write);
-      raf = rafHandle;
-      await for (final chunk in resp) {
-        await rafHandle.writeFrom(chunk);
-      }
-      await rafHandle.close();
-      raf = null;
-      ok = true;
-      return true;
-    } catch (_) {
-      return false;
-    } finally {
-      if (raf != null) {
-        try {
-          await raf.close();
-        } catch (_) {}
-      }
-      // 响应流无需单独关闭：外层 client.close() 会释放所有连接，且
-      // HttpClientResponse 既无 close() 也无 cancel() 方法。
-      if (!ok) {
-        try {
-          await file.delete();
-        } catch (_) {}
-      }
-    }
-  }
-
-  // 主通道：通过本机 ECH 代理流式下载（HttpClient + EchUrl）。
+  // 主通道：通过本机 ECH 代理流式下载（复用共享 MediaHttpClient）。
   Future<void> _downloadAll() => _batchDownload((item, file) async {
         final port = widget.proxy.port;
         if (port == null) return false;
-        final echUrl = EchUrl.rewrite(item.url, port);
-        final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 30);
-        try {
-          return await _streamToFile(client, Uri.parse(echUrl), file);
-        } finally {
-          client.close();
-        }
+        return BatchDownloadService.downloadViaProxy(
+          url: item.url,
+          port: port,
+          file: file,
+        );
       });
 
   // 兼容下载：走代理但不流式（整包读入内存），用于对比。
   Future<void> _downloadAllLegacy() => _batchDownload((item, file) async {
         final port = widget.proxy.port;
         if (port == null) return false;
-        final echUrl = EchUrl.rewrite(item.url, port);
-        final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 30);
-        try {
-          final req = await client.getUrl(Uri.parse(echUrl));
-          final res = await req.close();
-          if (res.statusCode != 200) return false;
-          final bb = BytesBuilder(copy: false);
-          await for (final chunk in res) {
-            bb.add(chunk);
-          }
-          final bytes = bb.takeBytes();
-          await file.writeAsBytes(bytes);
-          return true;
-        } catch (_) {
-          return false;
-        } finally {
-          client.close();
-        }
+        return BatchDownloadService.downloadViaProxyLegacy(
+          url: item.url,
+          port: port,
+          file: file,
+        );
       });
 
   // 应急下载：直接走原始 URL（不经 ECH），仅在代理完全失效时用。
-  Future<void> _downloadEmergency() => _batchDownload((item, file) async {
-        final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 30);
-        try {
-          return await _streamToFile(client, Uri.parse(item.url), file);
-        } finally {
-          client.close();
-        }
+  Future<void> _downloadEmergency() => _batchDownload((item, file) {
+        return BatchDownloadService.downloadDirect(
+          url: item.url,
+          file: file,
+        );
       });
 
   @override

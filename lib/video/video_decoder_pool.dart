@@ -170,6 +170,10 @@ class VideoDecoderPool {
     if (_pumping) return;
     _pumping = true;
     try {
+      // 清理已卸载但尚未走完 release() 的残留引用（dispose 竞态护栏）。
+      _waiting.removeWhere((s) => !s.slotMounted);
+      _urgent.removeWhere((s) => !s.slotMounted);
+      _live.removeWhere((s) => !s.slotMounted);
       while (_waiting.isNotEmpty) {
         final waiter = _pickWaiter();
         if (waiter == null) return;

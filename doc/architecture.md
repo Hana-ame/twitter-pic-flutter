@@ -57,7 +57,7 @@ static String rewrite(String url, int port, {String host = '127.0.0.1'}) =>
 - **`port == null` 时不要退化成直连**：墙内直连 twimg 必死（实测 000），退化成直连
   只会得到一个超时，不如明确显示"代理未启动"。
 
-## 2. API 链路：直连，绝不进代理
+## 2. API 链路：控制面默认经 ECH 代理，未就绪时回退直连
 
 ```
 ① 根 API —— Dio(baseUrl: 'https://x.moonchan.xyz/api/twitter')
@@ -67,8 +67,10 @@ static String rewrite(String url, int port, {String host = '127.0.0.1'}) =>
    → /api/tag/<tag>、/api/tag-cloud、/api/tags、/u/<account>
 ```
 
-- 自建域名可直接访问，不需要 ECH，多一跳没有收益。
-- 代理里虽然有 `/api/` 路由（给内置演示页用），但 Flutter 的 API **不走它**。
+- 启动 ECH 代理成功后，`main.dart` 调用 `TwitterApi.setProxyPort(port)`；
+  `TwitterApi` 拦截器将 `x.moonchan.xyz` 改写为 `http://127.0.0.1:<port>/api/...`，
+  经本机 ECH 代理的 `apiProxyHandler` 走 ECH 隧道访问（解决 `x.moonchan.xyz` 被墙问题）。
+- 当代理端口为 `null`（单元测试或代理未启动）时，自动回退直连原始 `https://x.moonchan.xyz`。
 - Dio 拼接 `baseUrl + path` **不会补斜杠**，所有 path 必须自己以 `/` 开头；
   构造函数里加了 `onRequest` 拦截器兜底归一化（事故见 troubleshooting 案例 1）。
 - **⚠️ 标签端点挂在 ② 而不是 ①**：它们注册在图站自己的 `http.ServeMux` 上
@@ -178,5 +180,7 @@ push(tag v*) ─┬─ flutter_test    (analyze + test，不过则不发版)
 ```
 
 版本号：tag 推送时用 tag（日期 tag 转三段式），main/workflow_dispatch 时回退 pubspec。
-Android 侧 CI 会注入 `usesCleartextTraffic="true"`（本机 HTTP 代理必需）并以 grep 校验，
-注入失败直接让 CI 红——这类"静默导致全网不通"的配置必须硬校验。
+Android 侧 CI 会生成 `res/xml/network_security_config.xml`（仅对 `127.0.0.1` / `localhost`
+放行明文 HTTP，供本机 ECH 代理使用，不对公网域名放开明文），并在 `AndroidManifest.xml`
+中注入 `android:networkSecurityConfig="@xml/network_security_config"` 后以 grep 硬校验，
+注入失败直接让 CI 红。
