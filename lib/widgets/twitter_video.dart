@@ -31,12 +31,14 @@ import 'package:video_player/video_player.dart';
 import '../services/log_service.dart';
 import '../services/poster_service.dart';
 import '../services/proxy_manager.dart';
+import '../services/storage_service.dart';
 import '../services/video_downloader.dart';
 import '../utils/ech_url.dart';
 import '../utils/frame_luma.dart';
 import '../utils/media_url.dart';
 import '../utils/video_failure.dart';
 import '../video/decoder_policy.dart';
+import '../video/video_compat_mode.dart';
 import '../video/video_decoder_pool.dart';
 import 'video/fullscreen_video.dart';
 import 'video/video_slider_with_buffer.dart';
@@ -88,6 +90,12 @@ class _TwitterVideoState extends State<TwitterVideo>
   bool _isDragging = false;
   double? _dragPositionMs;
   bool _downloading = false;
+  /// 当前生效的视频播放兼容模式（与设置页/StorageService 实时同步）。
+  VideoCompatMode _compatMode = StorageService.getVideoCompatMode();
+  /// 非默认兼容模式每次切换只记一次日志，避免刷屏。
+  static VideoCompatMode? _lastLoggedCompatMode;
+  /// 最近一次写入日志的原生解码器摘要（去重，避免刷屏）。
+  static String? _lastLoggedDecoderSummary;
   /// 全屏播放中：卡片侧不再渲染 VideoPlayer（同一 controller 只能渲染一次）。
   bool _fullscreenOpen = false;
 
@@ -191,14 +199,17 @@ class _TwitterVideoState extends State<TwitterVideo>
     _userInitiated = false;
     _disposeController();
     if (!mounted) return;
+    final shouldRequeue = _compatMode.allowAutoPosterDecode && slotNeedsPoster;
     setState(() {
       _videoValue = null;
       _retrying = false;
       _error = null;
-      _isLoading = slotNeedsPoster;
+      _isLoading = shouldRequeue;
       _slow = false;
     });
-    _pool.request(this);
+    if (shouldRequeue) {
+      _pool.request(this);
+    }
   }
 
   // ─── 生命周期 ─────────────────────────────────────────────────────────────
@@ -209,8 +220,32 @@ class _TwitterVideoState extends State<TwitterVideo>
     // 代理重启后端口会变（也可能从 null 变成有值）。没有这个监听，视频会一直
     // 停在错误态不动 —— 因为 IndexedStack/列表不会因为端口变化而重建。
     widget.proxy.portNotifier.addListener(_onPortChanged);
+    StorageService.changes.addListener(_onCompatModeChanged);
     // 先看有没有缓存封面：有的话卡片立刻有画面，且**一个解码器都不用占**。
     unawaited(_loadPoster());
+  }
+
+  /// 设置页或长按菜单切换视频兼容模式后立即生效，无需重启 App。
+  void _onCompatModeChanged() {
+    if (!mounted) return;
+    final next = StorageService.getVideoCompatMode();
+    if (next == _compatMode) return;
+    final wasActive =
+        _controller != null || _videoValue != null || _pool.isWaiting(this);
+    _compatMode = next;
+    _userInitiated = false;
+    _autoPlayOnReady = false;
+    _pool.release(this);
+    _disposeController();
+    setState(() {
+      _error = null;
+      _retrying = false;
+      _slow = false;
+      _isLoading = false;
+    });
+    if (wasActive && _compatMode.allowAutoPosterDecode && slotNeedsPoster) {
+      _requestSlot();
+    }
   }
 
   @override
@@ -260,9 +295,14 @@ class _TwitterVideoState extends State<TwitterVideo>
       final ok = await _tryLoadDerivedPoster(EchUrl.rewrite(derived, port));
       if (ok) return;
     }
-    // 3. 兜底路径：申请一个解码器槽位去抓一帧。
+    // 3. 兜底路径：标准模式申请一个解码器槽位去抓一帧；兼容模式（PlatformView /
+    //    保守单路 / 先下后播）不在后台自动占解码器或预下载，改由用户点按播放。
     if (!mounted) return;
-    _requestSlot();
+    if (_compatMode.allowAutoPosterDecode) {
+      _requestSlot();
+    } else {
+      setState(() => _isLoading = false);
+    }
   }
 
   /// 拉取推导出的封面 URL；成功则转成 [PosterService] 的字节缓存并显示。
@@ -348,12 +388,14 @@ class _TwitterVideoState extends State<TwitterVideo>
       _hideTimer?.cancel();
       _isDragging = false;
       _autoRetried = false;
-      // 只有换了视频才丢封面：封面按视频 URL 缓存，代理换端口不影响内容。
+        // 只有换了视频才丢封面：封面按视频 URL 缓存，代理换端口不影响内容。
       if (old.url != widget.url || old.cover != widget.cover) {
         _poster = null;
         unawaited(_loadPoster());
-      } else {
+      } else if (_compatMode.allowAutoPosterDecode) {
         _requestSlot();
+      } else {
+        _isLoading = false;
       }
     }
   }
@@ -410,8 +452,22 @@ class _TwitterVideoState extends State<TwitterVideo>
     });
 
     try {
+      final mode = _compatMode;
       final url = _buildUrl();
-      final controller = VideoPlayerController.networkUrl(url);
+      final viewType = mode.effectiveViewType(isAndroid: Platform.isAndroid);
+      await VideoCompatChannel.apply(mode);
+      if (!mounted || seq != _initSeq) return;
+      if (!mode.isDefault && _lastLoggedCompatMode != mode) {
+        _lastLoggedCompatMode = mode;
+        LogService.recordNote(
+          'video.compat',
+          '启用视频兼容模式: ${mode.summary} '
+          '(viewType=${viewType.name}, decoder=${mode.nativeDecoderMode})',
+        );
+      }
+
+      final controller =
+          VideoPlayerController.networkUrl(url, viewType: viewType);
       _controller = controller;
       await controller.initialize();
 
@@ -445,10 +501,15 @@ class _TwitterVideoState extends State<TwitterVideo>
         setState(() => _showControls = true);
         _scheduleHideControls();
       }
+      // 上报本次 Android Media3 实际选中的视频解码器（去重），方便反馈定位。
+      unawaited(_recordActiveDecoder());
       // 抓一张封面：抓到就交还槽位（见 _capturePoster），所以解码器占用是暂时的。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(_capturePoster());
-      });
+      // PlatformView 无法被 RepaintBoundary 离屏抓帧（必黑），仅 TextureView 模式执行。
+      if (mode.capturePosterFromPlayer) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_capturePoster());
+        });
+      }
     } catch (e, st) {
       if (!mounted || seq != _initSeq) return;
       _slowHintTimer?.cancel();
@@ -496,11 +557,19 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 原始错误里带着 ExoPlayer 的 Format（编码/分辨率/帧率）与
   /// `format_supported`，是区分"解码器不够"和"网络失败"的唯一线索，
   /// 必须原样留下来 —— 否则报告里只剩一句"加载失败"。
+  Future<void> _recordActiveDecoder() async {
+    final summary = await VideoCompatChannel.getLastDecoderSummary();
+    if (summary == null || summary == _lastLoggedDecoderSummary) return;
+    _lastLoggedDecoderSummary = summary;
+    LogService.recordNote('video.decoder', summary);
+  }
+
   void _logFailure(Object e, StackTrace st) {
     LogService.recordError(
       'video.init',
       'url=${widget.url}\n'
       'proxyPort=${widget.proxy.port ?? '-'}\n'
+      'compatMode=${_compatMode.storageKey} (decoder=${_compatMode.nativeDecoderMode})\n'
       '分类: ${VideoFailure.humanize(e)}\n'
       '$e',
       st,
@@ -806,6 +875,7 @@ class _TwitterVideoState extends State<TwitterVideo>
     _nudgeThrottle?.cancel();
     _scrollPosition?.removeListener(_onScroll);
     widget.proxy.portNotifier.removeListener(_onPortChanged);
+    StorageService.changes.removeListener(_onCompatModeChanged);
     _controller?.removeListener(_onVideoUpdate);
     _controller?.dispose();
     // 槽位必须还回去，否则池子会以为它还被占着，后面所有卡片都排不上队。
@@ -834,10 +904,17 @@ class _TwitterVideoState extends State<TwitterVideo>
       return _buildPlayer(value);
     }
 
-    // 还没就绪：有封面就先显示封面（秒出、不占解码器），否则转圈等。
+    // 还没就绪：有封面就先显示封面（秒出、不占解码器），否则看是否在加载中
+    // 或等待用户点按播放（兼容模式下不在后台自动占解码器/预下载）。
     final poster = _poster;
     if (poster != null) {
       return _buildPoster(poster);
+    }
+    if (!_compatMode.allowAutoPosterDecode &&
+        !_isLoading &&
+        _controller == null &&
+        !_pool.isWaiting(this)) {
+      return _buildTapToPlay();
     }
     return _buildLoading();
   }
@@ -914,6 +991,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   }
 
   void _showContextMenu(BuildContext context) {
+    final canFullscreen = _controller != null && _videoValue != null;
     showModalBottomSheet(
       context: context,
       builder: (ctx) => SafeArea(
@@ -925,12 +1003,22 @@ class _TwitterVideoState extends State<TwitterVideo>
               child:
                   Text('视频操作', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
+            if (canFullscreen)
+              ListTile(
+                leading: const Icon(Icons.fullscreen),
+                title: const Text('全屏播放'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _enterFullscreen();
+                },
+              ),
             ListTile(
-              leading: const Icon(Icons.fullscreen),
-              title: const Text('全屏播放'),
+              leading: const Icon(Icons.video_settings),
+              title: const Text('视频播放兼容模式'),
+              subtitle: Text('当前：${_compatMode.summary}'),
               onTap: () {
                 Navigator.pop(ctx);
-                _enterFullscreen();
+                _showCompatModePicker(context);
               },
             ),
             ListTile(
@@ -944,6 +1032,82 @@ class _TwitterVideoState extends State<TwitterVideo>
             const SizedBox(height: 8),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 视频兼容模式选择器：5 种预设里选一个，默认标准模式。
+  ///
+  /// 用 ListTile + 勾选图标而不是 `RadioListTile`：Flutter 3.32 起
+  /// `RadioListTile.groupValue/onChanged` 已废弃（迁到 RadioGroup），而本仓库
+  /// 的 CI 钉在 stable 3.44.3、用户手上还有更旧的通道 —— 用图标既不会撞上那次
+  /// 迁移，也不用为了一个单选列表再引入一层 RadioGroup 包装。
+  void _showCompatModePicker(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final current = StorageService.getVideoCompatMode();
+          void apply(VideoCompatMode next) {
+            StorageService.setVideoCompatMode(next);
+            // 先落盘再推原生：切换要立即生效，但下次启动也必须还是这个模式。
+            unawaited(VideoCompatChannel.apply(next));
+            setSheetState(() {});
+          }
+
+          return SafeArea(
+            child: ConstrainedBox(
+              // 5 个选项 + 说明文字可能高过屏幕（小屏横屏尤其是），超出部分可滚。
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx).size.height * 0.75,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 14, 16, 4),
+                      child: Text(
+                        '视频播放兼容模式',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+                      child: Text(
+                        '默认标准模式（有硬解就用硬解）。仅在出现画面斜切、绿色斜纹时'
+                        '逐级尝试，选中立即生效。',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ),
+                    ...VideoCompatMode.values.map(
+                      (mode) => ListTile(
+                        title: Text(mode.label),
+                        subtitle: Text(
+                          mode.description,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        trailing: Icon(
+                          mode == current
+                              ? Icons.check_circle
+                              : Icons.circle_outlined,
+                          color: mode == current
+                              ? Theme.of(ctx).colorScheme.primary
+                              : null,
+                        ),
+                        onTap: () => apply(mode),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -1084,12 +1248,43 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 封面态：显示已缓存的静帧，点一下才去占解码器播放。
   ///
   /// 必须给**确定高度**（同 loading）：本组件挂在 ListView 的无界高度 item 里。
+  /// 兼容模式下无封面时的点按占位（不在后台自动占解码器或预下载整段视频）。
+  Widget _buildTapToPlay() {
+    final hint = '点按播放（${_compatMode.summary}）';
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: GestureDetector(
+        onTap: () => _retryInit(autoPlay: true),
+        onLongPress: () => _showContextMenu(context),
+        child: Container(
+          width: widget.width,
+          height: widget.height,
+          color: Colors.black,
+          alignment: Alignment.center,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.play_circle_outline,
+                  size: 44, color: Colors.white70),
+              const SizedBox(height: 8),
+              Text(
+                hint,
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPoster(Uint8List poster) {
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: GestureDetector(
         // 点封面 = 我要看这个视频：加载 + 自动播放。
         onTap: () => _retryInit(autoPlay: true),
+        onLongPress: () => _showContextMenu(context),
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -1151,20 +1346,42 @@ class _TwitterVideoState extends State<TwitterVideo>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (retryable) ...[
-                  ElevatedButton.icon(
-                    // 重试 = 用户就是要看这个视频：抢到槽位后直接播。
-                    onPressed: () => _retryInit(autoPlay: true),
-                    icon: const Icon(Icons.refresh, size: 16),
-                    label: const Text('重试'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      minimumSize: const Size(0, 32),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    if (retryable)
+                      ElevatedButton.icon(
+                        // 重试 = 用户就是要看这个视频：抢到槽位后直接播。
+                        onPressed: () => _retryInit(autoPlay: true),
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('重试'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          minimumSize: const Size(0, 32),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
+                    OutlinedButton.icon(
+                      onPressed: () => _showCompatModePicker(context),
+                      icon: const Icon(Icons.video_settings,
+                          size: 15, color: Colors.white70),
+                      label: Text(
+                        '兼容模式：${_compatMode.summary}',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.white38),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
+                  ],
+                ),
+                const SizedBox(height: 8),
                 // SelectableText：长按可选中复制（0.5.2 就是这个行为），
                 // 反馈时比截图有用。
                 SelectableText(

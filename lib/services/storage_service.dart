@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+import '../video/video_compat_mode.dart';
 
 class StorageService {
   static const _kFavMap = 'fav-map';
@@ -11,6 +12,7 @@ class StorageService {
   static const _kCustomTags = 'user_custom_tags';
   static const _kSearchHistory = 'search-history';
   static const _kDecodeBudget = 'decode-budget';
+  static const _kVideoCompatMode = 'video-compat-mode';
   static const _kGayMode = 'gay-mode';
   static const _kGayTags = 'gay-tags';
   /// **跨端契约**：Gay 模式默认词表。与图站 `gallery/static/home.js` 的
@@ -211,6 +213,18 @@ class StorageService {
   }
 
   static void setDecodeBudget(int value) => _write(_kDecodeBudget, '$value');
+
+  // --- video-compat-mode（视频播放兼容模式）---
+  //
+  // 存的是 [VideoCompatMode.storageKey]（`standard` / `smart_software` / …），
+  // 解析统一走 [videoCompatModeFromStorage]：它同时兼容 v0.7.x 遗留的旧键
+  // （`software_decode` / `single_decoder` / `software_platform_view` / `local_file`），
+  // 未知值安全回退标准模式 —— 旧版本写下的值不会让新版本崩在选择器上。
+  static VideoCompatMode getVideoCompatMode() =>
+      videoCompatModeFromStorage(_read(_kVideoCompatMode));
+
+  static void setVideoCompatMode(VideoCompatMode mode) =>
+      _write(_kVideoCompatMode, mode.storageKey);
 
   // --- search-history ---
   static List<String> getSearchHistory() {

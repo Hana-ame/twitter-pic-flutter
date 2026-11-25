@@ -16,6 +16,7 @@ import '../services/storage_service.dart';
 import '../services/video_downloader.dart';
 import '../utils/doh_resolver.dart';
 import '../utils/ech_url.dart';
+import '../video/video_compat_mode.dart';
 import '../widgets/progressive_image.dart';
 import '../widgets/report_help.dart';
 
@@ -45,6 +46,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final bool _ownsApi;
   bool _restarting = false;
   bool _gayMode = false;
+  VideoCompatMode _videoCompat = VideoCompatMode.standard;
   /// 上一次 didChangeDependencies 看到的 ModalRoute，用于判断路由是否换了。
   ModalRoute<dynamic>? _lastRoute;
 
@@ -54,12 +56,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _api = widget.api ?? TwitterApi();
     _ownsApi = widget.api == null;
     _gayMode = StorageService.isGayMode();
-    StorageService.changes.addListener(_syncGayMode);
+    _videoCompat = StorageService.getVideoCompatMode();
+    StorageService.changes.addListener(_syncStorage);
   }
 
   @override
   void dispose() {
-    StorageService.changes.removeListener(_syncGayMode);
+    StorageService.changes.removeListener(_syncStorage);
     if (_ownsApi) _api.dispose();
     super.dispose();
   }
@@ -88,13 +91,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _lastRoute = route;
     // 在下一帧同步，而不是立刻：本页被 push 回来时路由的动画还没结束，
     // 立刻读存储虽然也对，但会在同一帧内连续 setState 两次，白白多一次重建。
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncGayMode());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncStorage());
   }
 
-  void _syncGayMode() {
+  void _syncStorage() {
     if (!mounted) return;
-    final actual = StorageService.isGayMode();
-    if (actual != _gayMode) setState(() => _gayMode = actual);
+    final actualGay = StorageService.isGayMode();
+    final actualCompat = StorageService.getVideoCompatMode();
+    if (actualGay != _gayMode || actualCompat != _videoCompat) {
+      setState(() {
+        _gayMode = actualGay;
+        _videoCompat = actualCompat;
+      });
+    }
   }
 
   // ─── 网络诊断 ─────────────────────────────────────────────────────────────
@@ -318,6 +327,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ? '经 ECH 代理 127.0.0.1:${TwitterApi.proxyPort}'
         : '等待代理就绪(未注册端口)';
     buf.writeln('API endpoint: $kApiBase ($via)');
+    buf.writeln('视频兼容模式: ${_videoCompat.summary}');
+    final lastDecoder = await VideoCompatChannel.getLastDecoderSummary();
+    if (lastDecoder != null) {
+      buf.writeln('最近视频解码器: $lastDecoder');
+    }
     buf.writeln('');
     for (final d in _diag) {
       buf.writeln('【${d.label}】 ${d.running ? 'RUNNING' : (d.ok ? 'PASS' : 'FAIL')}');
@@ -358,8 +372,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await ProgressiveDiskCache.clearAll();
     await VideoDownloader.cleanExpiredTempFiles(maxAge: Duration.zero);
     if (mounted) {
+      // clearAll 把兼容模式也复位成标准了：本地 state 与原生解码模式都要跟上，
+      // 否则清完数据这一页还显示着旧模式、原生侧也还停在旧的解码策略上。
+      final compatAfterClear = StorageService.getVideoCompatMode();
+      unawaited(VideoCompatChannel.apply(compatAfterClear));
       setState(() {
         _gayMode = StorageService.isGayMode();
+        _videoCompat = compatAfterClear;
       });
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('数据已清除')));
     }
@@ -458,6 +477,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 StorageService.setGayMode(val);
               });
             },
+          ),
+          const Divider(),
+
+          // ─── 视频播放兼容模式（默认标准，出问题时逐级尝试）──────────────────
+          _SectionTitle(
+            title: '视频播放兼容（默认标准模式）',
+            icon: Icons.video_settings,
+            color: Colors.indigo,
+          ),
+          const ListTile(
+            leading: Icon(Icons.info_outline, color: Colors.indigo),
+            title: Text('画面斜切 / 绿色斜纹时改这里'),
+            subtitle: Text(
+              '部分机型（多为联发科）播放宽高不能被 16 整除的竖屏视频会花屏——'
+              '硬件解码器输出的行跨度与 Flutter 纹理采样对不上。从上往下逐级试，'
+              '选到第一个画面正常的即可；越靠上的模式越省电。',
+            ),
+          ),
+          // 5 个选项直接铺开而不是藏进下拉框：出问题的用户正处在「要把所有选项
+          // 试一遍」的状态，多一次点击只会让人以为没得选。
+          ...VideoCompatMode.values.map(
+            (mode) => ListTile(
+              leading: Icon(
+                mode == _videoCompat
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                color: mode == _videoCompat ? Colors.indigo : Colors.grey,
+              ),
+              title: Text(mode.label),
+              subtitle: Text(mode.description),
+              selected: mode == _videoCompat,
+              onTap: () => _updateVideoCompat(mode),
+            ),
           ),
           ListTile(
             leading: const Icon(Icons.restart_alt, color: Colors.blue),
@@ -576,6 +628,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// 复制反馈包：先补一次 Go 日志（最后两秒的行可能还没进磁盘），再组装。
   Future<void> _copyLogDump() async {
     await LogService.pollGoLogs(widget.proxy.getLogs());
+    final lastDecoder = await VideoCompatChannel.getLastDecoderSummary();
     if (!mounted) return;
     await copyLogDump(context, extra: {
       '代理': widget.proxy.isRunning ? '运行中' : '已停止',
@@ -584,11 +637,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'API endpoint': TwitterApi.proxyPort != null
           ? '$kApiBase → 127.0.0.1:${TwitterApi.proxyPort} (ECH)'
           : '$kApiBase (等待代理就绪)',
+      '视频兼容模式': '${_videoCompat.summary} (decoder=${_videoCompat.nativeDecoderMode})',
+      if (lastDecoder != null) '最近视频解码器': lastDecoder,
     });
   }
 
   /// 异常结束记录（最多 10 条）。判定依据见 LogService.takeUncleanExit——
   /// 强杀与系统回收也会落到这里，所以文案只说「没有正常结束」。
+  void _updateVideoCompat(VideoCompatMode next) {
+    setState(() => _videoCompat = next);
+    StorageService.setVideoCompatMode(next);
+    unawaited(VideoCompatChannel.apply(next));
+  }
+
   void _showIncidents() {
     final items = LogService.incidents;
     showDialog(

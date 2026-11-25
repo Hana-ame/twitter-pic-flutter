@@ -20,6 +20,7 @@ import '../services/log_service.dart';
 import '../services/storage_service.dart';
 import '../utils/decode_budget.dart';
 import 'decoder_policy.dart';
+import 'video_compat_mode.dart';
 
 /// 池子眼里的"一张卡片"。实现在 [TwitterVideo] 的 State 上。
 abstract class DecoderSlotUser {
@@ -51,14 +52,19 @@ typedef PoolNoteSink = void Function(String source, String message);
 /// 学到的并发上限存档点：默认 StorageService；测试塞收集器。
 typedef BudgetSaver = void Function(int value);
 
+/// 并发上限外部覆盖点（如保守单路兼容模式锁定为 1）。返回 null 表示走自适应策略。
+typedef MaxConcurrentOverride = int? Function();
+
 class VideoDecoderPool {
   VideoDecoderPool({
     DecoderPolicy? policy,
     PoolNoteSink? note,
     BudgetSaver? saveBudget,
+    MaxConcurrentOverride? maxOverride,
   })  : policy = policy ?? DecoderPolicy(),
         _note = note ?? LogService.recordNote,
-        _saveBudget = saveBudget ?? StorageService.setDecodeBudget;
+        _saveBudget = saveBudget ?? StorageService.setDecodeBudget,
+        _maxOverride = maxOverride;
 
   /// 全局实例（懒建）：起点取上次会话学到的并发上限。
   /// 不做成 static final 是为了不让库加载就去读 path_provider。
@@ -75,12 +81,17 @@ class VideoDecoderPool {
           successStreakToRaise: DecoderPolicy.kSuccessStreakToRaise,
         ),
       ),
+      // 「优先软解」类模式并发上限锁 1：软解用 CPU，多路同解会互相拖垮，
+      // 而且在缺陷机型上多开只会多几块斜纹。null 表示沿用自适应 DecoderPolicy。
+      maxOverride: () =>
+          StorageService.getVideoCompatMode().maxConcurrentOverride,
     );
   }
 
   final DecoderPolicy policy;
   final PoolNoteSink _note;
   final BudgetSaver _saveBudget;
+  final MaxConcurrentOverride? _maxOverride;
 
   /// 已占槽的（含正在 initialize 的 —— 解码器是在 prepare 阶段就申请的，
   /// in-flight 必须算进来，否则并发失控）。
@@ -98,7 +109,11 @@ class VideoDecoderPool {
   /// 没有画面 —— 那比不设池子还差（必须存在的兜底，见 twitter_video.dart）。
   bool captureUnavailable = false;
 
-  int get max => policy.maxConcurrent;
+  int get max {
+    final override = _maxOverride?.call();
+    if (override != null && override >= 1) return override;
+    return policy.maxConcurrent;
+  }
   int get liveCount => _live.length;
   int get waitingCount => _waiting.length;
 
@@ -177,7 +192,8 @@ class VideoDecoderPool {
       while (_waiting.isNotEmpty) {
         final waiter = _pickWaiter();
         if (waiter == null) return;
-        if (captureUnavailable || _live.length < max) {
+        final hasHardCap = _maxOverride?.call() != null;
+        if ((!hasHardCap && captureUnavailable) || _live.length < max) {
           _grant(waiter);
           continue;
         }

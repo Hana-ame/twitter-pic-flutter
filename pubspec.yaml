@@ -61,16 +61,19 @@ dev_dependencies:
 # 解不了的规格（format_supported=NO_EXCEEDS_CAPABILITIES）或硬解实例被占满时，直接
 # 失败，**不会**退到软解（c2.android.*）。上游没有暴露任何开关，所以只能 fork。
 #
-# fork 内容：Hana-ame/video_player_android，基于上游 2.12.2，唯一改动是在
-# TextureVideoPlayer / PlatformViewVideoPlayer 里
-# `new DefaultRenderersFactory(context).setEnableDecoderFallback(true)`。
-# 行为：仍然优先硬解，只有硬解初始化失败/能力不足时才自动用软解。
+# fork 内容：Hana-ame/video_player_android，基于上游 2.12.2：
+#   1. TextureVideoPlayer / PlatformViewVideoPlayer 统一经 CompatRenderersFactory
+#      构建 DefaultRenderersFactory，默认开启 setEnableDecoderFallback(true)；
+#   2. 新增 MethodChannel `plugins.flutter.dev/video_player_android/decoder_mode`
+#      支持运行时切换 `auto` / `smart`（非 16 对齐分辨率优先软解、标准分辨率保持硬解）/
+#      `prefer_software`（软解排前、保留硬解回退）/ `hardware_only`，
+#      并通过 AnalyticsListener.onVideoDecoderInitialized 上报实际解码器名称。
 # 升级 video_player 时需同步 rebase 这个 fork（见 doc/troubleshooting.md 案例 14）。
 dependency_overrides:
   video_player_android:
     git:
       url: https://github.com/Hana-ame/video_player_android.git
-      ref: 2.12.2-fallback.1
+      ref: 2.12.2-fallback.2
 
 flutter_launcher_icons:
   android: true
