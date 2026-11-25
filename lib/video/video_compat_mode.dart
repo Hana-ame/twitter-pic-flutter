@@ -128,6 +128,32 @@ extension VideoCompatModeProps on VideoCompatMode {
   /// 是否为默认（标准）模式。非默认模式首次启用时记一条日志，方便对反馈包。
   bool get isDefault => this == VideoCompatMode.standard;
 
+  /// 菜单右侧的角标。**按实测效果排序，不是按枚举顺序**：
+  ///
+  /// 用户实测反馈「软解卡，而且有些视频放不出」，所以软解类模式一律标成
+  /// 会掉帧的实验档，把真正零代价的那个（原生视图）顶到「推荐」。
+  /// 绿纹/斜切的成因是 Impeller 的 `ImageReaderSurfaceProducer` 按紧排
+  /// 假设采样，而硬解输出的 rowStride 按 16 对齐（非 16 倍数分辨率必中招）；
+  /// 原生 SurfaceView 上屏时这段纹理路径完全不参与，**硬解照旧**，所以是
+  /// 唯一既修画面又不加 CPU 的方案。
+  String? get badge {
+    switch (this) {
+      case VideoCompatMode.standard:
+        return null;
+      case VideoCompatMode.platformView:
+        return '推荐';
+      case VideoCompatMode.smartSoftware:
+      case VideoCompatMode.preferSoftware:
+      case VideoCompatMode.platformViewSoftware:
+        return '软解·可能掉帧';
+    }
+  }
+
+  /// 是否把软解排到了硬解前面。软解吃 CPU，实测在低端机上会明显掉帧，
+  /// 所以只在画面确实坏了、且原生视图也救不回来时才建议开。
+  bool get cpuHeavy =>
+      nativeDecoderMode == 'smart' || nativeDecoderMode == 'prefer_software';
+
   /// 给用户看的适用场景与取舍说明。
   ///
   /// 措辞有意强调「硬解仍然在列表里」：这几个模式做的都是**重排优先级**

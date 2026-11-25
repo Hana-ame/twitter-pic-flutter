@@ -83,7 +83,10 @@
 - **代理前置要求**：本机代理必须透传 `Range` 并返回 `206 Partial Content`，且强制 `Accept-Encoding: identity`（防止 Go transport 自动 gzip 删除 `Content-Length`）。
 - **依赖与软硬解回退（`pubspec.yaml`）**：
   - `video_player: ">=2.12.0 <2.15.0"`（上界不可随意放宽，需与 Android fork 的平台接口 `^6.9.0` 配套）。
-  - `dependency_overrides` 将 `video_player_android` 钉在 `Hana-ame/video_player_android`（`ref: 2.12.2-fallback.2`），通过 `CompatRenderersFactory` 支持 `auto` / `smart`（非 16 对齐分辨率优先软解、标准分辨率保持硬解）/ `prefer_software`（软解排前、保留硬解回退）/ `hardware_only`，并通过 `AnalyticsListener.onVideoDecoderInitialized` + `DecoderTelemetry` 在不改 Pigeon 协议的前提下上报实际选中的解码器名。
+  - `dependency_overrides` 将 `video_player_android` 钉在 `Hana-ame/video_player_android`（`ref: 2.12.2-fallback.3`），通过 `CompatRenderersFactory` 支持 `auto` / `smart`（非 16 对齐分辨率优先软解、标准分辨率保持硬解）/ `prefer_software`（软解排前、保留硬解回退）/ `hardware_only`，并通过 `AnalyticsListener.onVideoDecoderInitialized` + `DecoderTelemetry` 在不改 Pigeon 协议的前提下上报实际选中的解码器名。
+  - **错误上报契约（`PlaybackErrorReport.java` ↔ `lib/utils/video_failure.dart`）**：fork 把 `PlaybackException` 压成一行
+    `Video player had error <原始 toString> [code=2004 name=ERROR_CODE_IO_BAD_HTTP_STATUS http=403 httpMessage="Forbidden" uri=... decoder=... decoderMode=... cause=...]`。
+    前缀 `Video player had error ` 与原文 `toString` **必须保留**（Dart 侧旧判据靠 `Source error` / `format_supported=` 关键词）；新增字段只能以 `key=value` 追加在方括号内，且 `http=` 只放三位状态码。Dart 侧用 `RegExp(r'\bhttp=(\d{3})\b')` / `r'\bcode=(-?\d+)\b'` 取值，取不到就退回旧判据 —— **不存在版本判断，也不许猜**。
 - **解码策略与并发池（`lib/video/decoder_policy.dart` / `lib/video/video_decoder_pool.dart`）**：
   - 开启软解回退后，能上抛到 Dart 层的 MediaCodec 错误意味着软硬解双双失败，由 `DecoderPolicy.classify` 判 `failFast`（不降档、不自动重排）；仅网络/代理类抖动走一次性自动重试。
   - 并发上限按最坏全软解负载约束在 `1~3`（连击 4 次成功上调并存档至 `StorageService`）。
@@ -92,11 +95,12 @@
   - 为解决部分 Android 机型（见 `flutter/flutter#174026`、`#185674`）在 Media3 下播放非 16 对齐分辨率视频时，由硬件解码器输出 stride 与 Impeller `ImageReaderSurfaceProducer` 纹理采样不匹配导致的**画面斜切、绿色斜纹**，在设置页与视频长按/错误菜单中提供 **5 种预设模式（1 个标准 + 4 个兼容）**，全部保持流式起播：
     1. `standard`（**默认**，「标准模式（auto）」）：`textureView` + 原生 `auto` —— 全程有硬解就用硬解，硬解失败才回退软解。**完全不动解码器顺序**，正常机型行为与改动前一致。
     2. `smartSoftware`（「兼容 1：智能软解（smart）」）：`textureView` + 原生 `smart` —— 仅当宽或高不能被 16 整除时把软解排到硬解前面；标准分辨率（720p/1080p）仍走硬解。
-    3. `platformView`（「兼容 2：原生视图（PlatformView + auto）」）：Android 切 `VideoViewType.platformView`（原生 `SurfaceView`）绕过 Impeller 纹理路径；解码仍是 `auto`（有硬解就用硬解），不影响正常机型。跳过对 PlatformView 无效的离屏抓帧。
+    3. `platformView`（「兼容 2：原生视图（PlatformView + auto）」，**设置页标「推荐」**）：Android 切 `VideoViewType.platformView`（原生 `SurfaceView`，`exoPlayer.setVideoSurfaceView`）绕过 Impeller 纹理路径；解码仍是 `auto`（有硬解就用硬解），不影响正常机型。跳过对 PlatformView 无效的离屏抓帧。**这是唯一既修画面又不加 CPU 的方案** —— 实测软解会明显掉帧，所以问题机优先引导到这里。
     4. `preferSoftware`（「兼容 3：优先软解（prefer_software）」）：`textureView` + 原生 `prefer_software`，并发上限锁 `1`。
     5. `platformViewSoftware`（「兼容 4：原生视图 + 优先软解（prefer_software）」）：`platformView` + `prefer_software`，并锁并发 `1`。
   - **铁律：兼容模式只「重排优先级」，绝不「删掉硬解」。** 原生 `CompatRenderersFactory.preferSoftwareOrder()` 从 `MediaCodecSelector.DEFAULT` 取**全量**解码器，仅把 `MediaCodecInfo.softwareOnly` 的分到前段、硬解分到后段再拼回；软解列表为空时原样返回。因此 3/4 模式下软解解不了的格式仍会自动回退硬解 —— 不存在「开了兼容反而更解不了」。改这块时必须守住：**不许使用 `MediaCodecSelector.PREFER_SOFTWARE`**（那个会用 `softwareOnly=true` 单独查询，软解缺失时返回空列表，等于硬删硬解）。
   - 持久化键 `video-compat-mode` 存 `storageKey`（`standard` / `smart_software` / …），解析统一走 `videoCompatModeFromStorage`：兼容 v0.7.x 旧键（`software_decode` / `single_decoder` / `software_platform_view` / `local_file`），未知值安全回退 `standard`。
+  - **软解档位的定位（实测校准）**：`smart` / `prefer_software` 三种模式把软解排到硬解前面，用户实测「软解卡」且部分视频完全解不出，因此 `VideoCompatModeProps.badge` 把它们标成「软解·可能掉帧」，只有 `platformView` 标「推荐」。`cpuHeavy` 为真时，错误卡片会额外提醒「HTTP 类失败与解码方式无关，别为此留在软解档」。
   - 单路硬上限由 `VideoDecoderPool(maxOverride: …)` 提供：一旦存在显式覆盖，`captureUnavailable` 的解锁逻辑**不得**突破它（软解用 CPU，多路同解会互相拖垮）。
   - **跨平台注意**：Windows 端（`video_player_win`）通过 `effectiveViewType(isAndroid: Platform.isAndroid)` 始终回退为 `VideoViewType.textureView`；Android 端通过 `VideoCompatChannel.getLastDecoderSummary()` 把实际选中的解码器名写进日志与反馈包。
 - **渲染红线**：

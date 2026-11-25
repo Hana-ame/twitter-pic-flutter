@@ -570,6 +570,10 @@ class _TwitterVideoState extends State<TwitterVideo>
       'url=${widget.url}\n'
       'proxyPort=${widget.proxy.port ?? '-'}\n'
       'compatMode=${_compatMode.storageKey} (decoder=${_compatMode.nativeDecoderMode})\n'
+      // 这两行是给人眼扫的：fork 已经把状态码塞进错误原文，但原文很长，
+      // 反馈包里先看这两行最快能分清 403 / 404 / 超时。
+      'httpStatus=${VideoFailure.httpStatusOf(e) ?? '-'}\n'
+      'media3ErrorCode=${VideoFailure.errorCodeOf(e) ?? '-'}\n'
       '分类: ${VideoFailure.humanize(e)}\n'
       '$e',
       st,
@@ -1383,6 +1387,19 @@ class _TwitterVideoState extends State<TwitterVideo>
                   ],
                 ),
                 const SizedBox(height: 8),
+                // HTTP 类失败（403/404/超时）**与解码方式无关**：用户在软解模式上
+                // 看到"放不出"，最容易得出"软解更差但硬解也一样"的错觉，然后为了
+                // 这个问题长期留在软解档 —— 实测软解会明显掉帧。所以这里点明一句。
+                if (VideoFailure.httpStatusOf(message) != null &&
+                    _compatMode.cpuHeavy) ...[
+                  const Text(
+                    '这是网络/上游的失败，与解码方式无关；'
+                    '当前是软解档位，会明显掉帧，建议切回标准模式。',
+                    style: TextStyle(color: Colors.orangeAccent, fontSize: 10),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 6),
+                ],
                 // SelectableText：长按可选中复制（0.5.2 就是这个行为），
                 // 反馈时比截图有用。
                 SelectableText(

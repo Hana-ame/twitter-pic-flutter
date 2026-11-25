@@ -507,7 +507,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : Icons.radio_button_unchecked,
                 color: mode == _videoCompat ? Colors.indigo : Colors.grey,
               ),
-              title: Text(mode.label),
+              title: Row(
+                children: [
+                  Flexible(child: Text(mode.label)),
+                  // 角标按实测效果排（推荐 = 零代价修画面），见 badge 的注释。
+                  if (mode.badge != null) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: mode == VideoCompatMode.platformView
+                            ? Colors.indigo.withValues(alpha: 0.15)
+                            : Colors.orange.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        mode.badge!,
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: mode == VideoCompatMode.platformView
+                              ? Colors.indigo
+                              : Colors.orange[800],
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
               subtitle: Text(mode.description),
               selected: mode == _videoCompat,
               onTap: () => _updateVideoCompat(mode),

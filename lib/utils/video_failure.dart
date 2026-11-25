@@ -20,6 +20,79 @@ class VideoFailure {
   /// 代理未就绪。用它而**不是**字符串匹配：文案会改，类型不会。
   static bool isProxyNotReady(Object e) => e is VideoProxyNotReady;
 
+  // ─── HTTP 状态码 ──────────────────────────────────────────────────────────
+  //
+  // fork `video_player_android` 2.12.2-fallback.3 起，ExoPlayer 的报错里带上了
+  // 结构化字段（见该仓库 `PlaybackErrorReport.java`）：
+  //
+  //   PlatformException(VideoError, Video player had error v.j: Source error
+  //     [code=2004 name=ERROR_CODE_IO_BAD_HTTP_STATUS http=403
+  //      httpMessage="Forbidden" uri=http://127.0.0.1:8123/media/xxx.mp4
+  //      decoder=c2.android.avc.decoder decoderMode=auto
+  //      cause=InvalidResponseCodeException: Invalid response code: 403],
+  //     null, null)
+  //
+  // 在此之前 `error.toString()` 只有 `类名: Source error`，`errorCode` 与 HTTP
+  // 状态码**全被丢掉** —— 403、404、超时、连接重置在 App 里长得一模一样，只能
+  // 统一提示「取不到视频数据」：用户不知道能不能重试，我们也定位不到。
+  //
+  // 这两条正则只认自己发出的字段名（`code=` / `http=`），旧版本插件发来的消息
+  // 里没有它们，自然退化成 null —— 向后兼容，不需要版本判断。
+
+  static final RegExp _kHttpStatus = RegExp(r'\bhttp=(\d{3})\b');
+  static final RegExp _kMedia3ErrorCode = RegExp(r'\bcode=(-?\d+)\b');
+
+  /// 上游回的 HTTP 状态码。连接层失败（超时/重置）与解码失败时为 null。
+  static int? httpStatusOf(Object e) {
+    final m = _kHttpStatus.firstMatch('$e');
+    if (m == null) return null;
+    return int.tryParse(m.group(1)!);
+  }
+
+  /// Media3 `PlaybackException.errorCode`（`2000` 起是 IO 类，`5xxx` 是解码类）。
+  /// 只在需要看细分原因时用；用户能懂的判据是 [httpStatusOf]。
+  static int? errorCodeOf(Object e) {
+    final m = _kMedia3ErrorCode.firstMatch('$e');
+    if (m == null) return null;
+    return int.tryParse(m.group(1)!);
+  }
+
+  /// 4xx：请求本身被上游拒绝。**同一个 URL 重试必然得到同一个状态码**，
+  /// 所以既不该自动重试，也不该在文案里引导用户点重试。
+  static bool isClientHttpError(Object e) {
+    final s = httpStatusOf(e);
+    return s != null && s >= 400 && s <= 499;
+  }
+
+  /// 401/403：上游拒绝。多为媒体链接已过期/需要重新签发，或代理转发时的
+  /// 来源信息（Referer/UA）被 CDN 拒识。
+  static bool isHttpForbidden(Object e) {
+    final s = httpStatusOf(e);
+    return s == 401 || s == 403;
+  }
+
+  /// 404/410：媒体已被删除或链接失效。**永久失败**。
+  static bool isHttpMissing(Object e) {
+    final s = httpStatusOf(e);
+    return s == 404 || s == 410;
+  }
+
+  /// 5xx：上游自己出错，一般是临时的，值得重试一次。
+  static bool isHttpServerError(Object e) {
+    final s = httpStatusOf(e);
+    return s != null && s >= 500 && s <= 599;
+  }
+
+  /// 连接超时（根本没拿到状态码）。
+  static bool isTimeout(Object e) {
+    // PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+    if (errorCodeOf(e) == 2001) return true;
+    final s = '$e';
+    return s.contains('timeout') ||
+        s.contains('Timeout') ||
+        s.contains('timed out');
+  }
+
   /// 解码器**争用**类失败：格式本身是支持的，只是拿不到空闲的硬解实例。
   /// **可重试** —— 先释放其它播放器再试，有机会成功。
   ///
@@ -83,8 +156,11 @@ class VideoFailure {
 
   /// 取数据失败（代理/链路），不是解码器问题。
   static bool isNetworkError(Object e) {
+    // 4xx 是终局，不归"链路抖动"：说成抖动会诱导用户反复点一个必然失败的重试。
+    if (isClientHttpError(e)) return false;
     final s = '$e';
     return s.contains('Source error') ||
+        s.contains('ERROR_CODE_IO_') ||
         s.contains('HttpDataSource') ||
         s.contains('Unable to connect') ||
         s.contains('Failed to connect') ||
@@ -94,9 +170,11 @@ class VideoFailure {
 
   /// 一句能行动的话。技术细节留给「详情」按钮与日志。
   ///
-  /// 判定顺序有讲究：**先判代理、再判永久失败、再判解码器**。
+  /// 判定顺序有讲究：**先判代理、再判永久失败、再判解码器、再判 HTTP 状态码**。
   /// 解码器那条会引导用户点重试（重试会先腾解码器），而代理没起来时点多少次
   /// 都是白点、解码器解不了这个规格时点多少次也一模一样，都得先说清楚。
+  /// HTTP 状态码必须排在 [isNetworkError] **之前**：403/404 的报错原文里也带
+  /// `Source error`，放到后面会被"取不到视频数据"吞掉，把终局失败说成链路抖动。
   /// （[isCodecError] 已排除永久失败那类，所以后两条互斥；这里再显式排一次
   /// 是为了让"先排除不可重试"的意图读得出来。）
   static String humanize(Object e) {
@@ -114,6 +192,29 @@ class VideoFailure {
       return '解码器不够用：本机同时能解码的视频数有限（或该视频编码不被支持）。\n'
           '（已开启软解回退仍报此错 = 软硬解都不行；点重试只是重烧一遍下载。）';
     }
+
+    // ─── HTTP 状态码：到这一步才知道到底是"被拒""没了"还是"墙抖" ───────────
+    final status = httpStatusOf(e);
+    if (status != null) {
+      if (isHttpForbidden(e)) {
+        return '上游拒绝了这次请求（HTTP $status）。常见原因是媒体链接已过期，'
+            '或代理转发时被 CDN 拒识。\n'
+            '点重试；仍不行请到设置页反馈，把下方详情里的 `uri` 与 `http=$status` 一起带上。';
+      }
+      if (isHttpMissing(e)) {
+        return '这个视频已被删除或链接失效（HTTP $status）。重试不会成功。';
+      }
+      if (isHttpServerError(e)) {
+        return '上游服务器出错（HTTP $status），一般是临时的。点重试。';
+      }
+      if (isClientHttpError(e)) {
+        return '上游拒绝了这次请求（HTTP $status）。重试同一个链接不会成功。';
+      }
+    }
+    if (isTimeout(e)) {
+      return '连接超时（没拿到任何响应，多为墙内链路抖动）。点重试。';
+    }
+
     if (isNetworkError(e)) {
       return '取不到视频数据（代理或链路问题）。点重试，仍失败请到设置页反馈。';
     }
