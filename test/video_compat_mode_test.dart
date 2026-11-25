@@ -20,11 +20,12 @@ class _FakePathProvider extends PathProviderPlatform {
   Future<String?> getApplicationSupportPath() async => dir;
 }
 
+/// 池子的最小假用户：永远"缺封面、在视口内、没在播"。
+///
+/// 这里刻意不暴露 `visible` / `playing` 之类的可调参数 —— 本文件只验证并发上限，
+/// 从不需要把它们设成别的值；留着可选参数就是 `unused_element_parameter`，而它
+/// 是 **warning 级**（`flutter analyze --no-fatal-infos` 不豁免 warning）。
 class _FakeSlotUser implements DecoderSlotUser {
-  _FakeSlotUser({this.visible = true, this.playing = false});
-
-  bool visible;
-  bool playing;
   int grantedCount = 0;
   int revokedCount = 0;
 
@@ -33,9 +34,9 @@ class _FakeSlotUser implements DecoderSlotUser {
   @override
   bool get slotNeedsPoster => true;
   @override
-  bool get slotVisibleNow => visible;
+  bool get slotVisibleNow => true;
   @override
-  bool get slotIsPlaying => playing;
+  bool get slotIsPlaying => false;
   @override
   bool get slotHasPoster => false;
   @override
@@ -192,6 +193,8 @@ void main() {
       pool.noteCaptureUnavailable();
       expect(pool.liveCount, 1, reason: '存在显式单路硬上限时不受抓帧不可用解锁影响');
       expect(b.grantedCount, 0);
+      // 排队者不该被"撤销"：它从来没拿到过槽位，撤销回调只该发给真正持槽的人。
+      expect(b.revokedCount, 0);
     });
   });
 }
