@@ -9,12 +9,18 @@
 //
 // 配合 `Hana-ame/video_player_android` fork（2.12.2-fallback.2+）新增的
 // `CompatRenderersFactory`、`DecoderTelemetry` 与 `decoder_mode` MethodChannel，
-// 提供「默认 + 4 种正交兼容模式」（全部保持流式起播，不强制等整段下完）：
-//   0. standard             — 标准模式（默认）：TextureView + 硬解优先/软解回退（auto）
-//   1. smartSoftware        — 兼容 1：智能软解（推荐）：TextureView + 非 16 对齐自动优先软解（smart）
-//   2. platformView         — 兼容 2：原生视图（硬解）：Android SurfaceView + 硬解优先（auto）
-//   3. preferSoftware         — 兼容 3：优先软解：TextureView + 全部视频优先软解（software_only）+ 单路
-//   4. platformViewSoftware — 兼容 4：终极兜底：Android SurfaceView + 优先软解（software_only）+ 单路
+// 提供 1 个标准 + 4 个兼容模式（全部保持流式起播，不强制等整段下完）：
+//   0. standard             — 标准模式（auto）：textureView + 全程有硬解就用硬解（失败才回退软解）
+//   1. smartSoftware        — 兼容 1：智能软解（smart）：仅宽高非 16 倍数时把软解排前，标准分辨率仍硬解
+//   2. platformView         — 兼容 2：原生视图（PlatformView + auto）：原生 SurfaceView 上屏，解码仍硬解优先
+//   3. preferSoftware       — 兼容 3：优先软解（prefer_software）：textureView + 软解排前，硬解保留可回退
+//   4. platformViewSoftware — 兼容 4：原生视图 + 优先软解（prefer_software）：两者叠加
+//
+// **核心语义：4 个兼容模式做的都是「重排优先级」，不是「删掉硬解」。**
+// 原生侧 `preferSoftwareOrder()` 从 `MediaCodecSelector.DEFAULT` 取**全部**解码器，
+// 只把 softwareOnly 的分到前段、硬解的分到后段再拼回去；软解列表为空时原样返回。
+// 所以任何模式下软解解不了的格式都仍会回退硬解，不存在"开了兼容反而更解不了"。
+// 标准模式与兼容 2 的 `auto` 更是完全不动解码器顺序 —— 正常机型行为与改动前一致。
 
 import 'dart:io';
 
@@ -24,23 +30,26 @@ import 'package:video_player/video_player.dart';
 import '../services/log_service.dart';
 
 enum VideoCompatMode {
-  /// 标准模式（默认）：TextureView + 硬解优先（失败回退软解）+ 并发池 1~3。
+  /// 标准模式（auto）：TextureView + 全程有硬解就用硬解（硬解失败才回退软解）。
+  /// 完全不动解码器顺序，并发沿用自适应 DecoderPolicy（1~3）。
   standard,
 
-  /// 兼容 1（智能软解 · 推荐）：TextureView + 仅对宽或高不能被 16 整除的视频
-  /// 优先使用软件解码（仍保留硬解回退），标准 720p/1080p 仍保持硬解省电。
+  /// 兼容 1（智能软解 · smart）：TextureView + 仅对宽或高不能被 16 整除的视频
+  /// 把软解排到硬解前面（重排），标准 720p/1080p 仍走硬解。硬解保留可回退。
   smartSoftware,
 
-  /// 兼容 2（原生视图 · 硬解）：Android 切 PlatformView（原生 SurfaceView）绕过
-  /// Flutter Impeller ImageReaderSurfaceProducer 纹理采样，同时保留硬解。
+  /// 兼容 2（原生视图 · PlatformView + auto）：Android 切 PlatformView
+  /// （原生 SurfaceView）绕过 Impeller ImageReaderSurfaceProducer 纹理采样；
+  /// 解码仍是 auto，有硬解就用硬解，不影响正常机型。
   platformView,
 
-  /// 兼容 3（优先软解）：保留 TextureView 流畅滚动，Android 全部视频严格走
-  /// `MediaCodecInfo.preferSoftware` 软解（不静默回退到坏硬解），并发上限锁定为 1。
+  /// 兼容 3（优先软解 · prefer_software）：保留 TextureView 流畅滚动，
+  /// 把软解排到硬解前面（**重排，不删硬解**：软解解不了的格式仍回退硬解），
+  /// 并发上限锁定为 1（软解吃 CPU，多路同解互相拖垮）。
   preferSoftware,
 
-  /// 兼容 4（原生视图 + 优先软解 · 终极兜底）：同时切断 Impeller 纹理路径与厂商
-  /// 硬解器，保持流式起播，并发上限锁定为 1。
+  /// 兼容 4（原生视图 + 优先软解 · prefer_software）：同时启用 PlatformView
+  /// 与 prefer_software 重排，保持流式起播，并发上限锁定为 1。
   platformViewSoftware,
 }
 
@@ -62,7 +71,9 @@ extension VideoCompatModeProps on VideoCompatMode {
   }
 
   /// 传给 Android `video_player_android` fork 的原生解码模式标识。
-  /// 见 `VideoPlayerOptions.DECODER_MODE_*`（`auto` / `smart` / `software_only`）。
+  /// 见 `VideoPlayerOptions.DECODER_MODE_*`（`auto` / `smart` / `prefer_software`）。
+  /// 注意是 `prefer_software`（软解**排前**、硬解保留）而不是 `software_only`
+  /// —— fork 里没有任何一处会过滤掉硬解。
   String get nativeDecoderMode {
     switch (this) {
       case VideoCompatMode.standard:
@@ -80,15 +91,15 @@ extension VideoCompatModeProps on VideoCompatMode {
   String get label {
     switch (this) {
       case VideoCompatMode.standard:
-        return '标准模式（默认）';
+        return '标准模式（auto）';
       case VideoCompatMode.smartSoftware:
-        return '兼容 1：智能软解（非 16 对齐自动软解·推荐）';
+        return '兼容 1：智能软解（smart）';
       case VideoCompatMode.platformView:
-        return '兼容 2：原生视图（绕过 Impeller 纹理）';
+        return '兼容 2：原生视图（PlatformView + auto）';
       case VideoCompatMode.preferSoftware:
-        return '兼容 3：优先软解（优先软解 + 保留硬解回退）';
+        return '兼容 3：优先软解（prefer_software）';
       case VideoCompatMode.platformViewSoftware:
-        return '兼容 4：原生视图 + 优先软解（终极兜底）';
+        return '兼容 4：原生视图 + 优先软解（prefer_software）';
     }
   }
 
@@ -118,18 +129,22 @@ extension VideoCompatModeProps on VideoCompatMode {
   bool get isDefault => this == VideoCompatMode.standard;
 
   /// 给用户看的适用场景与取舍说明。
+  ///
+  /// 措辞有意强调「硬解仍然在列表里」：这几个模式做的都是**重排优先级**
+  /// （`CompatRenderersFactory.preferSoftwareOrder`），不是把硬件解码器删掉。
+  /// 用户最担心的正是「开了兼容会不会反而变卡/解不了」，所以每条都要说清回退路径。
   String get description {
     switch (this) {
       case VideoCompatMode.standard:
-        return 'TextureView + 硬解优先（失败回退软解），正常设备流畅度与功耗最佳。';
+        return '全程有硬解就用硬解（硬解失败才回退软解），不影响正常机型。';
       case VideoCompatMode.smartSoftware:
-        return '仅对宽高非 16 倍数的视频优先软解（仍保留硬解回退），标准 720p/1080p 仍走硬解，兼顾省电与防斜纹。';
+        return '仅对宽高非 16 倍数的视频把软解排到硬解前面，标准分辨率仍走硬解。';
       case VideoCompatMode.platformView:
-        return 'Android 改用原生 SurfaceView 渲染，绕过 Impeller 纹理 stride 花屏，仍保留硬解。';
+        return '改由原生 SurfaceView 上屏，绕过 Impeller 纹理；解码仍是有硬解就用硬解，不影响正常机型。';
       case VideoCompatMode.preferSoftware:
-        return '保留 TextureView 流畅滚动，全部视频优先使用软件解码器（仍保留硬解回退），限制单路并发。';
+        return '只重排优先级：软解排前、硬解仍留在列表里；绝不硬删硬件解码器，软解解不了时自动回退硬解。';
       case VideoCompatMode.platformViewSoftware:
-        return '同时启用原生 SurfaceView 与优先软件解码（单路流式播放），彻底避开渲染层与硬解器缺陷。';
+        return '原生 SurfaceView + 优先软解；同样只重排优先级，绝不硬删硬解，软解解不了时自动回退。';
     }
   }
 
@@ -140,7 +155,7 @@ extension VideoCompatModeProps on VideoCompatMode {
 
   /// 无缓存/推导封面时，是否允许在后台自动占解码器抓一帧封面。
   ///
-  /// PlatformView 无法被 RepaintBoundary 离屏抓帧（必黑）；全软解模式并发上限为 1，
+  /// PlatformView 无法被 RepaintBoundary 离屏抓帧（必黑）；优先软解模式并发上限为 1，
   /// 不应在后台抢占唯一解码器；标准与智能软解模式可正常抓帧。
   bool get allowAutoPosterDecode =>
       this == VideoCompatMode.standard ||

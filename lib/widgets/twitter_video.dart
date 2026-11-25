@@ -1078,8 +1078,9 @@ class _TwitterVideoState extends State<TwitterVideo>
                     const Padding(
                       padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
                       child: Text(
-                        '默认标准模式（有硬解就用硬解）。仅在出现画面斜切、绿色斜纹时'
-                        '逐级尝试，选中立即生效。',
+                        '默认标准模式（有硬解就用硬解）。出现画面斜切、绿色斜纹时'
+                        '逐级尝试，选中立即生效；各模式只调整解码器的尝试顺序，'
+                        '不会删掉硬件解码。',
                         style: TextStyle(fontSize: 12, color: Colors.grey),
                       ),
                     ),

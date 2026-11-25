@@ -90,11 +90,12 @@
   - 视频封面优先级：磁盘缓存 `PosterService` → 服务端 `cover` 字段（`MediaUrl.thumbOf`）→ `MediaUrl.videoPosterOf` 推导 → `RepaintBoundary.toImage()` 离屏抓帧（含 `isMostlyBlack` 黑帧校验）。
 - **视频播放兼容模式（`lib/video/video_compat_mode.dart`）**：
   - 为解决部分 Android 机型（见 `flutter/flutter#174026`、`#185674`）在 Media3 下播放非 16 对齐分辨率视频时，由硬件解码器输出 stride 与 Impeller `ImageReaderSurfaceProducer` 纹理采样不匹配导致的**画面斜切、绿色斜纹**，在设置页与视频长按/错误菜单中提供 **5 种预设模式（1 个标准 + 4 个兼容）**，全部保持流式起播：
-    1. `standard`（**默认**）：`textureView` + 原生下发 `auto`（硬解优先、失败回退软解），并发沿用自适应 `DecoderPolicy`。
-    2. `smartSoftware`（推荐先试）：`textureView` + 原生下发 `smart`，仅对宽或高非 16 倍数的视频把软解排在硬解前，标准 720p/1080p 仍走硬解省电。
-    3. `platformView`：Android 切 `VideoViewType.platformView`（原生 `SurfaceView`），绕过 Impeller 纹理路径，仍保持硬解；跳过对 PlatformView 无效的离屏抓帧。
-    4. `preferSoftware`：`textureView` + 原生下发 `prefer_software`（软解排前、保留硬解回退），并发上限锁 `1`。
-    5. `platformViewSoftware`（终极兜底）：`platformView` + `prefer_software`，并锁并发 `1`。
+    1. `standard`（**默认**，「标准模式（auto）」）：`textureView` + 原生 `auto` —— 全程有硬解就用硬解，硬解失败才回退软解。**完全不动解码器顺序**，正常机型行为与改动前一致。
+    2. `smartSoftware`（「兼容 1：智能软解（smart）」）：`textureView` + 原生 `smart` —— 仅当宽或高不能被 16 整除时把软解排到硬解前面；标准分辨率（720p/1080p）仍走硬解。
+    3. `platformView`（「兼容 2：原生视图（PlatformView + auto）」）：Android 切 `VideoViewType.platformView`（原生 `SurfaceView`）绕过 Impeller 纹理路径；解码仍是 `auto`（有硬解就用硬解），不影响正常机型。跳过对 PlatformView 无效的离屏抓帧。
+    4. `preferSoftware`（「兼容 3：优先软解（prefer_software）」）：`textureView` + 原生 `prefer_software`，并发上限锁 `1`。
+    5. `platformViewSoftware`（「兼容 4：原生视图 + 优先软解（prefer_software）」）：`platformView` + `prefer_software`，并锁并发 `1`。
+  - **铁律：兼容模式只「重排优先级」，绝不「删掉硬解」。** 原生 `CompatRenderersFactory.preferSoftwareOrder()` 从 `MediaCodecSelector.DEFAULT` 取**全量**解码器，仅把 `MediaCodecInfo.softwareOnly` 的分到前段、硬解分到后段再拼回；软解列表为空时原样返回。因此 3/4 模式下软解解不了的格式仍会自动回退硬解 —— 不存在「开了兼容反而更解不了」。改这块时必须守住：**不许使用 `MediaCodecSelector.PREFER_SOFTWARE`**（那个会用 `softwareOnly=true` 单独查询，软解缺失时返回空列表，等于硬删硬解）。
   - 持久化键 `video-compat-mode` 存 `storageKey`（`standard` / `smart_software` / …），解析统一走 `videoCompatModeFromStorage`：兼容 v0.7.x 旧键（`software_decode` / `single_decoder` / `software_platform_view` / `local_file`），未知值安全回退 `standard`。
   - 单路硬上限由 `VideoDecoderPool(maxOverride: …)` 提供：一旦存在显式覆盖，`captureUnavailable` 的解锁逻辑**不得**突破它（软解用 CPU，多路同解会互相拖垮）。
   - **跨平台注意**：Windows 端（`video_player_win`）通过 `effectiveViewType(isAndroid: Platform.isAndroid)` 始终回退为 `VideoViewType.textureView`；Android 端通过 `VideoCompatChannel.getLastDecoderSummary()` 把实际选中的解码器名写进日志与反馈包。
