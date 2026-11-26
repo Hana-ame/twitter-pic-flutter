@@ -155,21 +155,21 @@ extension VideoCompatModeProps on VideoCompatMode {
 
   /// 给用户看的适用场景与取舍说明。
   ///
-  /// 措辞有意强调「硬解仍然在列表里」：这几个模式做的都是**重排优先级**
-  /// （`CompatRenderersFactory.preferSoftwareOrder`），不是把硬件解码器删掉。
-  /// 用户最担心的正是「开了兼容会不会反而变卡/解不了」，所以每条都要说清回退路径。
+  /// **一律一行**（设置页里是 ListTile 的 subtitle，两行以上会把 5 个选项撑成
+  /// 一屏放不下，反而让人不敢选）。措辞只保留"做了什么 + 代价"两件事，回退
+  /// 语义由标题与角标承担（都是重排优先级，硬解始终留在列表里）。
   String get description {
     switch (this) {
       case VideoCompatMode.standard:
-        return '全程有硬解就用硬解（硬解失败才回退软解），不影响正常机型。';
+        return '硬解优先，硬解失败才回退软解';
       case VideoCompatMode.smartSoftware:
-        return '仅对宽高非 16 倍数的视频把软解排到硬解前面，标准分辨率仍走硬解。';
+        return '仅非 16 倍宽高才把软解排前';
       case VideoCompatMode.platformView:
-        return '改由原生 SurfaceView 上屏，绕过 Impeller 纹理；解码仍是有硬解就用硬解，不影响正常机型。';
+        return '原生视图上屏，绕开纹理采样';
       case VideoCompatMode.preferSoftware:
-        return '只重排优先级：软解排前、硬解仍留在列表里；绝不硬删硬件解码器，软解解不了时自动回退硬解。';
+        return '软解排前、硬解保留，可能掉帧';
       case VideoCompatMode.platformViewSoftware:
-        return '原生 SurfaceView + 优先软解；同样只重排优先级，绝不硬删硬解，软解解不了时自动回退。';
+        return '原生上屏 + 软解排前，可能掉帧';
     }
   }
 
@@ -212,7 +212,15 @@ extension VideoCompatModeProps on VideoCompatMode {
   }
 }
 
-/// 从存储字符串解析 [VideoCompatMode]；兼容旧版键值，未知值安全回退为标准模式。
+/// 从存储字符串解析 [VideoCompatMode]。
+///
+/// **默认一律是 [VideoCompatMode.standard]（auto，硬解优先）** —— 这是唯一的默认
+/// 档位，首次启动、清除数据、未知值都落在这里。
+///
+/// 旧版键值（v0.7.x 的 `software_only` / `software_decode` / `single_decoder` /
+/// `local_file` …）**也回到标准模式**：那批键来自早期"先下后播/单路软解"实验，
+/// 语义与现在的 `prefer_software` 并不等价，而实测软解会明显掉帧、部分视频直接
+/// 放不出。把它们继续映射成软解档，等于让升级上来的用户永久停在最差档位上。
 VideoCompatMode videoCompatModeFromStorage(String? raw) {
   switch (raw?.trim()) {
     case 'smart_software':
@@ -220,18 +228,35 @@ VideoCompatMode videoCompatModeFromStorage(String? raw) {
     case 'platform_view':
       return VideoCompatMode.platformView;
     case 'prefer_software':
+      return VideoCompatMode.preferSoftware;
+    case 'platform_view_software':
+      return VideoCompatMode.platformViewSoftware;
+    case 'standard':
     case 'software_only':
     case 'software_decode':
     case 'single_decoder':
-      return VideoCompatMode.preferSoftware;
-    case 'platform_view_software':
     case 'software_platform_view':
     case 'local_file':
-      return VideoCompatMode.platformViewSoftware;
-    case 'standard':
     default:
       return VideoCompatMode.standard;
   }
+}
+
+/// 从 Media3 报上来的解码器名判断是不是软解（**只用于诊断与日志**，不参与选型）。
+///
+/// Android 的软解就那么几个来源：`c2.android.*`（平台 AVC/HEVC 软解）、
+/// `OMX.google.*`、名字里带 `sw`/`software` 的实现。硬解则带厂商前缀
+/// （`c2.mtk.` / `c2.qti.` / `c2.exynos.` / `OMX.qcom.` …）。
+/// 判错的代价只有一行日志，所以这里用包含匹配，不追求完备。
+bool isSoftwareDecoderName(String? name) {
+  if (name == null) return false;
+  final n = name.toLowerCase();
+  if (n.isEmpty || n == '-') return false;
+  return n.contains('c2.android') ||
+      n.contains('omx.google') ||
+      n.contains('.sw.') ||
+      n.contains('software') ||
+      n.contains('ffmpeg');
 }
 
 /// 与 `Hana-ame/video_player_android` fork 同步 Android 原生解码器模式并读取遥测。
@@ -272,7 +297,10 @@ class VideoCompatChannel {
       final mode = raw['decoderMode']?.toString() ?? '-';
       final unaligned = raw['unaligned'] == true;
       final size = (w is int && h is int && w > 0 && h > 0) ? '${w}x$h' : '-';
-      return '$name ($size, mode=$mode${unaligned ? ', non-16px' : ''})';
+      // 明确标出这一路走的是硬解还是软解：用户反馈里"第二个视频变软解"只能
+      // 靠这一行证实/证伪，光有解码器名字人眼认不出来。
+      final kind = isSoftwareDecoderName(name) ? '软解' : '硬解';
+      return '$name ($size, mode=$mode${unaligned ? ', non-16px' : ''}, $kind)';
     } on MissingPluginException {
       return null;
     } catch (_) {

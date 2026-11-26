@@ -474,7 +474,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           SwitchListTile(
             secondary: const Icon(Icons.palette_outlined, color: Colors.purple),
             title: const Text('Gay 模式'),
-            subtitle: Text(_gayMode ? '已开启（仅显示 Gay 专属标签内容）' : '已关闭（隐藏 Gay 专属标签内容）'),
+            subtitle: Text(_gayMode ? '已开启：仅显示专属标签' : '已关闭：隐藏专属标签'),
             value: _gayMode,
             activeColor: Colors.purple,
             onChanged: (val) {
@@ -495,23 +495,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const ListTile(
             leading: Icon(Icons.info_outline, color: Colors.indigo),
             title: Text('画面斜切 / 绿色斜纹时改这里'),
-            subtitle: Text(
-              '部分机型（多为联发科）播放宽高不能被 16 整除的竖屏视频会花屏——'
-              '硬件解码器输出的行跨度与 Flutter 纹理采样对不上。从上往下逐级试，'
-              '选到第一个画面正常的即可；越靠上的模式越省电。'
-              '所有模式都只是调整解码器的尝试顺序，不会删掉硬件解码，'
-              '软解解不了的格式仍会自动回退硬解。'
-              '⚠️ 注意：软解在高码率/高帧率视频上会明显卡顿，且部分编码规格软解无法播放；'
-              '若硬解与原生视图仍花屏，建议开启下方「外部播放器模式」。',
-            ),
+            subtitle: Text('从上往下逐级试，第一个画面正常的就用它'),
           ),
           SwitchListTile(
             secondary: const Icon(Icons.open_in_new, color: Colors.indigo),
             title: const Text('外部播放器模式'),
             subtitle: Text(
-              _externalVideoPlayer
-                  ? '已开启：点击视频封面直接拉起外部播放器（经本机代理 127.0.0.1:${proxy.port ?? 8443}）'
-                  : '已关闭：使用内置播放器；开启后点击封面直接调用系统/第三方播放器',
+              _externalVideoPlayer ? '点封面直接交给系统播放器' : '关闭：用内置播放器',
             ),
             value: _externalVideoPlayer,
             onChanged: (val) {
@@ -558,7 +548,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
                 ],
               ),
-              subtitle: Text(mode.description),
+              // 说明一律一行（窄屏也不许折行，否则 5 个档位撑成一屏放不下）。
+              subtitle: Text(
+                mode.description,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
               selected: mode == _videoCompat,
               onTap: () => _updateVideoCompat(mode),
             ),
@@ -590,7 +585,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.delete_outline, color: Colors.red),
             title: const Text('清除日志'),
-            subtitle: const Text('清空 app.log 与内存日志，并复位「不再提示」开关'),
+            subtitle: const Text('清空日志文件并复位提示开关'),
             onTap: _clearLogs,
           ),
           const Divider(),

@@ -65,22 +65,65 @@ void main() {
   });
 
   group('VideoCompatMode 策略定义（方案 A）', () {
-    test('所有模式的 storageKey 可无损 round-trip，旧键兼容且非法值回退标准模式', () {
+    test('storageKey 可无损 round-trip；默认与旧键一律回退标准模式（auto）', () {
       for (final mode in VideoCompatMode.values) {
         expect(videoCompatModeFromStorage(mode.storageKey), mode);
       }
+      // 旧键来自 v0.7.x 的"单路软解/先下后播"实验，语义与 prefer_software 不等价
+      // 且实测掉帧明显 —— 升级上来的用户必须回到 auto，而不是永久停在最差档位。
+      expect(videoCompatModeFromStorage('software_only'),
+          VideoCompatMode.standard);
       expect(videoCompatModeFromStorage('software_decode'),
-          VideoCompatMode.preferSoftware);
+          VideoCompatMode.standard);
       expect(videoCompatModeFromStorage('single_decoder'),
-          VideoCompatMode.preferSoftware);
+          VideoCompatMode.standard);
       expect(videoCompatModeFromStorage('software_platform_view'),
-          VideoCompatMode.platformViewSoftware);
+          VideoCompatMode.standard);
       expect(videoCompatModeFromStorage('local_file'),
-          VideoCompatMode.platformViewSoftware);
+          VideoCompatMode.standard);
       expect(videoCompatModeFromStorage(null), VideoCompatMode.standard);
       expect(videoCompatModeFromStorage(''), VideoCompatMode.standard);
+      expect(videoCompatModeFromStorage('  '), VideoCompatMode.standard);
       expect(videoCompatModeFromStorage('unknown_mode'),
           VideoCompatMode.standard);
+    });
+
+    test('默认档位是标准模式（auto）：硬解优先，且是唯一的默认值', () {
+      // 用户明确要求"默认选项必须是 auto（硬解在前的那个）"，这里把三件事一起锁住：
+      //   ① 空存储 → standard；② standard 的原生解码模式是 auto；
+      //   ③ standard 的分槽策略不受软解单路限制影响。
+      expect(videoCompatModeFromStorage(null), VideoCompatMode.standard);
+      expect(VideoCompatMode.standard.nativeDecoderMode, 'auto');
+      expect(VideoCompatMode.standard.isDefault, isTrue);
+      expect(VideoCompatMode.standard.cpuHeavy, isFalse);
+      expect(VideoCompatMode.standard.maxConcurrentOverride, isNull);
+      for (final mode in VideoCompatMode.values) {
+        if (mode != VideoCompatMode.standard) {
+          expect(mode.isDefault, isFalse, reason: '默认档只能有一个');
+        }
+      }
+    });
+
+    test('设置页说明一律一行：description 不超过 20 个字符且不含换行', () {
+      for (final mode in VideoCompatMode.values) {
+        final d = mode.description;
+        expect(d.contains('\n'), isFalse, reason: '${mode.name} 的说明出现了换行');
+        expect(d.length, lessThanOrEqualTo(20),
+            reason: '${mode.name} 的说明过长（${d.length} 字）：$d');
+      }
+    });
+
+    test('软解解码器名识别（只影响日志里那一个标记）', () {
+      // 实测机型：天玑的 c2.mtk.avc.decoder 是硬解，c2.android.avc.decoder 是软解。
+      expect(isSoftwareDecoderName('c2.mtk.avc.decoder'), isFalse);
+      expect(isSoftwareDecoderName('c2.qti.avc.decoder'), isFalse);
+      expect(isSoftwareDecoderName('OMX.qcom.video.decoder.avc'), isFalse);
+      expect(isSoftwareDecoderName('c2.android.avc.decoder'), isTrue);
+      expect(isSoftwareDecoderName('OMX.google.h264.decoder'), isTrue);
+      expect(isSoftwareDecoderName('c2.android.sw.avc.decoder'), isTrue);
+      expect(isSoftwareDecoderName(null), isFalse);
+      expect(isSoftwareDecoderName('-'), isFalse);
+      expect(isSoftwareDecoderName(''), isFalse);
     });
 
     test('Android 端按模式切换视图类型，非 Android 始终回退 TextureView', () {

@@ -123,6 +123,12 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 用户点了封面/重试：拿到播放器后直接开始播（点一下就能看，不用再点播放键）。
   bool _autoPlayOnReady = false;
 
+  /// 被别的视频抢走硬解槽位时记下的播放位置。
+  ///
+  /// 让位 = controller 被释放（解码器必须真的还回去，否则下一张拿不到硬解），
+  /// 所以重新播放只能重新 initialize；这个位置让用户回到原来的地方，而不是从头。
+  Duration? _resumePosition;
+
   /// 这张卡片是**用户点播**的：不许把它的播放器交给池子。
   ///
   /// 必要性（第二个"点不动"的成因）：没有封面时点播 → 初始化成功、开始播放 →
@@ -195,9 +201,17 @@ class _TwitterVideoState extends State<TwitterVideo>
   ///
   /// 有封面就显示封面；没有就继续排队等下一次（loading），**不落错误态** ——
   /// 主动让位不是失败。
+  ///
+  /// 正在播的时候被收走（用户去放另一张了）要**记下播放位置**：解码器必须真的
+  /// 释放，所以 controller 会被销毁，回头再播只能重新 initialize + seek 回原位。
   @override
   void onSlotRevoked() {
+    final pos = _controller?.value.position;
+    if (pos != null && pos > const Duration(milliseconds: 500)) {
+      _resumePosition = pos;
+    }
     _userInitiated = false;
+    _hideTimer?.cancel();
     _disposeController();
     if (!mounted) return;
     final shouldRequeue = _compatMode.allowAutoPosterDecode && slotNeedsPoster;
@@ -207,6 +221,7 @@ class _TwitterVideoState extends State<TwitterVideo>
       _error = null;
       _isLoading = shouldRequeue;
       _slow = false;
+      _showControls = false;
     });
     if (shouldRequeue) {
       _pool.request(this);
@@ -238,6 +253,8 @@ class _TwitterVideoState extends State<TwitterVideo>
     _compatMode = next;
     _userInitiated = false;
     _autoPlayOnReady = false;
+    // 换解码/渲染路径等于换了一个播放器，旧的播放位置不再可信。
+    _resumePosition = null;
     _pool.release(this);
     _disposeController();
     setState(() {
@@ -391,6 +408,8 @@ class _TwitterVideoState extends State<TwitterVideo>
       _hideTimer?.cancel();
       _isDragging = false;
       _autoRetried = false;
+      // 换了视频/换了代理端口：旧的播放位置不再有意义。
+      _resumePosition = null;
         // 只有换了视频才丢封面：封面按视频 URL 缓存，代理换端口不影响内容。
       if (old.url != widget.url || old.cover != widget.cover) {
         _poster = null;
@@ -460,6 +479,12 @@ class _TwitterVideoState extends State<TwitterVideo>
       final viewType = mode.effectiveViewType(isAndroid: Platform.isAndroid);
       await VideoCompatChannel.apply(mode);
       if (!mounted || seq != _initSeq) return;
+      // 刚把别人的硬解槽位抢过来（用户点了这张）：`dispose()` 到 MediaCodec 真正
+      // 释放是异步的，此刻立刻 prepare 会被 Media3 判成"硬解实例被占用"而静默
+      // 回退软解 —— 那正是"打开第二个视频变成软解"的现场。等它落下去再建播放器。
+      // 自动抓封面那一趟还要再让一步，别和用户点的这张抢同一个硬解实例。
+      await _pool.waitForHandoff(forPlayback: _autoPlayOnReady);
+      if (!mounted || seq != _initSeq) return;
       if (!mode.isDefault && _lastLoggedCompatMode != mode) {
         _lastLoggedCompatMode = mode;
         LogService.recordNote(
@@ -487,6 +512,27 @@ class _TwitterVideoState extends State<TwitterVideo>
       controller.addListener(_onVideoUpdate);
       controller.setLooping(false);
 
+      // 被别的视频抢走过硬解槽位：回到让位时的位置继续看（见 _resumePosition）。
+      //
+      // 只在"用户点了要播"时消费它：自动抓封面那一趟不该为了抓一帧去 seek，
+      // 更不能把位置用掉 —— 否则用户回头点播又从头开始了。
+      final resume = _autoPlayOnReady ? _resumePosition : null;
+      if (resume != null) {
+        _resumePosition = null;
+        final total = controller.value.duration;
+        final target = resume <= total ? resume : total;
+        if (target > Duration.zero) {
+          try {
+            await controller.seekTo(target);
+          } catch (e, st) {
+            // 一次性拉不到很常见，不弹窗；但必须留痕（seek 失败在 Android 上
+            // 会以 PlatformException 回来，不接住就永远查不到）。
+            LogService.recordError('seekTo.resume', e, st);
+          }
+        }
+      }
+      if (!mounted || seq != _initSeq) return;
+
       setState(() {
         _isLoading = false;
         _retrying = false;
@@ -496,8 +542,8 @@ class _TwitterVideoState extends State<TwitterVideo>
       });
       if (_autoPlayOnReady) {
         _autoPlayOnReady = false;
-        // 正在播的不许被抢走槽位。
-        _pool.markPlaying(this);
+        // 正在播的那张独占硬解：让其它持槽者退场（见 VideoDecoderPool.claimPlayback）。
+        _pool.claimPlayback(this);
         unawaited(controller.play().catchError((Object e, StackTrace st) {
           LogService.recordError('play', e, st);
         }));
@@ -601,11 +647,11 @@ class _TwitterVideoState extends State<TwitterVideo>
 
   void _togglePlay() {
     if (_controller == null) return;
-    // 用户在用的这个不许被池子收走。
-    _pool.markPlaying(this);
     if (_controller!.value.isPlaying) {
       _controller!.pause();
     } else {
+      // 开始播 = 这张独占硬解：其它持槽的播放器退场（暂停时不动，避免无谓重连）。
+      _pool.claimPlayback(this);
       _controller!.play();
     }
   }
@@ -951,16 +997,27 @@ class _TwitterVideoState extends State<TwitterVideo>
           // 视频画面（全屏期间换成黑块，避免同一个 texture 被渲染两次）
           if (_fullscreenOpen)
             const Positioned.fill(child: ColoredBox(color: Colors.black))
-          else
-            GestureDetector(
-              onTap: _toggleControls,
-              onLongPress: () => _showContextMenu(context),
-              // RepaintBoundary：抓封面时只抓视频画面（不含控制栏）。
+          else ...[
+            // RepaintBoundary：抓封面时只抓视频画面（不含控制栏）。
+            Positioned.fill(
               child: RepaintBoundary(
                 key: _posterKey,
                 child: VideoPlayer(_controller!),
               ),
             ),
+            // 手势层**必须单独铺满并且是 opaque**：`VideoPlayer` 渲染的是
+            // `Texture`，它 `hitTestSelf` 为 false（LeafRenderObject 不参与命中），
+            // 所以把 onTap 挂在它外面、用默认的 `deferToChild` 等于挂在空气上 ——
+            // 这就是"HUD 第一次自动收起后再也点不出来"的成因。
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _toggleControls,
+                onLongPress: () => _showContextMenu(context),
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ],
 
           // 中央播放按钮（暂停时显示）
           if (!_controller!.value.isPlaying)
@@ -984,7 +1041,13 @@ class _TwitterVideoState extends State<TwitterVideo>
               bottom: 0,
               left: 0,
               right: 0,
-              child: _buildControls(),
+              // 控制栏的空白处（渐变的透明部分）同样不该把 HUD 收起来 ——
+              // 只有点画面才收；点控制栏等于"还在操作"，顺带重置自动隐藏。
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _showControlsTemporarily,
+                child: _buildControls(),
+              ),
             ),
         ],
       ),

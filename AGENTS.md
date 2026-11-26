@@ -100,8 +100,15 @@
     4. `preferSoftware`（「兼容 3：优先软解（prefer_software）」）：`textureView` + 原生 `prefer_software`，并发上限锁 `1`。
     5. `platformViewSoftware`（「兼容 4：原生视图 + 优先软解（prefer_software）」）：`platformView` + `prefer_software`，并锁并发 `1`。
   - **铁律：兼容模式只「重排优先级」，绝不「删掉硬解」。** 原生 `CompatRenderersFactory.preferSoftwareOrder()` 从 `MediaCodecSelector.DEFAULT` 取**全量**解码器，仅把 `MediaCodecInfo.softwareOnly` 的分到前段、硬解分到后段再拼回；软解列表为空时原样返回。因此 3/4 模式下软解解不了的格式仍会自动回退硬解 —— 不存在「开了兼容反而更解不了」。改这块时必须守住：**不许使用 `MediaCodecSelector.PREFER_SOFTWARE`**（那个会用 `softwareOnly=true` 单独查询，软解缺失时返回空列表，等于硬删硬解）。
-  - 持久化键 `video-compat-mode` 存 `storageKey`（`standard` / `smart_software` / …），解析统一走 `videoCompatModeFromStorage`：兼容 v0.7.x 旧键（`software_decode` / `single_decoder` / `software_platform_view` / `local_file`），未知值安全回退 `standard`。
+  - 持久化键 `video-compat-mode` 存 `storageKey`（`standard` / `smart_software` / …），解析统一走 `videoCompatModeFromStorage`：**默认与旧键一律回退 `standard`（auto，硬解优先）**。v0.7.x 的旧键（`software_decode` / `single_decoder` / `software_platform_view` / `local_file`）语义与现在的 `prefer_software` 并不等价，而实测软解掉帧、部分视频直接放不出 —— 继续映射成软解档等于让升级上来的用户永久停在最差档位，所以它们也只回退 `standard`。
   - 单路硬上限由 `VideoDecoderPool(maxOverride: …)` 提供：一旦存在显式覆盖，`captureUnavailable` 的解锁逻辑**不得**突破它（软解用 CPU，多路同解会互相拖垮）。
+  - **硬解槽位 = 正在播放的那一张（`VideoDecoderPool.claimPlayback` / `request(urgent:)`）**：硬解实例是全机共享的稀缺资源（报斜切/绿纹的那批机型实测只给 1 路硬件 AVC），所以「谁在播谁拿硬解」是硬约束而非偏好。
+    - 用户点播（`urgent`）时池子**直接清场**（`_evictAllExcept`），哪怕槽位没满也收走所有其它持槽者 —— 否则旧播放器还活着、还占着硬解，新播放器 `prepare()` 时抢不到实例，Media3 会**静默回退软解**（这就是"打开第二个视频变成软解"的现场）。非 urgent 的自动抓封面路径仍只挤「看不见且没在播」的，避免抖动。
+    - 开始播放（`_togglePlay` 的 play 分支、`_initPlayer` 自动播放）调用 `claimPlayback`；暂停时**不**调用，避免无谓重连。
+    - 让位后必须 `await pool.waitForHandoff()` 再 `initialize()`：`dispose()` → native `release()` 是异步的，不等就会在硬解仍被占用时 prepare，同样回退软解（`kDecoderHandoffSettle = 260ms`，测试注入 `Duration.zero`）。
+    - 让位时卡片刻下 `_resumePosition`（`onSlotRevoked`），重新播放时 `seekTo` 回原位 —— 解码器必须真的释放，controller 只能重建，但用户不该被迫从头看。
+  - **默认档位只有一个**：`standard`。首次启动、`clearAll`、未知值、旧键全部落到它；`VideoCompatMode.standard.isDefault` 为真且只有它为真（有测试锁住）。
+  - **设置页说明一律一行**：`VideoCompatModeProps.description` ≤ 20 字且不含换行，`ListTile.subtitle` 上加 `maxLines: 1 + ellipsis`，防止窄屏折行把 5 个档位撑成一屏放不下。
 
   - **⚠️ 软解卡顿与兼容性警示（必须提示、不阻塞修复）**：实机验证表明，Android 软件解码（`c2.android.*`）在高码率/高帧率视频上会明显卡顿，且部分编码规格/profile 在软解下根本无法播放；此外**用户排查时很容易忘记软解会卡这件事**。因此：
     1. 软解仅作为兜底排查或局部兼容手段，**默认必须保持硬解优先（`auto`）**，且绝不硬删硬解回退；
@@ -116,6 +123,7 @@
 - **渲染红线**：
   - 视频卡片与全屏页使用 `Center + AspectRatio + VideoPlayer`，严禁使用 `FittedBox` 量测 `VideoPlayer`（`TextureBox.sizedByParent` 在无界约束下会黑屏）。
   - 同一个 `VideoPlayerController` 同一时刻只允许一个 `VideoPlayer` 渲染（进入全屏时卡片侧必须切换为纯黑占位 `_fullscreenOpen`）。
+  - **播放器 HUD 的手势层必须独立铺满且 `behavior: HitTestBehavior.opaque`**：`VideoPlayer` 渲染的是 `Texture`，`RenderTexture` 不参与命中测试（`hitTestSelf` 为 false），把手势挂在它外层用默认的 `deferToChild` 等于挂在空气上 —— 表现就是"HUD 自动收起后再也点不出来"。全屏页同理，且手势层要盖住上下黑边。控制栏/顶栏整块也要 `opaque` 并 `onTap: _showControlsTemporarily`，点栏内空白处不收起 HUD（顺带重置 3 秒计时）。
 
 ---
 
