@@ -22,6 +22,7 @@ import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../services/media_saver.dart';
 import '../services/proxy_manager.dart';
 import '../utils/download_name.dart';
 import '../utils/ech_url.dart';
@@ -344,7 +345,17 @@ class _TwitterImageState extends State<TwitterImage> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.download),
+              leading: const Icon(Icons.save_alt),
+              title: const Text('保存到本地'),
+              subtitle: const Text('直接保存到公共 Download 目录',
+                  style: TextStyle(fontSize: 11)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _saveToLocal();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share),
               title: const Text('下载并分享'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -356,6 +367,39 @@ class _TwitterImageState extends State<TwitterImage> {
         ),
       ),
     );
+  }
+
+  Future<void> _saveToLocal() async {
+    final port = widget.proxy.port;
+    if (port == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未启动，无法保存')),
+      );
+      return;
+    }
+    final proxied = EchUrl.rewriteToUri(widget.url, port);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在保存原图到本地...')));
+    try {
+      final file = await MediaSaver.saveToDownloads(
+        proxiedUri: proxied,
+        originalUrl: widget.url,
+        isVideo: false,
+      );
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('已保存到本地：${file.path}'),
+          backgroundColor: Colors.green,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('保存失败: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    }
   }
 
   Future<void> _downloadAndShare() async {
@@ -606,6 +650,34 @@ class _ImageViewerState extends State<_ImageViewer> {
     ).catchError((_) {});
   }
 
+  Future<void> _saveToLocal() async {
+    final port = widget.proxy.port;
+    if (port == null) return;
+    final raw = widget.gallery[_index];
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在保存原图到本地...')));
+    try {
+      final file = await MediaSaver.saveToDownloads(
+        proxiedUri: EchUrl.rewriteToUri(raw, port),
+        originalUrl: raw,
+        isVideo: false,
+      );
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('已保存到本地：${file.path}'),
+          backgroundColor: Colors.green,
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('保存失败: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    }
+  }
+
   Future<void> _downloadAndShare() async {
     final port = widget.proxy.port;
     if (port == null) return;
@@ -648,7 +720,12 @@ class _ImageViewerState extends State<_ImageViewer> {
         title: Text('${_index + 1} / ${widget.gallery.length}'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.download),
+            icon: const Icon(Icons.save_alt),
+            onPressed: _saveToLocal,
+            tooltip: '保存到本地',
+          ),
+          IconButton(
+            icon: const Icon(Icons.share),
             onPressed: _downloadAndShare,
             tooltip: '下载并分享',
           ),

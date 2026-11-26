@@ -47,12 +47,17 @@ class UserDetailScreen extends StatefulWidget {
   /// 仅供测试注入（配假 `HttpClientAdapter`）；生产调用点不传。
   final TwitterApi? api;
 
+  /// 是否把本次访问记入「浏览历史」（由来源页决定；收藏页与浏览历史页本身
+  /// 不记，避免「回看历史」又产生新历史）。
+  final bool recordHistory;
+
   const UserDetailScreen({
     super.key,
     required this.profile,
     required this.proxy,
     required this.tagBrowse,
     this.api,
+    this.recordHistory = false,
   });
 
   @override
@@ -86,6 +91,13 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     _ownsApi = widget.api == null;
     _profile = widget.profile;
     _username = _profile.accountInfo.username;
+    if (widget.recordHistory && _username.isNotEmpty) {
+      StorageService.addBrowseHistory(
+        _username,
+        nick: _profile.accountInfo.nick,
+        avatar: _profile.accountInfo.avatar,
+      );
+    }
     _loadTags();
     _loadEmojis();
     // 占位数据（元数据加载失败时点进来的）：自动拉取完整数据。
@@ -102,6 +114,13 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       final refreshed = await _api.getMetaData(_username, forceRefresh: true);
       if (!mounted) return null;
       setState(() => _profile = refreshed);
+      if (widget.recordHistory && _username.isNotEmpty) {
+        StorageService.addBrowseHistory(
+          _username,
+          nick: refreshed.accountInfo.nick,
+          avatar: refreshed.accountInfo.avatar,
+        );
+      }
       return null;
     } catch (e) {
       return '$e';

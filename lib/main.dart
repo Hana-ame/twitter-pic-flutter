@@ -28,6 +28,7 @@ import 'services/proxy_manager.dart';
 import 'services/storage_service.dart';
 import 'services/video_downloader.dart';
 import 'screens/ranking_screen.dart';
+import 'screens/browse_history_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/user_detail_screen.dart';
 import 'screens/user_list_screen.dart';
@@ -343,6 +344,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           title: const Text('Twitter Pic', style: TextStyle(fontWeight: FontWeight.w600)),
           actions: [
             IconButton(
+              icon: const Icon(Icons.history),
+              tooltip: '浏览历史',
+              onPressed: () => _navKey.currentState?.push(
+                MaterialPageRoute(
+                  builder: (_) => BrowseHistoryScreen(proxy: _proxy),
+                ),
+              ),
+            ),
+            IconButton(
               icon: const Icon(Icons.emoji_events_outlined),
               tooltip: '排行榜',
               onPressed: () => _navKey.currentState?.push(
@@ -360,6 +370,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                               proxy: _proxy,
                               tagBrowse: null,
                               api: _api,
+                              recordHistory: true,
                             ),
                           ),
                         );
