@@ -92,6 +92,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   bool _downloading = false;
   /// 当前生效的视频播放兼容模式（与设置页/StorageService 实时同步）。
   VideoCompatMode _compatMode = StorageService.getVideoCompatMode();
+  bool _externalPlayerMode = StorageService.isExternalVideoPlayer();
   /// 非默认兼容模式每次切换只记一次日志，避免刷屏。
   static VideoCompatMode? _lastLoggedCompatMode;
   /// 最近一次写入日志的原生解码器摘要（去重，避免刷屏）。
@@ -229,7 +230,9 @@ class _TwitterVideoState extends State<TwitterVideo>
   void _onCompatModeChanged() {
     if (!mounted) return;
     final next = StorageService.getVideoCompatMode();
-    if (next == _compatMode) return;
+    final nextExternal = StorageService.isExternalVideoPlayer();
+    if (next == _compatMode && nextExternal == _externalPlayerMode) return;
+    _externalPlayerMode = nextExternal;
     final wasActive =
         _controller != null || _videoValue != null || _pool.isWaiting(this);
     _compatMode = next;
@@ -298,7 +301,7 @@ class _TwitterVideoState extends State<TwitterVideo>
     // 3. 兜底路径：标准模式申请一个解码器槽位去抓一帧；兼容模式（PlatformView /
     //    保守单路 / 先下后播）不在后台自动占解码器或预下载，改由用户点按播放。
     if (!mounted) return;
-    if (_compatMode.allowAutoPosterDecode) {
+    if (!_externalPlayerMode && _compatMode.allowAutoPosterDecode) {
       _requestSlot();
     } else {
       setState(() => _isLoading = false);
@@ -570,10 +573,6 @@ class _TwitterVideoState extends State<TwitterVideo>
       'url=${widget.url}\n'
       'proxyPort=${widget.proxy.port ?? '-'}\n'
       'compatMode=${_compatMode.storageKey} (decoder=${_compatMode.nativeDecoderMode})\n'
-      // 这两行是给人眼扫的：fork 已经把状态码塞进错误原文，但原文很长，
-      // 反馈包里先看这两行最快能分清 403 / 404 / 超时。
-      'httpStatus=${VideoFailure.httpStatusOf(e) ?? '-'}\n'
-      'media3ErrorCode=${VideoFailure.errorCodeOf(e) ?? '-'}\n'
       '分类: ${VideoFailure.humanize(e)}\n'
       '$e',
       st,
@@ -830,6 +829,26 @@ class _TwitterVideoState extends State<TwitterVideo>
     _showControlsTemporarily();
   }
 
+  /// 拉起外部视频播放器，直接传入本机 ECH 代理 URL（默认 `http://127.0.0.1:8443/...`）。
+  Future<void> _openInExternalPlayer() async {
+    final port = widget.proxy.port;
+    if (port == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未就绪，暂时无法打开外部播放器')),
+      );
+      return;
+    }
+    final proxiedUrl = EchUrl.rewrite(widget.url, port);
+    LogService.recordNote('video.external', '拉起外部播放器: $proxiedUrl');
+    final err = await VideoCompatChannel.openExternalPlayer(proxiedUrl);
+    if (err != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('无法打开外部播放器：$err')),
+      );
+    }
+  }
+
   Future<void> _downloadVideo() async {
     // 防重入：控制栏按钮 + 长按菜单可并发触发，同名临时文件被两个
     // RandomAccessFile 同时写会损坏。
@@ -914,7 +933,7 @@ class _TwitterVideoState extends State<TwitterVideo>
     if (poster != null) {
       return _buildPoster(poster);
     }
-    if (!_compatMode.allowAutoPosterDecode &&
+    if ((_externalPlayerMode || !_compatMode.allowAutoPosterDecode) &&
         !_isLoading &&
         _controller == null &&
         !_pool.isWaiting(this)) {
@@ -1023,6 +1042,15 @@ class _TwitterVideoState extends State<TwitterVideo>
               onTap: () {
                 Navigator.pop(ctx);
                 _showCompatModePicker(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.open_in_new),
+              title: const Text('用外部播放器打开'),
+              subtitle: Text('经本机代理 127.0.0.1:${widget.proxy.port ?? 8443}'),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_openInExternalPlayer());
               },
             ),
             ListTile(
@@ -1259,7 +1287,9 @@ class _TwitterVideoState extends State<TwitterVideo>
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: GestureDetector(
-        onTap: () => _retryInit(autoPlay: true),
+        onTap: _externalPlayerMode
+            ? _openInExternalPlayer
+            : () => _retryInit(autoPlay: true),
         onLongPress: () => _showContextMenu(context),
         child: Container(
           width: widget.width,
@@ -1287,8 +1317,10 @@ class _TwitterVideoState extends State<TwitterVideo>
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: GestureDetector(
-        // 点封面 = 我要看这个视频：加载 + 自动播放。
-        onTap: () => _retryInit(autoPlay: true),
+        // 点封面：外部播放器模式下直接拉起外部播放器（127.0.0.1:<port>），否则内置起播。
+        onTap: _externalPlayerMode
+            ? _openInExternalPlayer
+            : () => _retryInit(autoPlay: true),
         onLongPress: () => _showContextMenu(context),
         child: Stack(
           fit: StackFit.expand,
@@ -1387,14 +1419,14 @@ class _TwitterVideoState extends State<TwitterVideo>
                   ],
                 ),
                 const SizedBox(height: 8),
-                // HTTP 类失败（403/404/超时）**与解码方式无关**：用户在软解模式上
-                // 看到"放不出"，最容易得出"软解更差但硬解也一样"的错觉，然后为了
-                // 这个问题长期留在软解档 —— 实测软解会明显掉帧。所以这里点明一句。
-                if (VideoFailure.httpStatusOf(message) != null &&
+                // HTTP 类失败（403/404/超时）**与解码方式无关**：用户在软解档上看到
+                // "放不出"，最容易得出"软解更差但硬解也一样"的错觉，然后为了这个
+                // 问题长期留在软解档 —— 实测软解会明显掉帧。
+                if (VideoFailure.httpStatusCode(message) != null &&
                     _compatMode.cpuHeavy) ...[
                   const Text(
                     '这是网络/上游的失败，与解码方式无关；'
-                    '当前是软解档位，会明显掉帧，建议切回标准模式。',
+                    '当前是软解档位，会明显掉帧，建议切回标准模式或改用原生视图。',
                     style: TextStyle(color: Colors.orangeAccent, fontSize: 10),
                     textAlign: TextAlign.center,
                   ),

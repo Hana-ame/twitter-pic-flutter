@@ -130,12 +130,11 @@ extension VideoCompatModeProps on VideoCompatMode {
 
   /// 菜单右侧的角标。**按实测效果排序，不是按枚举顺序**：
   ///
-  /// 用户实测反馈「软解卡，而且有些视频放不出」，所以软解类模式一律标成
-  /// 会掉帧的实验档，把真正零代价的那个（原生视图）顶到「推荐」。
-  /// 绿纹/斜切的成因是 Impeller 的 `ImageReaderSurfaceProducer` 按紧排
-  /// 假设采样，而硬解输出的 rowStride 按 16 对齐（非 16 倍数分辨率必中招）；
-  /// 原生 SurfaceView 上屏时这段纹理路径完全不参与，**硬解照旧**，所以是
-  /// 唯一既修画面又不加 CPU 的方案。
+  /// 用户实测反馈「软解卡，而且有些视频放不出」，所以软解类模式一律标成会掉帧的
+  /// 实验档，把真正零代价的那个（原生视图）顶到「推荐」。
+  /// 绿纹/斜切的成因是 Impeller 的 `ImageReaderSurfaceProducer` 按紧排假设采样，
+  /// 而硬解输出的 rowStride 按 16 对齐（非 16 倍数分辨率必中招）；原生 SurfaceView
+  /// 上屏时这段纹理路径完全不参与，**硬解照旧**，所以是既修画面又不加 CPU 的方案。
   String? get badge {
     switch (this) {
       case VideoCompatMode.standard:
@@ -149,8 +148,8 @@ extension VideoCompatModeProps on VideoCompatMode {
     }
   }
 
-  /// 是否把软解排到了硬解前面。软解吃 CPU，实测在低端机上会明显掉帧，
-  /// 所以只在画面确实坏了、且原生视图也救不回来时才建议开。
+  /// 是否把软解排到了硬解前面。软解吃 CPU，实测在低端机上会明显掉帧（部分高码率
+  /// 视频甚至完全放不出），所以只在画面确实坏了、原生视图也救不回来时才建议开。
   bool get cpuHeavy =>
       nativeDecoderMode == 'smart' || nativeDecoderMode == 'prefer_software';
 
@@ -279,5 +278,33 @@ class VideoCompatChannel {
     } catch (_) {
       return null;
     }
+  }
+
+  /// 使用外部播放器直接播放本机 ECH 代理 URL（例如 `http://127.0.0.1:8443/...`）。
+  ///
+  /// Android 经 `video_player_android` fork 发送 `Intent.ACTION_VIEW` (`video/*`)，
+  /// Windows 经系统默认关联程序打开；返回 null 表示已发起打开，非空字符串为失败原因。
+  static Future<String?> openExternalPlayer(String proxiedUrl) async {
+    if (Platform.isAndroid) {
+      try {
+        await _channel.invokeMethod<bool>('openExternalVideo', proxiedUrl);
+        return null;
+      } on MissingPluginException {
+        return '当前 video_player_android 插件版本不支持拉起外部播放器，请更新 fork 后重试';
+      } on PlatformException catch (e) {
+        return e.message ?? e.code;
+      } catch (e) {
+        return '$e';
+      }
+    }
+    if (Platform.isWindows) {
+      try {
+        await Process.start('cmd', ['/c', 'start', '', proxiedUrl]);
+        return null;
+      } catch (e) {
+        return '$e';
+      }
+    }
+    return '当前平台暂不支持拉起外部播放器';
   }
 }

@@ -266,6 +266,27 @@ Windows 端走 `video_player_win`（Media Foundation），没有这层回退。
 
 > `cacheExtent: 1800` 与封面缓存配合得很好：进视口前先排队、进视口就该有封面了。
 
+
+> **⚠️ 关于软解与花屏兼容的重要提示**：
+> 1. 实机验证中，**软件解码（`c2.android.*`）在手机上解高码率/高帧率视频会明显卡顿，且部分视频规格软解无法播放**；排查问题时很容易忘记这一点，请务必牢记：**正常机型保持默认硬解优先**，不要把软解当成日常默认方案。
+> 2. 若遇到部分机型（如天玑/联发科）播放非 16 对齐竖屏视频出现**画面斜切/绿色斜纹**，建议按「**原生视图（仍走硬解） → 关闭 Impeller 的专用包 → 外部播放器模式（经 `http://127.0.0.1:8443/...` 交给系统播放器/VLC/MX Player） → 智能软解**」的顺序尝试。
+> 3. 若遇到 `Source error` 报错，新版已解包底层 HTTP 状态码，**HTTP 404/403/410** 会直接提示原视频已删除或无权访问，不再无意义重试。
+
+### 三条互不干扰的兼容线
+
+斜切/绿纹是**两件事叠出来的**（解码器输出的 rowStride 与渲染器的纹理采样假设不一致），所以三条线分别改其中一头，可以任意组合：
+
+| # | 手段 | 改的是 | 代价 | 状态 |
+| --- | --- | --- | --- | --- |
+| 1 | **原生视图（PlatformView + auto）** | 换渲染路径：原生 `SurfaceView` 上屏，绕过 Impeller 纹理 | 无（硬解照旧） | ✅ 已实装，设置页标「推荐」 |
+| 2 | **软解优先（smart / prefer_software）** | 换解码器：把 `c2.android.*` 排到硬解前面 | **明显掉帧，部分视频解不出** | ✅ 已实装，标「软解·可能掉帧」 |
+| 3 | **关闭 Impeller（`EnableImpeller=false`）** | 换渲染器：全局退回 Skia | 全局动效略逊（非视频卡片同理） | ✅ 已实装：CI 额外产出一个 `app-release-noimpeller.apk` |
+
+第 3 条由 `.github/workflows/build.yml` 的 `Build APK with Impeller disabled` 步骤实现：在 `AndroidManifest.xml` 的 `<application>` 下注入
+`<meta-data android:name="io.flutter.embedding.android.EnableImpeller" android:value="false" />` 后重新构建，与常规包**同一个 artifact** 上传，并在发布时一起挂出、一起算校验和。
+
+> CI 有个硬闸门：两个 APK 的 sha256 **必须不同**，否则判定"注入静默失败"并 fail —— 否则最坏的情况是用户拿到号称关了 Impeller 的包，实际没关，而 CI 全绿。
+
 #### 重试手段
 
 | 场景 | 处理 |

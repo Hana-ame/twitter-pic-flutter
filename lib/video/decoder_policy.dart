@@ -56,18 +56,11 @@ class DecoderPolicy {
   /// 一次成功（抓到一帧封面 / 完成一次播放初始化）。返回 true 表示上限被上调。
   bool noteSuccess() => budget.onSuccess();
 
-  /// 给一次失败分类。
-  ///
-  /// 顺序：先永久失败（含 codec 类，见文件头），再 4xx（HTTP 终局），最后网络。
+  /// 给一次失败分类。**顺序**：先永久失败（含 codec 类，见文件头），再代理/网络。
   DecodeFailureAction classify(Object e) {
-    if (VideoFailure.isUnsupportedFormat(e) || VideoFailure.isCodecError(e)) {
-      return DecodeFailureAction.failFast;
-    }
-    // 4xx 是 HTTP 层的终局：403（链接过期/CDN 拒识）与 404（已删除）重试同一个
-    // URL 只会拿到同一个状态码，而每次重试都要在墙内慢链路上重跑一遍初始化
-    // （取 moov，秒级到 10s 级流量）。判 failFast，把"能不能救"交给用户判断。
-    // 5xx / 超时 / 连接重置才是一次性抖动，值得自动重试一次。
-    if (VideoFailure.isClientHttpError(e)) {
+    if (VideoFailure.isHttpGoneOrForbidden(e) ||
+        VideoFailure.isUnsupportedFormat(e) ||
+        VideoFailure.isCodecError(e)) {
       return DecodeFailureAction.failFast;
     }
     return DecodeFailureAction.retryOnce;

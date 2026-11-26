@@ -47,6 +47,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _restarting = false;
   bool _gayMode = false;
   VideoCompatMode _videoCompat = VideoCompatMode.standard;
+  bool _externalVideoPlayer = false;
   /// 上一次 didChangeDependencies 看到的 ModalRoute，用于判断路由是否换了。
   ModalRoute<dynamic>? _lastRoute;
 
@@ -57,6 +58,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _ownsApi = widget.api == null;
     _gayMode = StorageService.isGayMode();
     _videoCompat = StorageService.getVideoCompatMode();
+    _externalVideoPlayer = StorageService.isExternalVideoPlayer();
     StorageService.changes.addListener(_syncStorage);
   }
 
@@ -98,10 +100,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     final actualGay = StorageService.isGayMode();
     final actualCompat = StorageService.getVideoCompatMode();
-    if (actualGay != _gayMode || actualCompat != _videoCompat) {
+    final actualExternal = StorageService.isExternalVideoPlayer();
+    if (actualGay != _gayMode ||
+        actualCompat != _videoCompat ||
+        actualExternal != _externalVideoPlayer) {
       setState(() {
         _gayMode = actualGay;
         _videoCompat = actualCompat;
+        _externalVideoPlayer = actualExternal;
       });
     }
   }
@@ -494,8 +500,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
               '硬件解码器输出的行跨度与 Flutter 纹理采样对不上。从上往下逐级试，'
               '选到第一个画面正常的即可；越靠上的模式越省电。'
               '所有模式都只是调整解码器的尝试顺序，不会删掉硬件解码，'
-              '软解解不了的格式仍会自动回退硬解。',
+              '软解解不了的格式仍会自动回退硬解。'
+              '⚠️ 注意：软解在高码率/高帧率视频上会明显卡顿，且部分编码规格软解无法播放；'
+              '若硬解与原生视图仍花屏，建议开启下方「外部播放器模式」。',
             ),
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.open_in_new, color: Colors.indigo),
+            title: const Text('外部播放器模式'),
+            subtitle: Text(
+              _externalVideoPlayer
+                  ? '已开启：点击视频封面直接拉起外部播放器（经本机代理 127.0.0.1:${proxy.port ?? 8443}）'
+                  : '已关闭：使用内置播放器；开启后点击封面直接调用系统/第三方播放器',
+            ),
+            value: _externalVideoPlayer,
+            onChanged: (val) {
+              setState(() => _externalVideoPlayer = val);
+              StorageService.setExternalVideoPlayer(val);
+            },
           ),
           // 5 个选项直接铺开而不是藏进下拉框：出问题的用户正处在「要把所有选项
           // 试一遍」的状态，多一次点击只会让人以为没得选。
@@ -514,8 +536,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   if (mode.badge != null) ...[
                     const SizedBox(width: 6),
                     Container(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 1),
                       decoration: BoxDecoration(
                         color: mode == VideoCompatMode.platformView
                             ? Colors.indigo.withValues(alpha: 0.15)

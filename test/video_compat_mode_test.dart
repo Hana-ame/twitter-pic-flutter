@@ -168,6 +168,21 @@ void main() {
       await StorageService.clearAll();
       expect(StorageService.getVideoCompatMode(), VideoCompatMode.standard);
     });
+
+    test('外部播放器模式：默认关闭，写入落盘可恢复，clearAll 复位为关闭', () async {
+      expect(StorageService.isExternalVideoPlayer(), isFalse);
+
+      StorageService.setExternalVideoPlayer(true);
+      expect(StorageService.isExternalVideoPlayer(), isTrue);
+      await StorageService.debugFlushPending();
+
+      StorageService.resetForTests();
+      await StorageService.ensureInitialized();
+      expect(StorageService.isExternalVideoPlayer(), isTrue);
+
+      await StorageService.clearAll();
+      expect(StorageService.isExternalVideoPlayer(), isFalse);
+    });
   });
 
   group('VideoDecoderPool 优先软解单路限制', () {

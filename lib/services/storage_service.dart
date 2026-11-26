@@ -13,6 +13,7 @@ class StorageService {
   static const _kSearchHistory = 'search-history';
   static const _kDecodeBudget = 'decode-budget';
   static const _kVideoCompatMode = 'video-compat-mode';
+  static const _kExternalVideoPlayer = 'external-video-player';
   static const _kGayMode = 'gay-mode';
   static const _kGayTags = 'gay-tags';
   /// **跨端契约**：Gay 模式默认词表。与图站 `gallery/static/home.js` 的
@@ -225,6 +226,16 @@ class StorageService {
 
   static void setVideoCompatMode(VideoCompatMode mode) =>
       _write(_kVideoCompatMode, mode.storageKey);
+
+  // --- external-video-player（外部播放器模式，默认关闭）---
+  /// 开启后点击视频封面直接用外部播放器打开本机代理地址（如 `http://127.0.0.1:8443/...`）。
+  static bool isExternalVideoPlayer() {
+    final v = _read(_kExternalVideoPlayer);
+    return v == 'true' || v == '1';
+  }
+
+  static void setExternalVideoPlayer(bool enabled) =>
+      _write(_kExternalVideoPlayer, enabled ? 'true' : 'false');
 
   // --- search-history ---
   static List<String> getSearchHistory() {
