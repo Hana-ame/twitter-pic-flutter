@@ -31,12 +31,14 @@ import 'package:video_player/video_player.dart';
 import '../services/log_service.dart';
 import '../services/poster_service.dart';
 import '../services/proxy_manager.dart';
+import '../services/storage_service.dart';
 import '../services/video_downloader.dart';
 import '../utils/ech_url.dart';
 import '../utils/frame_luma.dart';
 import '../utils/media_url.dart';
 import '../utils/video_failure.dart';
 import '../video/decoder_policy.dart';
+import '../video/video_compat_mode.dart';
 import '../video/video_decoder_pool.dart';
 import 'video/fullscreen_video.dart';
 import 'video/video_slider_with_buffer.dart';
@@ -88,6 +90,13 @@ class _TwitterVideoState extends State<TwitterVideo>
   bool _isDragging = false;
   double? _dragPositionMs;
   bool _downloading = false;
+  /// 当前生效的视频播放兼容模式（与设置页/StorageService 实时同步）。
+  VideoCompatMode _compatMode = StorageService.getVideoCompatMode();
+  bool _externalPlayerMode = StorageService.isExternalVideoPlayer();
+  /// 非默认兼容模式每次切换只记一次日志，避免刷屏。
+  static VideoCompatMode? _lastLoggedCompatMode;
+  /// 最近一次写入日志的原生解码器摘要（去重，避免刷屏）。
+  static String? _lastLoggedDecoderSummary;
   /// 全屏播放中：卡片侧不再渲染 VideoPlayer（同一 controller 只能渲染一次）。
   bool _fullscreenOpen = false;
 
@@ -113,6 +122,12 @@ class _TwitterVideoState extends State<TwitterVideo>
 
   /// 用户点了封面/重试：拿到播放器后直接开始播（点一下就能看，不用再点播放键）。
   bool _autoPlayOnReady = false;
+
+  /// 被别的视频抢走硬解槽位时记下的播放位置。
+  ///
+  /// 让位 = controller 被释放（解码器必须真的还回去，否则下一张拿不到硬解），
+  /// 所以重新播放只能重新 initialize；这个位置让用户回到原来的地方，而不是从头。
+  Duration? _resumePosition;
 
   /// 这张卡片是**用户点播**的：不许把它的播放器交给池子。
   ///
@@ -186,19 +201,31 @@ class _TwitterVideoState extends State<TwitterVideo>
   ///
   /// 有封面就显示封面；没有就继续排队等下一次（loading），**不落错误态** ——
   /// 主动让位不是失败。
+  ///
+  /// 正在播的时候被收走（用户去放另一张了）要**记下播放位置**：解码器必须真的
+  /// 释放，所以 controller 会被销毁，回头再播只能重新 initialize + seek 回原位。
   @override
   void onSlotRevoked() {
+    final pos = _controller?.value.position;
+    if (pos != null && pos > const Duration(milliseconds: 500)) {
+      _resumePosition = pos;
+    }
     _userInitiated = false;
+    _hideTimer?.cancel();
     _disposeController();
     if (!mounted) return;
+    final shouldRequeue = _compatMode.allowAutoPosterDecode && slotNeedsPoster;
     setState(() {
       _videoValue = null;
       _retrying = false;
       _error = null;
-      _isLoading = slotNeedsPoster;
+      _isLoading = shouldRequeue;
       _slow = false;
+      _showControls = false;
     });
-    _pool.request(this);
+    if (shouldRequeue) {
+      _pool.request(this);
+    }
   }
 
   // ─── 生命周期 ─────────────────────────────────────────────────────────────
@@ -209,8 +236,36 @@ class _TwitterVideoState extends State<TwitterVideo>
     // 代理重启后端口会变（也可能从 null 变成有值）。没有这个监听，视频会一直
     // 停在错误态不动 —— 因为 IndexedStack/列表不会因为端口变化而重建。
     widget.proxy.portNotifier.addListener(_onPortChanged);
+    StorageService.changes.addListener(_onCompatModeChanged);
     // 先看有没有缓存封面：有的话卡片立刻有画面，且**一个解码器都不用占**。
     unawaited(_loadPoster());
+  }
+
+  /// 设置页或长按菜单切换视频兼容模式后立即生效，无需重启 App。
+  void _onCompatModeChanged() {
+    if (!mounted) return;
+    final next = StorageService.getVideoCompatMode();
+    final nextExternal = StorageService.isExternalVideoPlayer();
+    if (next == _compatMode && nextExternal == _externalPlayerMode) return;
+    _externalPlayerMode = nextExternal;
+    final wasActive =
+        _controller != null || _videoValue != null || _pool.isWaiting(this);
+    _compatMode = next;
+    _userInitiated = false;
+    _autoPlayOnReady = false;
+    // 换解码/渲染路径等于换了一个播放器，旧的播放位置不再可信。
+    _resumePosition = null;
+    _pool.release(this);
+    _disposeController();
+    setState(() {
+      _error = null;
+      _retrying = false;
+      _slow = false;
+      _isLoading = false;
+    });
+    if (wasActive && _compatMode.allowAutoPosterDecode && slotNeedsPoster) {
+      _requestSlot();
+    }
   }
 
   @override
@@ -260,9 +315,14 @@ class _TwitterVideoState extends State<TwitterVideo>
       final ok = await _tryLoadDerivedPoster(EchUrl.rewrite(derived, port));
       if (ok) return;
     }
-    // 3. 兜底路径：申请一个解码器槽位去抓一帧。
+    // 3. 兜底路径：标准模式申请一个解码器槽位去抓一帧；兼容模式（PlatformView /
+    //    保守单路 / 先下后播）不在后台自动占解码器或预下载，改由用户点按播放。
     if (!mounted) return;
-    _requestSlot();
+    if (!_externalPlayerMode && _compatMode.allowAutoPosterDecode) {
+      _requestSlot();
+    } else {
+      setState(() => _isLoading = false);
+    }
   }
 
   /// 拉取推导出的封面 URL；成功则转成 [PosterService] 的字节缓存并显示。
@@ -348,12 +408,16 @@ class _TwitterVideoState extends State<TwitterVideo>
       _hideTimer?.cancel();
       _isDragging = false;
       _autoRetried = false;
-      // 只有换了视频才丢封面：封面按视频 URL 缓存，代理换端口不影响内容。
+      // 换了视频/换了代理端口：旧的播放位置不再有意义。
+      _resumePosition = null;
+        // 只有换了视频才丢封面：封面按视频 URL 缓存，代理换端口不影响内容。
       if (old.url != widget.url || old.cover != widget.cover) {
         _poster = null;
         unawaited(_loadPoster());
-      } else {
+      } else if (_compatMode.allowAutoPosterDecode) {
         _requestSlot();
+      } else {
+        _isLoading = false;
       }
     }
   }
@@ -410,8 +474,28 @@ class _TwitterVideoState extends State<TwitterVideo>
     });
 
     try {
+      final mode = _compatMode;
       final url = _buildUrl();
-      final controller = VideoPlayerController.networkUrl(url);
+      final viewType = mode.effectiveViewType(isAndroid: Platform.isAndroid);
+      await VideoCompatChannel.apply(mode);
+      if (!mounted || seq != _initSeq) return;
+      // 刚把别人的硬解槽位抢过来（用户点了这张）：`dispose()` 到 MediaCodec 真正
+      // 释放是异步的，此刻立刻 prepare 会被 Media3 判成"硬解实例被占用"而静默
+      // 回退软解 —— 那正是"打开第二个视频变成软解"的现场。等它落下去再建播放器。
+      // 自动抓封面那一趟还要再让一步，别和用户点的这张抢同一个硬解实例。
+      await _pool.waitForHandoff(forPlayback: _autoPlayOnReady);
+      if (!mounted || seq != _initSeq) return;
+      if (!mode.isDefault && _lastLoggedCompatMode != mode) {
+        _lastLoggedCompatMode = mode;
+        LogService.recordNote(
+          'video.compat',
+          '启用视频兼容模式: ${mode.summary} '
+          '(viewType=${viewType.name}, decoder=${mode.nativeDecoderMode})',
+        );
+      }
+
+      final controller =
+          VideoPlayerController.networkUrl(url, viewType: viewType);
       _controller = controller;
       await controller.initialize();
 
@@ -428,6 +512,27 @@ class _TwitterVideoState extends State<TwitterVideo>
       controller.addListener(_onVideoUpdate);
       controller.setLooping(false);
 
+      // 被别的视频抢走过硬解槽位：回到让位时的位置继续看（见 _resumePosition）。
+      //
+      // 只在"用户点了要播"时消费它：自动抓封面那一趟不该为了抓一帧去 seek，
+      // 更不能把位置用掉 —— 否则用户回头点播又从头开始了。
+      final resume = _autoPlayOnReady ? _resumePosition : null;
+      if (resume != null) {
+        _resumePosition = null;
+        final total = controller.value.duration;
+        final target = resume <= total ? resume : total;
+        if (target > Duration.zero) {
+          try {
+            await controller.seekTo(target);
+          } catch (e, st) {
+            // 一次性拉不到很常见，不弹窗；但必须留痕（seek 失败在 Android 上
+            // 会以 PlatformException 回来，不接住就永远查不到）。
+            LogService.recordError('seekTo.resume', e, st);
+          }
+        }
+      }
+      if (!mounted || seq != _initSeq) return;
+
       setState(() {
         _isLoading = false;
         _retrying = false;
@@ -437,18 +542,23 @@ class _TwitterVideoState extends State<TwitterVideo>
       });
       if (_autoPlayOnReady) {
         _autoPlayOnReady = false;
-        // 正在播的不许被抢走槽位。
-        _pool.markPlaying(this);
+        // 正在播的那张独占硬解：让其它持槽者退场（见 VideoDecoderPool.claimPlayback）。
+        _pool.claimPlayback(this);
         unawaited(controller.play().catchError((Object e, StackTrace st) {
           LogService.recordError('play', e, st);
         }));
         setState(() => _showControls = true);
         _scheduleHideControls();
       }
+      // 上报本次 Android Media3 实际选中的视频解码器（去重），方便反馈定位。
+      unawaited(_recordActiveDecoder());
       // 抓一张封面：抓到就交还槽位（见 _capturePoster），所以解码器占用是暂时的。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(_capturePoster());
-      });
+      // PlatformView 无法被 RepaintBoundary 离屏抓帧（必黑），仅 TextureView 模式执行。
+      if (mode.capturePosterFromPlayer) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_capturePoster());
+        });
+      }
     } catch (e, st) {
       if (!mounted || seq != _initSeq) return;
       _slowHintTimer?.cancel();
@@ -496,11 +606,19 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 原始错误里带着 ExoPlayer 的 Format（编码/分辨率/帧率）与
   /// `format_supported`，是区分"解码器不够"和"网络失败"的唯一线索，
   /// 必须原样留下来 —— 否则报告里只剩一句"加载失败"。
+  Future<void> _recordActiveDecoder() async {
+    final summary = await VideoCompatChannel.getLastDecoderSummary();
+    if (summary == null || summary == _lastLoggedDecoderSummary) return;
+    _lastLoggedDecoderSummary = summary;
+    LogService.recordNote('video.decoder', summary);
+  }
+
   void _logFailure(Object e, StackTrace st) {
     LogService.recordError(
       'video.init',
       'url=${widget.url}\n'
       'proxyPort=${widget.proxy.port ?? '-'}\n'
+      'compatMode=${_compatMode.storageKey} (decoder=${_compatMode.nativeDecoderMode})\n'
       '分类: ${VideoFailure.humanize(e)}\n'
       '$e',
       st,
@@ -529,11 +647,11 @@ class _TwitterVideoState extends State<TwitterVideo>
 
   void _togglePlay() {
     if (_controller == null) return;
-    // 用户在用的这个不许被池子收走。
-    _pool.markPlaying(this);
     if (_controller!.value.isPlaying) {
       _controller!.pause();
     } else {
+      // 开始播 = 这张独占硬解：其它持槽的播放器退场（暂停时不动，避免无谓重连）。
+      _pool.claimPlayback(this);
       _controller!.play();
     }
   }
@@ -757,6 +875,26 @@ class _TwitterVideoState extends State<TwitterVideo>
     _showControlsTemporarily();
   }
 
+  /// 拉起外部视频播放器，直接传入本机 ECH 代理 URL（默认 `http://127.0.0.1:8443/...`）。
+  Future<void> _openInExternalPlayer() async {
+    final port = widget.proxy.port;
+    if (port == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('ECH 代理未就绪，暂时无法打开外部播放器')),
+      );
+      return;
+    }
+    final proxiedUrl = EchUrl.rewrite(widget.url, port);
+    LogService.recordNote('video.external', '拉起外部播放器: $proxiedUrl');
+    final err = await VideoCompatChannel.openExternalPlayer(proxiedUrl);
+    if (err != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('无法打开外部播放器：$err')),
+      );
+    }
+  }
+
   Future<void> _downloadVideo() async {
     // 防重入：控制栏按钮 + 长按菜单可并发触发，同名临时文件被两个
     // RandomAccessFile 同时写会损坏。
@@ -806,6 +944,7 @@ class _TwitterVideoState extends State<TwitterVideo>
     _nudgeThrottle?.cancel();
     _scrollPosition?.removeListener(_onScroll);
     widget.proxy.portNotifier.removeListener(_onPortChanged);
+    StorageService.changes.removeListener(_onCompatModeChanged);
     _controller?.removeListener(_onVideoUpdate);
     _controller?.dispose();
     // 槽位必须还回去，否则池子会以为它还被占着，后面所有卡片都排不上队。
@@ -834,10 +973,17 @@ class _TwitterVideoState extends State<TwitterVideo>
       return _buildPlayer(value);
     }
 
-    // 还没就绪：有封面就先显示封面（秒出、不占解码器），否则转圈等。
+    // 还没就绪：有封面就先显示封面（秒出、不占解码器），否则看是否在加载中
+    // 或等待用户点按播放（兼容模式下不在后台自动占解码器/预下载）。
     final poster = _poster;
     if (poster != null) {
       return _buildPoster(poster);
+    }
+    if ((_externalPlayerMode || !_compatMode.allowAutoPosterDecode) &&
+        !_isLoading &&
+        _controller == null &&
+        !_pool.isWaiting(this)) {
+      return _buildTapToPlay();
     }
     return _buildLoading();
   }
@@ -851,16 +997,27 @@ class _TwitterVideoState extends State<TwitterVideo>
           // 视频画面（全屏期间换成黑块，避免同一个 texture 被渲染两次）
           if (_fullscreenOpen)
             const Positioned.fill(child: ColoredBox(color: Colors.black))
-          else
-            GestureDetector(
-              onTap: _toggleControls,
-              onLongPress: () => _showContextMenu(context),
-              // RepaintBoundary：抓封面时只抓视频画面（不含控制栏）。
+          else ...[
+            // RepaintBoundary：抓封面时只抓视频画面（不含控制栏）。
+            Positioned.fill(
               child: RepaintBoundary(
                 key: _posterKey,
                 child: VideoPlayer(_controller!),
               ),
             ),
+            // 手势层**必须单独铺满并且是 opaque**：`VideoPlayer` 渲染的是
+            // `Texture`，它 `hitTestSelf` 为 false（LeafRenderObject 不参与命中），
+            // 所以把 onTap 挂在它外面、用默认的 `deferToChild` 等于挂在空气上 ——
+            // 这就是"HUD 第一次自动收起后再也点不出来"的成因。
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _toggleControls,
+                onLongPress: () => _showContextMenu(context),
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ],
 
           // 中央播放按钮（暂停时显示）
           if (!_controller!.value.isPlaying)
@@ -884,7 +1041,13 @@ class _TwitterVideoState extends State<TwitterVideo>
               bottom: 0,
               left: 0,
               right: 0,
-              child: _buildControls(),
+              // 控制栏的空白处（渐变的透明部分）同样不该把 HUD 收起来 ——
+              // 只有点画面才收；点控制栏等于"还在操作"，顺带重置自动隐藏。
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _showControlsTemporarily,
+                child: _buildControls(),
+              ),
             ),
         ],
       ),
@@ -914,6 +1077,7 @@ class _TwitterVideoState extends State<TwitterVideo>
   }
 
   void _showContextMenu(BuildContext context) {
+    final canFullscreen = _controller != null && _videoValue != null;
     showModalBottomSheet(
       context: context,
       builder: (ctx) => SafeArea(
@@ -925,12 +1089,31 @@ class _TwitterVideoState extends State<TwitterVideo>
               child:
                   Text('视频操作', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
+            if (canFullscreen)
+              ListTile(
+                leading: const Icon(Icons.fullscreen),
+                title: const Text('全屏播放'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _enterFullscreen();
+                },
+              ),
             ListTile(
-              leading: const Icon(Icons.fullscreen),
-              title: const Text('全屏播放'),
+              leading: const Icon(Icons.video_settings),
+              title: const Text('视频播放兼容模式'),
+              subtitle: Text('当前：${_compatMode.summary}'),
               onTap: () {
                 Navigator.pop(ctx);
-                _enterFullscreen();
+                _showCompatModePicker(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.open_in_new),
+              title: const Text('用外部播放器打开'),
+              subtitle: Text('经本机代理 127.0.0.1:${widget.proxy.port ?? 8443}'),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_openInExternalPlayer());
               },
             ),
             ListTile(
@@ -944,6 +1127,83 @@ class _TwitterVideoState extends State<TwitterVideo>
             const SizedBox(height: 8),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 视频兼容模式选择器：5 种预设里选一个，默认标准模式。
+  ///
+  /// 用 ListTile + 勾选图标而不是 `RadioListTile`：Flutter 3.32 起
+  /// `RadioListTile.groupValue/onChanged` 已废弃（迁到 RadioGroup），而本仓库
+  /// 的 CI 钉在 stable 3.44.3、用户手上还有更旧的通道 —— 用图标既不会撞上那次
+  /// 迁移，也不用为了一个单选列表再引入一层 RadioGroup 包装。
+  void _showCompatModePicker(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final current = StorageService.getVideoCompatMode();
+          void apply(VideoCompatMode next) {
+            StorageService.setVideoCompatMode(next);
+            // 先落盘再推原生：切换要立即生效，但下次启动也必须还是这个模式。
+            unawaited(VideoCompatChannel.apply(next));
+            setSheetState(() {});
+          }
+
+          return SafeArea(
+            child: ConstrainedBox(
+              // 5 个选项 + 说明文字可能高过屏幕（小屏横屏尤其是），超出部分可滚。
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx).size.height * 0.75,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 14, 16, 4),
+                      child: Text(
+                        '视频播放兼容模式',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+                      child: Text(
+                        '默认标准模式（有硬解就用硬解）。出现画面斜切、绿色斜纹时'
+                        '逐级尝试，选中立即生效；各模式只调整解码器的尝试顺序，'
+                        '不会删掉硬件解码。',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ),
+                    ...VideoCompatMode.values.map(
+                      (mode) => ListTile(
+                        title: Text(mode.label),
+                        subtitle: Text(
+                          mode.description,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        trailing: Icon(
+                          mode == current
+                              ? Icons.check_circle
+                              : Icons.circle_outlined,
+                          color: mode == current
+                              ? Theme.of(ctx).colorScheme.primary
+                              : null,
+                        ),
+                        onTap: () => apply(mode),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -1084,12 +1344,47 @@ class _TwitterVideoState extends State<TwitterVideo>
   /// 封面态：显示已缓存的静帧，点一下才去占解码器播放。
   ///
   /// 必须给**确定高度**（同 loading）：本组件挂在 ListView 的无界高度 item 里。
+  /// 兼容模式下无封面时的点按占位（不在后台自动占解码器或预下载整段视频）。
+  Widget _buildTapToPlay() {
+    final hint = '点按播放（${_compatMode.summary}）';
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: GestureDetector(
+        onTap: _externalPlayerMode
+            ? _openInExternalPlayer
+            : () => _retryInit(autoPlay: true),
+        onLongPress: () => _showContextMenu(context),
+        child: Container(
+          width: widget.width,
+          height: widget.height,
+          color: Colors.black,
+          alignment: Alignment.center,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.play_circle_outline,
+                  size: 44, color: Colors.white70),
+              const SizedBox(height: 8),
+              Text(
+                hint,
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPoster(Uint8List poster) {
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: GestureDetector(
-        // 点封面 = 我要看这个视频：加载 + 自动播放。
-        onTap: () => _retryInit(autoPlay: true),
+        // 点封面：外部播放器模式下直接拉起外部播放器（127.0.0.1:<port>），否则内置起播。
+        onTap: _externalPlayerMode
+            ? _openInExternalPlayer
+            : () => _retryInit(autoPlay: true),
+        onLongPress: () => _showContextMenu(context),
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -1151,19 +1446,54 @@ class _TwitterVideoState extends State<TwitterVideo>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (retryable) ...[
-                  ElevatedButton.icon(
-                    // 重试 = 用户就是要看这个视频：抢到槽位后直接播。
-                    onPressed: () => _retryInit(autoPlay: true),
-                    icon: const Icon(Icons.refresh, size: 16),
-                    label: const Text('重试'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      minimumSize: const Size(0, 32),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    if (retryable)
+                      ElevatedButton.icon(
+                        // 重试 = 用户就是要看这个视频：抢到槽位后直接播。
+                        onPressed: () => _retryInit(autoPlay: true),
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('重试'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          minimumSize: const Size(0, 32),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
+                    OutlinedButton.icon(
+                      onPressed: () => _showCompatModePicker(context),
+                      icon: const Icon(Icons.video_settings,
+                          size: 15, color: Colors.white70),
+                      label: Text(
+                        '兼容模式：${_compatMode.summary}',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.white38),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                     ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                // HTTP 类失败（403/404/超时）**与解码方式无关**：用户在软解档上看到
+                // "放不出"，最容易得出"软解更差但硬解也一样"的错觉，然后为了这个
+                // 问题长期留在软解档 —— 实测软解会明显掉帧。
+                if (VideoFailure.httpStatusCode(message) != null &&
+                    _compatMode.cpuHeavy) ...[
+                  const Text(
+                    '这是网络/上游的失败，与解码方式无关；'
+                    '当前是软解档位，会明显掉帧，建议切回标准模式或改用原生视图。',
+                    style: TextStyle(color: Colors.orangeAccent, fontSize: 10),
+                    textAlign: TextAlign.center,
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
                 ],
                 // SelectableText：长按可选中复制（0.5.2 就是这个行为），
                 // 反馈时比截图有用。

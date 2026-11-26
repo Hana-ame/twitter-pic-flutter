@@ -81,8 +81,29 @@ class VideoFailure {
         s.contains('UNSUPPORTED_TYPE');
   }
 
-  /// 取数据失败（代理/链路），不是解码器问题。
+  /// 从 ExoPlayer / 代理报错原文中提取 HTTP 状态码（如 `HTTP 404`、`Response code: 403`）。
+  /// 配合 `video_player_android` fork 的 `ExoPlayerEventListener.formatPlaybackError`，
+  /// 避免 R8 混淆后的 `v.j: Source error` 把 404/403 淹没成普通网络错误。
+  static int? httpStatusCode(Object e) {
+    final s = '$e';
+    final m = RegExp(
+      r'(?:\bHTTP\s+|Response code:\s*|statusCode[=:\s]+)(\d{3})\b',
+      caseSensitive: false,
+    ).firstMatch(s);
+    if (m == null) return null;
+    return int.tryParse(m.group(1)!);
+  }
+
+  /// 资源永久不可用（HTTP 403 禁访/签名失效、404 已删除、410 已下线）：
+  /// 重试不会成功，应直接 failFast 并给出明确原因。
+  static bool isHttpGoneOrForbidden(Object e) {
+    final code = httpStatusCode(e);
+    return code == 403 || code == 404 || code == 410;
+  }
+
+  /// 取数据失败（代理/链路），不是解码器问题（已排除 403/404/410 永久不可用）。
   static bool isNetworkError(Object e) {
+    if (isHttpGoneOrForbidden(e)) return false;
     final s = '$e';
     return s.contains('Source error') ||
         s.contains('HttpDataSource') ||
@@ -102,6 +123,13 @@ class VideoFailure {
   static String humanize(Object e) {
     if (isProxyNotReady(e)) {
       return 'ECH 代理未就绪。等代理启动后点重试。';
+    }
+    if (isHttpGoneOrForbidden(e)) {
+      final code = httpStatusCode(e);
+      if (code == 404 || code == 410) {
+        return '视频不存在或已被原推文删除（HTTP $code），重试无效。';
+      }
+      return '视频无权访问或链接已失效（HTTP $code），重试通常无效。';
     }
     if (isUnsupportedFormat(e)) {
       return '这台设备的视频解码器解不了这个视频：编码本身支持，但分辨率/帧率'

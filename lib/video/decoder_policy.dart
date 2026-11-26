@@ -58,7 +58,9 @@ class DecoderPolicy {
 
   /// 给一次失败分类。**顺序**：先永久失败（含 codec 类，见文件头），再代理/网络。
   DecodeFailureAction classify(Object e) {
-    if (VideoFailure.isUnsupportedFormat(e) || VideoFailure.isCodecError(e)) {
+    if (VideoFailure.isHttpGoneOrForbidden(e) ||
+        VideoFailure.isUnsupportedFormat(e) ||
+        VideoFailure.isCodecError(e)) {
       return DecodeFailureAction.failFast;
     }
     return DecodeFailureAction.retryOnce;

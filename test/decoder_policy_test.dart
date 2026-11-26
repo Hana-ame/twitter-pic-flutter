@@ -56,4 +56,29 @@ void main() {
     }
     expect(p.maxConcurrent, 3, reason: '可以涨，但绝不越过软解安全上限');
   });
+
+  test('HTTP 404/403/410 永久不可用一律 failFast，5xx 仍允许重试一次', () {
+    final p = DecoderPolicy();
+    expect(
+      p.classify(
+        'PlatformException(VideoError, Video player had error v.j: Source error '
+        '[ERROR_CODE_IO_BAD_HTTP_STATUS, HTTP 404] (Response code: 404), null, null)',
+      ),
+      DecodeFailureAction.failFast,
+    );
+    expect(
+      p.classify(
+        'PlatformException(VideoError, Video player had error v.j: Source error '
+        '[ERROR_CODE_IO_BAD_HTTP_STATUS, HTTP 403], null, null)',
+      ),
+      DecodeFailureAction.failFast,
+    );
+    expect(
+      p.classify(
+        'PlatformException(VideoError, Video player had error v.j: Source error '
+        '[ERROR_CODE_IO_BAD_HTTP_STATUS, HTTP 502], null, null)',
+      ),
+      DecodeFailureAction.retryOnce,
+    );
+  });
 }

@@ -523,11 +523,78 @@ jobs:
           BUILD_NUM=$(grep '^version:' pubspec.yaml | sed 's/version: *//')
           flutter build apk --release --target-platform android-arm64 --dart-define=BUILD_NUM="$BUILD_NUM"
 
-      - name: Upload APK artifact
+      - name: Stage vanilla APK
+        run: |
+          mkdir -p /tmp/apk_out
+          cp /tmp/build_project/build/app/outputs/flutter-apk/app-release.apk \
+             /tmp/apk_out/app-release.apk
+          ls -l /tmp/apk_out
+
+      # ── 第三条兼容线：关闭 Impeller ─────────────────────────────────────────
+      #
+      # 为什么值得单独出一个包：非 16 对齐分辨率视频的斜切/绿纹，根因是
+      # Impeller 的 `ImageReaderSurfaceProducer` 按「紧排」假设采样纹理，而硬解
+      # 输出的 rowStride 是按 16 对齐的（flutter/flutter#174026、#185674）。
+      # 这条路径只在 Impeller 下存在 —— 关掉 Impeller 退回 Skia 后，纹理走
+      # SurfaceTexture 自己的采样，**硬解照旧**，不掉帧、也不软解。
+      #
+      # 与「兼容 1~4」是正交的两条线：那是换解码器/换视图，这是换渲染器。
+      # 代价是全局的（整个 UI 都退回 Skia，动效会略逊），所以只作为可选包，
+      # 不做默认 —— 默认仍是标准模式。
+      #
+      # 注入点是 <application> 下的 meta-data，不是构建参数：Flutter 只认
+      # `io.flutter.embedding.android.EnableImpeller`。
+      - name: Build APK with Impeller disabled
+        env:
+          GRADLE_OPTS: -Xmx2g -Dorg.gradle.jvmargs=-Xmx2g
+        run: |
+          cd /tmp/build_project
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          python3 - "$MANIFEST" <<'PY'
+          import re, sys
+          path = sys.argv[1]
+          src = open(path, encoding='utf-8').read()
+          KEY = 'io.flutter.embedding.android.EnableImpeller'
+          if KEY not in src:
+              meta = ('        <meta-data android:name="%s" '
+                      'android:value="false" />\n' % KEY)
+              # 插在 <application ...> 开标签之后。该标签是**多行**的
+              # （label/name/icon/networkSecurityConfig 各占一行），所以必须
+              # 匹配到 '>' 为止，不能只认 '<application' 这一行。
+              out, n = re.subn(r'(<application\b[^>]*>)', r'\1\n' + meta,
+                               src, count=1)
+              if n != 1:
+                  sys.exit('::error::<application> tag not found in ' + path)
+              open(path, 'w', encoding='utf-8').write(out)
+          PY
+          grep -q 'io.flutter.embedding.android.EnableImpeller' "$MANIFEST" \
+            || { echo "::error::EnableImpeller meta-data injection failed"; exit 1; }
+          grep -q 'android:value="false"' "$MANIFEST" \
+            || { echo "::error::EnableImpeller value is not false"; exit 1; }
+
+          BUILD_NUM=$(grep '^version:' pubspec.yaml | sed 's/version: *//')
+          flutter build apk --release --target-platform android-arm64 --dart-define=BUILD_NUM="$BUILD_NUM"
+          cp build/app/outputs/flutter-apk/app-release.apk \
+             /tmp/apk_out/app-release-noimpeller.apk
+
+          # 后置校验：注入静默失败时两个包会一模一样，而 CI 依然全绿 ——
+          # 那正是最坏的情况（用户拿到"关 Impeller 版"，实际没关）。
+          NORMAL_SHA=$(sha256sum /tmp/apk_out/app-release.apk | awk '{print $1}')
+          IMPELLER_SHA=$(sha256sum /tmp/apk_out/app-release-noimpeller.apk | awk '{print $1}')
+          echo "vanilla=$NORMAL_SHA"
+          echo "noimpeller=$IMPELLER_SHA"
+          [ "$NORMAL_SHA" != "$IMPELLER_SHA" ] \
+            || { echo "::error::no-Impeller APK 与常规 APK 字节相同 —— meta-data 注入没生效"; exit 1; }
+          ls -l /tmp/apk_out
+
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: /tmp/build_project/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          path: |
+            /tmp/apk_out/app-release.apk
+            /tmp/apk_out/app-release-noimpeller.apk
 
   build_windows:
     if: github.event_name != 'pull_request'
@@ -778,14 +845,16 @@ jobs:
           # sed 里 `s#^apk/#` 锚在行首**匹配不到**（行首是 hash），
           # 实测会原样留下 `apk/app-release.apk` —— 于是 SHA256SUMS.txt 里的
           # 文件名与 release 里实际挂的名字对不上，下载方按它核对会找不到文件。
-          sha256sum apk/app-release.apk windows/twitter_pic_flutter_windows_amd64.zip \
+          sha256sum apk/app-release.apk apk/app-release-noimpeller.apk \
+            windows/twitter_pic_flutter_windows_amd64.zip \
             | awk '{n=$2; sub(/^apk\//,"",n); sub(/^windows\//,"",n); print $1"  "n}' \
             > SHA256SUMS.txt
           cat SHA256SUMS.txt
           # 行数不对 = 校验和没算出来，必须失败而不是发一个空壳
-          [ "$(wc -l < SHA256SUMS.txt)" -eq 2 ] || { echo "::error::SHA256SUMS.txt 行数异常"; exit 1; }
+          [ "$(wc -l < SHA256SUMS.txt)" -eq 3 ] || { echo "::error::SHA256SUMS.txt 行数异常"; exit 1; }
           # 文件名必须与 release 里挂的产物名一致（错位了下载方核对不到）
           grep -q '  app-release.apk$' SHA256SUMS.txt || { echo "::error::SHA256SUMS.txt 未含 app-release.apk"; exit 1; }
+          grep -q '  app-release-noimpeller.apk$' SHA256SUMS.txt || { echo "::error::SHA256SUMS.txt 未含 app-release-noimpeller.apk"; exit 1; }
           grep -q '  twitter_pic_flutter_windows_amd64.zip$' SHA256SUMS.txt || { echo "::error::SHA256SUMS.txt 未含 windows zip"; exit 1; }
 
       - name: Create Release
@@ -797,6 +866,7 @@ jobs:
           body_path: /tmp/release_body.md
           files: |
             ./artifact/apk/app-release.apk
+            ./artifact/apk/app-release-noimpeller.apk
             ./artifact/windows/twitter_pic_flutter_windows_amd64.zip
             ./artifact/SHA256SUMS.txt
           generate_release_notes: false

@@ -689,8 +689,8 @@ packages:
     dependency: "direct overridden"
     description:
       path: "."
-      ref: "2.12.2-fallback.1"
-      resolved-ref: "02d8c92da69afec3cd24dc1f7235afb1eab00772"
+      ref: "2.12.2-fallback.4"
+      resolved-ref: "6547570d23c8cc2f6f8e42e646f400d8af5a98d2"
       url: "https://github.com/Hana-ame/video_player_android.git"
     source: git
     version: "2.12.2"

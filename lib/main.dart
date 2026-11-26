@@ -32,6 +32,7 @@ import 'screens/settings_screen.dart';
 import 'screens/user_detail_screen.dart';
 import 'screens/user_list_screen.dart';
 import 'utils/doh_resolver.dart';
+import 'video/video_compat_mode.dart';
 import 'widgets/fav_list.dart';
 import 'widgets/progressive_image.dart';
 import 'widgets/report_help.dart';
@@ -66,6 +67,10 @@ void main() {
     PaintingBinding.instance.imageCache.maximumSize = 1500;
 
     await StorageService.ensureInitialized();
+    // 启动即把本地保存的兼容模式推给 Android 原生层：Media3 的 renderers 工厂
+    // 是在建 player 时读这个模式的，早于第一次播放设置，才不会第一段视频就用错解码器。
+    // 非 Android / 旧 fork 未注册该通道时静默忽略（见 VideoCompatChannel）。
+    unawaited(VideoCompatChannel.apply(StorageService.getVideoCompatMode()));
     await LogService.ensureInitialized(buildNum: _kBuildNum);
     // 视频封面缓存目录：卡片抓到的静帧存这儿，之后不占解码器也能显示。
     await PosterService.ensureInitialized();

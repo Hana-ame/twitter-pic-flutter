@@ -234,14 +234,23 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
           // 拿到 height=∞，整层渲染失败，全屏就是一片黑。必须自己给一个有界
           // 尺寸：Center 先松约束，AspectRatio 按视频比例定尺寸。
           Positioned.fill(
-            child: GestureDetector(
-              onTap: _toggleControls,
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: _displayAspect,
-                  child: VideoPlayer(widget.controller),
-                ),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: _displayAspect,
+                child: VideoPlayer(widget.controller),
               ),
+            ),
+          ),
+
+          // 手势层单独铺满整屏（含上下黑边），并且**必须 opaque**：
+          // `Texture` 不参与命中测试（`hitTestSelf` 为 false），把手势挂在它
+          // 外层用默认的 deferToChild 等于挂在空气上 —— 表现就是"HUD 自动收起
+          // 之后再也点不出来"，点黑边更是完全没反应。
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _toggleControls,
+              child: const SizedBox.expand(),
             ),
           ),
 
@@ -251,34 +260,40 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
               top: 0,
               left: 0,
               right: 0,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Colors.black87, Colors.transparent],
+              // 栏内空白处（渐变透明区）不该把 HUD 收起来：点一下等于"还在操作"，
+              // 顺带把自动隐藏的计时重置。
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _showControlsTemporarily,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.black87, Colors.transparent],
+                    ),
                   ),
-                ),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back, color: Colors.white),
-                      onPressed: widget.onExit,
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      icon: _downloading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white),
-                            )
-                          : const Icon(Icons.download, color: Colors.white),
-                      onPressed: _downloading ? null : _downloadVideo,
-                      tooltip: '下载并分享',
-                    ),
-                  ],
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back, color: Colors.white),
+                        onPressed: widget.onExit,
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: _downloading
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Icon(Icons.download, color: Colors.white),
+                        onPressed: _downloading ? null : _downloadVideo,
+                        tooltip: '下载并分享',
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -289,71 +304,76 @@ class _FullscreenVideoState extends State<FullscreenVideo> {
               bottom: 0,
               left: 0,
               right: 0,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [Colors.black87, Colors.transparent],
+              // 同顶部栏：栏内空白处不收起 HUD。
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _showControlsTemporarily,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                      colors: [Colors.black87, Colors.transparent],
+                    ),
                   ),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    VideoSliderWithBuffer(
-                      value:
-                          _videoValue?.position.inMilliseconds.toDouble() ?? 0,
-                      max:
-                          _videoValue?.duration.inMilliseconds.toDouble() ?? 1,
-                      buffered: _bufferedFraction,
-                      onStart: _onSeekStart,
-                      onChanged: _onSeekChanged,
-                      onEnd: (v) =>
-                          _onSeekEnd(Duration(milliseconds: v.toInt())),
-                      onCancel: _onSeekCancel,
-                    ),
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: Icon(widget.controller.value.isPlaying
-                              ? Icons.pause
-                              : Icons.play_arrow),
-                          onPressed: () => widget.controller.value.isPlaying
-                              ? widget.controller.pause()
-                              : widget.controller.play(),
-                          color: Colors.white,
-                          iconSize: 32,
-                        ),
-                        Text(
-                          _dragPositionMs != null
-                              ? _formatDuration(Duration(
-                                  milliseconds: _dragPositionMs!.toInt()))
-                              : _formatDuration(
-                                  widget.controller.value.position),
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 12),
-                        ),
-                        const Spacer(),
-                        _buildSpeedButton(),
-                        Text(
-                          _formatDuration(widget.controller.value.duration),
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 12),
-                        ),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            _playerStateLine,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                color: Colors.white38, fontSize: 9),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      VideoSliderWithBuffer(
+                        value: _videoValue?.position.inMilliseconds.toDouble() ??
+                            0,
+                        max: _videoValue?.duration.inMilliseconds.toDouble() ??
+                            1,
+                        buffered: _bufferedFraction,
+                        onStart: _onSeekStart,
+                        onChanged: _onSeekChanged,
+                        onEnd: (v) =>
+                            _onSeekEnd(Duration(milliseconds: v.toInt())),
+                        onCancel: _onSeekCancel,
+                      ),
+                      Row(
+                        children: [
+                          IconButton(
+                            icon: Icon(widget.controller.value.isPlaying
+                                ? Icons.pause
+                                : Icons.play_arrow),
+                            onPressed: () => widget.controller.value.isPlaying
+                                ? widget.controller.pause()
+                                : widget.controller.play(),
+                            color: Colors.white,
+                            iconSize: 32,
                           ),
-                        ),
-                      ],
-                    ),
-                  ],
+                          Text(
+                            _dragPositionMs != null
+                                ? _formatDuration(Duration(
+                                    milliseconds: _dragPositionMs!.toInt()))
+                                : _formatDuration(
+                                    widget.controller.value.position),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12),
+                          ),
+                          const Spacer(),
+                          _buildSpeedButton(),
+                          Text(
+                            _formatDuration(widget.controller.value.duration),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12),
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              _playerStateLine,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 9),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

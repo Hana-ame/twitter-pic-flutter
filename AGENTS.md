@@ -1,171 +1,190 @@
 # Twitter Pic Flutter — AI Agent 协同与工程维护指南
 
 > **适用对象**：所有参与此仓库设计、编码、重构、排查与 CI/CD 维护的 AI 编程助手（Agent）。
-> **核心原则**：严谨尊重既有架构铁律、严防性能退化（拒绝任何阻塞式请求）、测试先行与跨用例状态隔离、发布即打 Tag 并由云端 CI 构建双端产物。
+> **适用版本**：v0.8.0+（Flutter `3.44.3` / Dart SDK `^3.12.0`）。
+> **核心原则**：严守全链路 ECH 代理隔离（控制面与数据面均不静默回退直连）、严防 N+1 与阻塞式拉取、维护跨端与跨屏唯一真相源、测试状态严格隔离、以云端 GitHub Actions 作为唯一验收裁判。
 
 ---
 
-## 1. 架构核心铁律与双网络通道隔离
+## 1. 网络架构铁律：双通道共用本机 ECH 代理
 
-本项目必须严格遵循**双网络通道物理隔离**设计（详见 [doc/architecture.md](doc/architecture.md) 与 [doc/troubleshooting.md](doc/troubleshooting.md)）：
+本项目控制面（`x.moonchan.xyz`）与数据面（`pbs.twimg.com` / `video.twimg.com`）在墙内均不可直连，**两条通道统一经本机 Go ECH 代理转发**（详见 [doc/architecture.md](doc/architecture.md) 与 [doc/troubleshooting.md](doc/troubleshooting.md)）：
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Flutter / Dart 业务层                       │
-└────────────────────────┬──────────────────────┬─────────────────┘
-                         │                      │
-       控制面：直连 API   │                      │ 数据面：媒体直走本地代理
-       (绝不进入代理)     │                      │ (EchUrl.rewrite 改写)
-                         ▼                      ▼
-           https://x.moonchan.xyz          http://127.0.0.1:<port>
-           ├── /api/twitter/...                   │ (明文 HTTP，原生 cgo 库)
-           └── /api/tag/...                       │
-                                                  ▼ (TLS 1.3 + ECH 混淆 SNI)
-                                           https://video-cf.twimg.com
-                                           (pbs.twimg.com 与 video.twimg.com)
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Flutter / Dart 业务层                            │
+└──────────────────────────┬──────────────────────────────┬───────────────┘
+                           │                              │
+       控制面（API/JSON）   │                              │ 数据面（图片/头像/视频）
+  TwitterApi.setProxyPort  │                              │ EchUrl.rewrite(url, port)
+                           ▼                              ▼
+        http://127.0.0.1:<port>/api/...      http://127.0.0.1:<port>/<path>?<query>
+                           │                              │
+┌──────────────────────────▼──────────────────────────────▼───────────────┐
+│        本机 Go ECH 代理（进程内 c-shared：libechproxy.so / echproxy.dll）  │
+│        来源：Hana-ame/ech-proxy（CI 按 ECH_PROXY_REF 钉定 tag 拉取编译）   │
+│        监听明文 HTTP（127.0.0.1:8443，冲突回退 :0 随机端口）               │
+├──────────────────────────────────────────┬──────────────────────────────┤
+│  /api/* → apiProxyHandler (ECH 隧道)      │ 其余路径 → echProxyHandler    │
+│  → https://x.moonchan.xyz/api/...        │ → https://video-cf.twimg.com │
+└──────────────────────────────────────────┴──────────────────────────────┘
 ```
 
-### 1.1 控制面：API 直连（严禁进代理）
-- **根 API 端点**：`kApiBase = 'https://x.moonchan.xyz/api/twitter'`（用户列表、详情元数据 `alice.json.gz`、emoji、排行）。
-- **图站 API 端点**：`kGalleryBase = 'https://x.moonchan.xyz'`（`/api/tag/<tag>`、`/api/tag-cloud`、`/api/tags`）。
-  - **⚠️ 路由警告**：标签端点挂在图站自身的 `galleryMux` 上，路径**不带** `/api/twitter` 前缀。请求写成 `/api/twitter/tag/<tag>` 会直接返回 404（路由不存在）。
-- **Dio 路径拼接**：Dio 拼接 `baseUrl + path` 时**不会自动补前导斜杠**，必须保持前导 `/` 或依赖 `onRequest` 拦截器归一化，否则会拼接成 `...xyz/api/twitteralice.json.gz` 导致 403 事故。
+### 1.1 控制面（`lib/api/twitter_api.dart`）
+- **两套 Base，严禁混用**：
+  - 根 API：`kApiBase = 'https://x.moonchan.xyz/api/twitter'`（用户列表、详情 `alice.json.gz`、标签、emoji、排行）。
+  - 图站 API：`kGalleryBase = 'https://x.moonchan.xyz'`（`/api/tag/<tag>`、`/api/tag-cloud`、`/api/tags` 等）。
+  - **⚠️ 路由红线**：图站标签端点挂在 `galleryMux` 上，**不带** `/api/twitter` 前缀；误拼为 `/api/twitter/tag/<tag>` 会静默 404。
+- **代理注册与等待语义（禁止静默直连）**：
+  - `main.dart` 在代理启动成功后调用 `TwitterApi.setProxyPort(port)`，由 Dio 拦截器把 `x.moonchan.xyz` 改写为 `http://127.0.0.1:<port>`。
+  - 端口为 `null` 时请求挂起等待代理就绪（`proxyWaitTimeout = 30s`，超时抛 `NetworkException`），**绝不回退直连**。测试注入假适配器时默认关闭等待（可用 `TwitterApi.debugRequireProxy` 显式控制）。
+- **Dio 路径拼接与异常解包**：
+  - Dio 拼接 `baseUrl + path` 不会自动补斜杠，所有 path 必须以 `/` 开头（并保留 `onRequest` 拦截器归一化）。
+  - **判断 HTTP 状态码必须用 `asHttpException(e)`**，严禁直接写 `e is HttpException`（拦截器将 `HttpException` 包装在 `DioException.error` 内）。
 
-### 1.2 数据面：媒体走 ECH 代理
-- Twitter CDN（`pbs.twimg.com`, `video.twimg.com`）在国内受 SNI 干扰拦截。
-- Dart 侧所有图片和视频必须通过 `EchUrl.rewrite(url, port)` 改写为 `http://127.0.0.1:<port>/...`。
-  - **丢弃域名**：代理上游统一硬编码 `video-cf.twimg.com`，如果保留原始 host 会导致路径拼错 404。
-  - **保留完整 Query**：丢弃 query（如 `format=jpg&name=orig`）会导致资源 404。
-  - **代理未就绪不可静默回退直连**：直连必死（实测 000/超时），`port == null` 时必须显式向上抛错或展示“代理未就绪”，绝不允许静默 fallback 回直连。
-
----
-
-## 2. API 真实口径与性能红线（血泪教训）
-
-### 2.1 严禁在列表与翻页时阻塞全量拉取元数据（Hydrate 陷阱）
-- **性能红线**：
-  - 首页列表（`getUserList`）和标签列表（`getUsersByTagPage`）在翻页或初次加载时，**绝对禁止调用阻塞式 `hydrateUsernames` 等待全量 20~25 个 `.json.gz` 下载**！
-  - 每个用户的 `.json.gz` 包含完整 timeline，单页若串行/并发下载 25 个，在弱网或幽灵账号下需阻塞 10~15 秒，导致严重的界面冻结卡顿。
-- **正确的加载范式（0.5.x 秒开架构）**：
-  1. 列表接口响应后**立即渲染**；
-  2. 头像与昵称由 `_UserTile` 在进入视口（Viewport）后，通过 `didUpdateWidget` / `initState` 异步按需拉取；
-  3. `_UserTile` 复用元数据内存缓存（`TwitterApi.getMetaData` 内置 10 分钟 TTL 与 in-flight 抑制），已含昵称/头像的条目零网络请求渲染。
-
-### 2.2 幽灵账号、404 负缓存与标签权重过滤
-- **幽灵账号与 404**：
-  - 图站标签反查接口 `/api/tag/<tag>` 返回的裸用户名列表中，存在大量已注销、被封禁或无推文的“幽灵账号”。
-  - 请求对应用户的 `GET /api/twitter/<username>.json.gz` 会直接返回 HTTP 404。
-  - 必须通过 `TwitterApi.isKnownMissing(username)` 进行**负缓存**，404 账号记录后不再重复发起请求。
-- **批量标签权重与过滤口径**：
-  - 标签反查页使用单次批量端点：`_api.getTagWeightsBatch(page.usernames)`（调用 `GET /api/tags?keys=u1,u2...`）。
-  - **过滤规则**：
-    1. 服务端省略该键的用户（即 banned 或不在 tags.db 中的幽灵账号），直接剔除；
-    2. 已在 `TwitterApi.isKnownMissing` 中的已知 404 账号，直接剔除；
-    3. **标签票数过滤契约（v0.7.10 裁决）**：当前标签列表仅展示真正支持该标签的用户（`(w[tag] ?? 0) > 0`）；对于反对票或投票 `<= 0` 的账号不出现在该标签反查结果中。详情页展示口径保持一致：负权标签不展示 chip，但用户主页正常。
-- **后台并发预热（Prewarm Meta）机制**：
-  - 列表秒开后，`_load` / `_appendUsers` 采用 fire-and-forget 异步预热前 12 个账号的元数据。
-  - 受控并发度为 6（避免撞击服务端 25rps 限速触发 429 降级）。
-  - 利用 `TwitterApi.getMetaData` 缓存 Future 的特性，预热中的请求与列表行内懒加载无缝共享同一网络 Future，做到绝不重复请求。
+### 1.2 数据面（`lib/utils/ech_url.dart`）
+- Dart 侧所有图片、头像、视频必须经 `EchUrl.rewrite(url, port)` / `EchUrl.rewriteToUri(url, port)` 改写为 `http://127.0.0.1:<port>/<path>?<query>`：
+  - **丢弃原始域名**：上游统一拼到 `https://video-cf.twimg.com`，保留原 host 会 404。
+  - **保留完整 Query**：丢失 `format=` / `name=` / `token=` 会导致 404 或 403。
+  - **`port == null` 严禁回退直连**：抛出 `VideoProxyNotReady` 或明确提示“代理未就绪”。
+- **Android 明文放行范围**：CI 在构建时生成 `res/xml/network_security_config.xml`，**仅对 `127.0.0.1` 和 `localhost` 放行明文 HTTP**（不对公网域名开放全局 `usesCleartextTraffic`），并在 `AndroidManifest.xml` 中注入与硬校验。
+- **ECH 原生库管理**：本仓库**不再保留 `ech-proxy/` 源码副本**，由 `.github/workflows/build.yml` 中的 `ECH_PROXY_REF`（当前 `flutter-lib-v1.0.2`）从 `Hana-ame/ech-proxy` 拉取并编译，编译后强制校验 12/12 个 FFI 导出符号。
 
 ---
 
-## 3. 视频与图片播放/渲染规范
+## 2. 列表性能、标签契约与状态唯一真相源
 
-1. **图片双档位分工（列表缩略图 `name=small` + 预览/下载原图 `orig`）**：
-   - 列表卡片（`TwitterImage(thumb: true)`）与详情页预取（`_precacheAhead`）统一通过 `MediaUrl.thumbOf(url)` 请求 `name=small` 缩略图档位（体积约原图 1/10），全屏预览与下载分享保持 `orig` 原图。
-   - 图片使用 `ProgressiveImageProvider`（逐块流式解码），`AspectRatio` 必须在首帧前预设占位（默认 3:4），**严禁在 `ListView` 中对图片使用 `Stack(fit: StackFit.expand)`**（无界高度传入紧约束会导致整屏空白崩溃）。
-2. **视频播放与解码器槽位控制**：
-   - ExoPlayer 必须要求本地代理支持 `Range` 请求并返回 `206 Partial Content`，代理必须强制 `Accept-Encoding: identity`（禁止 Go transport 自动 gzip 删除 Content-Length）。
-   - 视频卡片必须使用 `Center + AspectRatio + VideoPlayer`，**严禁在无界约束中使用 `FittedBox` 量测 `TextureBox`**（会导致全屏黑屏）。
-   - 软硬解回退（`VideoDecoderPool`）：受 Android MediaCodec 硬件解码器槽位限制，池化管理并发数（1~3），避免硬解崩溃。
+### 2.1 禁止阻塞式全量拉取元数据（防 N+1 / Hydrate 冻结）
+- 首页列表（`getUserList`）与标签翻页（`getUsersByTagPage`）响应后**必须立即渲染**，严禁在翻页时阻塞等待全页 20~25 个 `.json.gz` 下载。
+- 标签翻页优先使用服务端 V2 富卡片结果（`TagUserPage.users` 与 `hasMore`），旧版裸用户名接口 `/api/tag/<tag>` + 批量权重 `/api/tags?keys=...` 仅作回退路径。
+- 已知 404 幽灵账号由 `TwitterApi.isKnownMissing(username)` 做 30 分钟负缓存，避免翻页重复打注定 404 的请求；正缓存 `getMetaData` 为 10 分钟 TTL + in-flight Future 去重。
+
+### 2.2 过滤与隐藏判定唯一真相源（`lib/services/storage_service.dart`）
+- **列表隐藏判定一律调用 `StorageService.shouldHideUser(username, tags)`**，严禁在各页面分别手写过滤逻辑。它统一合并三条本地规则：
+  1. 用户名屏蔽（`block-map`）；
+  2. 正权重屏蔽标签命中（`blockTagHits`，负分/0 分不触发；Gay 模式下与 Gay 词表重叠的标签不触发屏蔽）；
+  3. Gay 模式匹配（`matchesGayMode`：关闭时隐藏含正权重 Gay 标签的用户，开启时仅显示含正权重 Gay 标签的用户）。
+- **标签权重过滤契约**：标签反查与详情页均只认正权重（`score > 0`），负分与 0 分不展示 chip、不作为反查命中。
+- **跨端词表契约**：`StorageService.kDefaultGayTags = ['男性', '男娘', '人妖', '露屌', '阳痿', '男同']` 与图站 `gallery/static/home.js` 的 `DEFAULT_GAY_TAGS` 必须逐项一致（由 `test/gay_tag_contract_test.dart` 锁定）。
+- **跨 Tab 状态同步**：首页 Tab 挂在 `IndexedStack` 中会被保活；修改收藏、屏蔽、Gay 模式、标签规则或视频兼容模式后，统一通过 `StorageService.changes`（`ValueNotifier<int>`）通知保活页面同步刷新。
+- **详情页标签跳转句柄**：`UserDetailScreen.tagBrowse` 为 `required` 的可空回调；来自用户列表页时必须透传，来自无列表页可递回的入口（如 `FavoritesTab`）必须显式传 `null` 并给用户明确提示。
 
 ---
 
-## 4. 测试与验证工作流（发布前铁门槛）
+## 3. 图片与视频播放规范
 
-本地若无 Flutter SDK 或处于特定环境，也可通过容器或云端 CI 验证。当本地有环境时，在提交前必须依次执行：
+### 3.1 图片加载与全屏相册
+- **双档位分工（`lib/utils/media_url.dart`）**：列表卡片与详情页预取统一用 `MediaUrl.thumbOf(url)`（`name=small`，只改 `name=`、绝不破坏其他 query 参数或重复键签名），全屏预览与下载分享保持 `orig` 原图。
+- **逐块流式解码 + 磁盘缓存**：图片统一走 `ProgressiveImageProvider`（含 `ProgressiveDiskCache` 磁盘缓存与启动时放宽的 160MB / 1500 张内存 `ImageCache`）。
+- **全屏相册依赖纪律**：使用 `photo_view`（零网络依赖），**严禁换用自带独立 HTTP 栈的图片库**（如 `extended_image`），防止在结构上绕过 ECH 代理。
+- **布局红线**：列表图片必须用 `AspectRatio` 给出确定高度，严禁在无界高度的 `ListView` item 内使用 `Stack(fit: StackFit.expand)`。
 
-### 4.1 静态检查（Analyze Gate）
+### 3.2 视频播放、解码器池与兼容模式
+- **代理前置要求**：本机代理必须透传 `Range` 并返回 `206 Partial Content`，且强制 `Accept-Encoding: identity`（防止 Go transport 自动 gzip 删除 `Content-Length`）。
+- **依赖与软硬解回退（`pubspec.yaml`）**：
+  - `video_player: ">=2.12.0 <2.15.0"`（上界不可随意放宽，需与 Android fork 的平台接口 `^6.9.0` 配套）。
+  - `dependency_overrides` 将 `video_player_android` 钉在 `Hana-ame/video_player_android`（`ref: 2.12.2-fallback.4`），通过 `CompatRenderersFactory` 支持 `auto` / `smart`（非 16 对齐分辨率优先软解、标准分辨率保持硬解）/ `prefer_software`（软解排前、保留硬解回退）/ `hardware_only`，并通过 `AnalyticsListener.onVideoDecoderInitialized` + `DecoderTelemetry` 在不改 Pigeon 协议的前提下上报实际选中的解码器名。
+  - **错误解包契约（`ExoPlayerEventListener.formatPlaybackError` ↔ `lib/utils/video_failure.dart`）**：fork 把 `PlaybackException` 压成
+    `Video player had error <原始 toString> [<ERROR_CODE_*>, HTTP <status>] uri=... decoder=... decoderMode=... (<原因链>)`。
+    前缀与原文 `toString` **必须保留**（旧判据靠 `Source error` / `format_supported=` 关键词）；`[..., HTTP <三位状态码>]` 是 Dart 侧 `VideoFailure.httpStatusCode` 的唯一取值来源，格式不可改。取不到状态码时一律返回 null，**不做版本判断、不许猜** —— 旧版插件发来的消息必须退回原判定。
+  - **外部播放器通道**：MethodChannel 方法 `openExternalVideo`（Dart 侧 `VideoCompatChannel.openExternalPlayer`）把本机代理 URL 交给 `Intent.ACTION_VIEW + video/*`；`NO_PLAYER` = 本机没有可处理 `video/*` 的应用，`LAUNCH_FAILED` = 其它异常。它是内置 ExoPlayer 真解不了时的最后出口，**不要**用它替代正常播放路径。
+- **解码策略与并发池（`lib/video/decoder_policy.dart` / `lib/video/video_decoder_pool.dart`）**：
+  - 开启软解回退后，能上抛到 Dart 层的 MediaCodec 错误意味着软硬解双双失败，由 `DecoderPolicy.classify` 判 `failFast`（不降档、不自动重排）；仅网络/代理类抖动走一次性自动重试。
+  - 并发上限按最坏全软解负载约束在 `1~3`（连击 4 次成功上调并存档至 `StorageService`）。
+  - 视频封面优先级：磁盘缓存 `PosterService` → 服务端 `cover` 字段（`MediaUrl.thumbOf`）→ `MediaUrl.videoPosterOf` 推导 → `RepaintBoundary.toImage()` 离屏抓帧（含 `isMostlyBlack` 黑帧校验）。
+- **视频播放兼容模式（`lib/video/video_compat_mode.dart`）**：
+  - 为解决部分 Android 机型（见 `flutter/flutter#174026`、`#185674`）在 Media3 下播放非 16 对齐分辨率视频时，由硬件解码器输出 stride 与 Impeller `ImageReaderSurfaceProducer` 纹理采样不匹配导致的**画面斜切、绿色斜纹**，在设置页与视频长按/错误菜单中提供 **5 种预设模式（1 个标准 + 4 个兼容）**，全部保持流式起播：
+    1. `standard`（**默认**，「标准模式（auto）」）：`textureView` + 原生 `auto` —— 全程有硬解就用硬解，硬解失败才回退软解。**完全不动解码器顺序**，正常机型行为与改动前一致。
+    2. `smartSoftware`（「兼容 1：智能软解（smart）」）：`textureView` + 原生 `smart` —— 仅当宽或高不能被 16 整除时把软解排到硬解前面；标准分辨率（720p/1080p）仍走硬解。
+    3. `platformView`（「兼容 2：原生视图（PlatformView + auto）」）：Android 切 `VideoViewType.platformView`（原生 `SurfaceView`）绕过 Impeller 纹理路径；解码仍是 `auto`（有硬解就用硬解），不影响正常机型。跳过对 PlatformView 无效的离屏抓帧。
+    4. `preferSoftware`（「兼容 3：优先软解（prefer_software）」）：`textureView` + 原生 `prefer_software`，并发上限锁 `1`。
+    5. `platformViewSoftware`（「兼容 4：原生视图 + 优先软解（prefer_software）」）：`platformView` + `prefer_software`，并锁并发 `1`。
+  - **铁律：兼容模式只「重排优先级」，绝不「删掉硬解」。** 原生 `CompatRenderersFactory.preferSoftwareOrder()` 从 `MediaCodecSelector.DEFAULT` 取**全量**解码器，仅把 `MediaCodecInfo.softwareOnly` 的分到前段、硬解分到后段再拼回；软解列表为空时原样返回。因此 3/4 模式下软解解不了的格式仍会自动回退硬解 —— 不存在「开了兼容反而更解不了」。改这块时必须守住：**不许使用 `MediaCodecSelector.PREFER_SOFTWARE`**（那个会用 `softwareOnly=true` 单独查询，软解缺失时返回空列表，等于硬删硬解）。
+  - 持久化键 `video-compat-mode` 存 `storageKey`（`standard` / `smart_software` / …），解析统一走 `videoCompatModeFromStorage`：**默认与旧键一律回退 `standard`（auto，硬解优先）**。v0.7.x 的旧键（`software_decode` / `single_decoder` / `software_platform_view` / `local_file`）语义与现在的 `prefer_software` 并不等价，而实测软解掉帧、部分视频直接放不出 —— 继续映射成软解档等于让升级上来的用户永久停在最差档位，所以它们也只回退 `standard`。
+  - 单路硬上限由 `VideoDecoderPool(maxOverride: …)` 提供：一旦存在显式覆盖，`captureUnavailable` 的解锁逻辑**不得**突破它（软解用 CPU，多路同解会互相拖垮）。
+  - **硬解槽位 = 正在播放的那一张（`VideoDecoderPool.claimPlayback` / `request(urgent:)`）**：硬解实例是全机共享的稀缺资源（报斜切/绿纹的那批机型实测只给 1 路硬件 AVC），所以「谁在播谁拿硬解」是硬约束而非偏好。
+    - 用户点播（`urgent`）时池子**直接清场**（`_evictAllExcept`），哪怕槽位没满也收走所有其它持槽者 —— 否则旧播放器还活着、还占着硬解，新播放器 `prepare()` 时抢不到实例，Media3 会**静默回退软解**（这就是"打开第二个视频变成软解"的现场）。非 urgent 的自动抓封面路径仍只挤「看不见且没在播」的，避免抖动。
+    - 开始播放（`_togglePlay` 的 play 分支、`_initPlayer` 自动播放）调用 `claimPlayback`；暂停时**不**调用，避免无谓重连。
+    - 让位后必须 `await pool.waitForHandoff()` 再 `initialize()`：`dispose()` → native `release()` 是异步的，不等就会在硬解仍被占用时 prepare，同样回退软解（`kDecoderHandoffSettle = 260ms`，测试注入 `Duration.zero`）。
+    - 让位时卡片刻下 `_resumePosition`（`onSlotRevoked`），重新播放时 `seekTo` 回原位 —— 解码器必须真的释放，controller 只能重建，但用户不该被迫从头看。
+  - **默认档位只有一个**：`standard`。首次启动、`clearAll`、未知值、旧键全部落到它；`VideoCompatMode.standard.isDefault` 为真且只有它为真（有测试锁住）。
+  - **设置页说明一律一行**：`VideoCompatModeProps.description` ≤ 20 字且不含换行，`ListTile.subtitle` 上加 `maxLines: 1 + ellipsis`，防止窄屏折行把 5 个档位撑成一屏放不下。
+
+  - **⚠️ 软解卡顿与兼容性警示（必须提示、不阻塞修复）**：实机验证表明，Android 软件解码（`c2.android.*`）在高码率/高帧率视频上会明显卡顿，且部分编码规格/profile 在软解下根本无法播放；此外**用户排查时很容易忘记软解会卡这件事**。因此：
+    1. 软解仅作为兜底排查或局部兼容手段，**默认必须保持硬解优先（`auto`）**，且绝不硬删硬解回退；
+    2. 任何涉及软解的改动或排障回复，**不阻塞代码修复，但必须显式提醒用户“软解会卡且部分视频可能播不出”**，并优先引导尝试「原生视图渲染（硬解）」「外部播放器模式（127.0.0.1:8443）」或关闭 Impeller；
+    3. 遇到 `PlatformException(VideoError, ... Source error)` 时必须先确认 HTTP 状态码（`ExoPlayerEventListener.formatPlaybackError` 已解包 404/403/410 并由 `DecoderPolicy` 判 `failFast`），避免把已删除/禁访视频误判为解码器或网络问题。
+  - **外部播放器模式（`StorageService.isExternalVideoPlayer`）**：设置页提供独立开关（默认关闭）；开启后点击视频封面/卡片直接通过 `VideoCompatChannel.openExternalPlayer` 拉起系统/第三方播放器（Android `Intent.ACTION_VIEW` `video/*`、Windows 系统默认程序）播放本机 ECH 代理地址 `http://127.0.0.1:<port>/...`（默认端口 `8443`）。
+  - **设置页角标（`VideoCompatModeProps.badge` / `cpuHeavy`）**：`platformView` 标「推荐」，三个软解档标「软解·可能掉帧」。角标是**实测结论的载体**，不要按枚举顺序重排；`cpuHeavy` 为真时错误卡片会额外点明「HTTP 类失败与解码方式无关，别为此留在软解档」。
+  - **第三条线：关闭 Impeller（`build.yml` → `Build APK with Impeller disabled`）**：在 `android/app/src/main/AndroidManifest.xml` 的 `<application>` 下注入 `<meta-data android:name="io.flutter.embedding.android.EnableImpeller" android:value="false" />` 再构建一次，产出 `app-release-noimpeller.apk`，与常规包同一个 `apk` artifact 上传，发布时一并挂出并计入 `SHA256SUMS.txt`（3 行）。这条线与「兼容 1~4」正交：那几条换解码器/换视图，这条换渲染器。
+    - **硬闸门**：两个 APK 的 sha256 必须不同，否则 CI 直接失败。注入点多行（`<application` 开标签横跨数行），所以注入脚本匹配到 `>` 为止；只认 `<application` 那一行会静默 no-op，而 CI 依然全绿 —— 那正是最坏的情况。
+
+  - **跨平台注意**：Windows 端（`video_player_win`）通过 `effectiveViewType(isAndroid: Platform.isAndroid)` 始终回退为 `VideoViewType.textureView`；Android 端通过 `VideoCompatChannel.getLastDecoderSummary()` 把实际选中的解码器名写进日志与反馈包。
+- **渲染红线**：
+  - 视频卡片与全屏页使用 `Center + AspectRatio + VideoPlayer`，严禁使用 `FittedBox` 量测 `VideoPlayer`（`TextureBox.sizedByParent` 在无界约束下会黑屏）。
+  - 同一个 `VideoPlayerController` 同一时刻只允许一个 `VideoPlayer` 渲染（进入全屏时卡片侧必须切换为纯黑占位 `_fullscreenOpen`）。
+  - **播放器 HUD 的手势层必须独立铺满且 `behavior: HitTestBehavior.opaque`**：`VideoPlayer` 渲染的是 `Texture`，`RenderTexture` 不参与命中测试（`hitTestSelf` 为 false），把手势挂在它外层用默认的 `deferToChild` 等于挂在空气上 —— 表现就是"HUD 自动收起后再也点不出来"。全屏页同理，且手势层要盖住上下黑边。控制栏/顶栏整块也要 `opaque` 并 `onTap: _showControlsTemporarily`，点栏内空白处不收起 HUD（顺带重置 3 秒计时）。
+
+---
+
+## 4. 测试、静态检查与 CI 质量门禁
+
+> **环境约定**：本地无 Flutter SDK 时，所有静态检查、测试与双端构建均以云端 GitHub Actions（`.github/workflows/build.yml`）为唯一裁判。
+
+### 4.1 静态分析（Analyze Gate）
 ```bash
-flutter analyze --no-fatal-infos --no-fatal-warnings
+flutter analyze --no-fatal-infos
 ```
-- 必须做到 **0 错误**（Error = 0）。
+- **⚠️ 注意**：CI **未**加 `--no-fatal-warnings`，**任何 Error 或 Warning 都会直接导致 CI 红**（仅 Info 放行）。`analysis_options.yaml` 启用了 `flutter_lints`、`prefer_const_constructors` 与 `prefer_const_declarations`。
 
-### 4.2 单元与组件测试（Test Suite）
+### 4.2 全量测试与覆盖率门槛
 ```bash
-# 核心标签与列表规约测试
-flutter test test/tag_rule_consistency_test.dart test/user_list_no_nplus1_test.dart test/gallery_tag_paging_test.dart test/filter_by_tag_test.dart
-
-# 核心媒体与解码策略测试
-flutter test test/ech_url_test.dart test/frame_luma_test.dart test/media_url_test.dart test/decoder_policy_test.dart
-
-# 全套整包测试（CI 验收闸门）
-flutter test
+flutter test --coverage
 ```
+- 仓库现有 **37+ 个测试文件**，验收必须以**整包 `flutter test --coverage`** 为准（逐文件隔离绿不构成验收，跨文件进程级 static 状态串味只有在整包运行中才会暴露）。
+- CI 强制校验 `coverage/lcov.info` 非空、包含有效 `SF:`/`DA:`/`end_of_record`，且**行覆盖率不得低于 40.00%**（基线 46.46%）。
+- 禁止在含无限动画/骨架屏的页面测试中无脑调用 `pumpAndSettle()`，必须使用有界 `tester.pump(const Duration(milliseconds: 100))` 循环。
 
-### 4.3 测试编写特别防坑规约（状态隔离铁律）
-- **`StorageService` 进程级 static 状态隔离**：
-  - 任何调用了 `StorageService` 写方法（或 `TwitterApi`、`LogService` 静态状态）的测试文件，**必须**在 `setUp` 与 `tearDown` 中显式调用：
-    ```dart
-    StorageService.resetForTests();
-    ```
-  - CI 中有专用静态检查脚本 `Storage-writing tests must reset static state`，未重置静态状态将直接导致 CI 红。
-- **禁止在测试中使用无界动画 / 无脑 `pumpAndSettle`**：
-  - 页面中若存在骨架屏动画（`AnimationController.repeat`）或下拉刷新，`pumpAndSettle` 会永久挂死直至 30 分钟超时。
-  - 测试推进必须使用有界的 `await tester.pump(const Duration(milliseconds: 100));` 循环。
+### 4.3 进程级静态状态隔离铁律（CI 自动反推检查）
+CI 的 `Storage-writing tests must reset static state` 步骤会直接从 `lib/services/storage_service.dart` 源码反推所有公共写方法（`set*` / `save*` / `toggle*` / `add*` / `remove*` / `reset*` / `clear*`），并同步检查以下五个静态状态家族：
+- `StorageService.resetForTests()`
+- `TwitterApi.resetForTests()`
+- `LogService.resetForTests()`
+- `PosterService.resetForTests()`
+- `ProgressiveDiskCache.resetForTests()`
+
+**凡是在测试中调用了上述任一类的写方法，必须在 `setUp` / `tearDown` 中调用对应的 `resetForTests()`**，否则 CI 静态闸门直接失败。修改 CI 中的 shell 脚本时，必须使用 POSIX `sh`（`dash`）兼容正则验证。
 
 ---
 
-## 5. 版本发布与 CI/CD 流程
-
-本项目采用自动化 GitHub Actions 持续集成与发布体系（`.github/workflows/build.yml`）：
+## 5. 构建、版本与发布流程（`.github/workflows/build.yml`）
 
 ```
-Git Tag (v*) Pushed ────► 1. flutter_test (静态分析 + 114+ 全量测试)
-                              │ (全部通过)
-                              ├──► 2. build_android (编译 cgo libechproxy.so + 构建 APK)
-                              ├──► 3. build_windows (编译 cgo echproxy.dll + 构建 Win zip)
-                              │
-                              └──► 4. create_release (汇总产物自动发布 GitHub Release)
+PR to main         ──► flutter_test（静态分析 + 静态隔离检查 + 整包测试 + 40% 覆盖率门禁）
+Push main / tag    ──► flutter_test ──┬──► build_android（NDK r27 + Go c-shared + APK arm64）
+                                      ├──► build_windows（Go c-shared DLL + Windows x64 zip）
+                                      └──► create_release（仅 semver tag 发正式 Release + SHA256SUMS.txt）
 ```
 
-### 5.1 发版操作步骤
-1. **修改版本号**：在 [pubspec.yaml](pubspec.yaml) 中更新 `version: X.Y.Z`。
-2. **提交代码**：
-   ```bash
-   git add .
-   git commit -m "feat/fix: 详细更新说明"
-   ```
-3. **打 Tag 并推送到远程**：
-   ```bash
-   git tag vX.Y.Z
-   git push origin main
-   git push origin vX.Y.Z
-   ```
-4. **监控 CI 执行**：推送 tag 将自动触发 GitHub Actions 的 `create_release` 流水线。可在 GitHub Actions 界面确认所有任务全绿并生成 Release。
+### 5.1 发版规则
+- **平台脚手架隔离**：仓库不提交 `android/`、`ios/`、`windows/` 目录，CI 通过 `flutter create` 现场生成并注入包名 `xyz.moonchan.twitterpic`、权限、图标与 `network_security_config.xml`。
+- **版本号更新**：可修改 `pubspec.yaml` 或运行 `./bump_version.sh [--push]`。
+- **正式 Release 触发条件**：仅严格匹配 `^v[0-9]+\.[0-9]+\.[0-9]+$` 的 semver tag 会发布正式 GitHub Release（附带 `app-release.apk`、`twitter_pic_flutter_windows_amd64.zip` 与 `SHA256SUMS.txt`）。
+- **测试包 / 日期 tag**：非 semver tag（如 `v0.8.1-test-issue12` 或 `vYYYYMMDD.HHMMSS`）只构建并保留 workflow artifacts，不污染正式 Release 列表。
 
 ---
 
-## 6. Issue 处理流程（2026-10-25 用户定规）
+## 6. Issue 处理流程
 
 **分两种来源，流程不同：**
 
 | issue 提出者 | 流程 |
 |---|---|
-| **Hana-ame 本人** | 可直接修 → PR → CI 绿 → 合并（照常发版） |
-| **非 Hana-ame**（其他用户） | ① 在分支上实现 → ② CI 出**测试包** → ③ 在 issue 里回复**下载链接 + 修改位置 + 测试步骤** → ④ **等提出者测试并回复 OK 之后才合并** |
+| **Hana-ame 本人** | 直接修 → PR（确认 `flutter_test` 绿）→ 合并 → 打 semver tag 发版 |
+| **非 Hana-ame**（其他用户） | ① 在分支实现 → ② CI 出**测试包** → ③ 在 issue 回复**下载链接 + 修改位置 + 测试步骤** → ④ **等提出者实测回复 OK 后再合并发版** |
 
-**非本人 issue 的操作细节：**
-
-1. 从 `main` 拉分支实现修复；版本号 +0.0.1（测试包版本要能辨认）。
-2. 出测试包：推 tag `v<版本>-test-issue<N>`（**非 semver**，CI 只留 artifact、不发 Release），
-   再下载 artifact 用 `gh release create <tag> --prerelease` 附上 APK / Windows zip，
-   得到无需登录的公开下载链接。
-3. 在 issue 回复里必须**完整给出**：
-   - 测试包下载链接（APK / Windows zip）；
-   - **改了哪些文件、哪一层**（服务端 / 客户端 / 数据格式）；
-   - **测试步骤**（怎么装、看哪里、点哪里），以及已知限制（如旧数据无新字段）；
-   - 对需求描述有歧义的地方，列出自己的实现口径并请对方确认。
-4. **提出者回复 OK 前**：不合并 PR、不打正式版 tag。
-   回复 OK 后：合并 PR → 打正式版 tag 发版 → 在 issue 里回正式版链接。
-5. 提出者要求修改时：在同一分支继续改、重推测试 tag 出包、再回复。
+**非本人 issue 操作细节：**
+1. 从 `main` 拉分支实现修复，版本号 +0.0.1（确保测试包可辨认）。
+2. 推送非 semver 测试 tag `v<版本>-test-issue<N>` 触发 CI 产出 artifact，再用 `gh release create <tag> --prerelease` 附上 APK / Windows zip 生成公开下载链接。
+3. Issue 回复必须写清：测试包下载链接、改动文件与层级、具体测试步骤与已知限制，以及有歧义处的实现口径。
+4. 提出者回复 OK 前不合并 PR、不打正式版 tag；若需继续调整，在同一分支迭代并重推测试 tag。
