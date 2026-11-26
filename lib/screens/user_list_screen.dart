@@ -465,6 +465,7 @@ class UserListScreenState extends State<UserListScreen> {
         // 不新开标签页（见 widgets/tag_browse.dart 的说明）。
         tagBrowse: tagBrowseRequest,
         api: _api,
+        recordHistory: true,
       ),
       transitionsBuilder: (_, a, __, child) {
         final curved = CurvedAnimation(parent: a, curve: Curves.easeInOutCubic);
